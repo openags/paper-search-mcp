@@ -19,7 +19,8 @@ dependencies = [
     "mcp[cli]>=1.6.0",
     "PyPDF2>=3.0.0",
     "beautifulsoup4>=4.12.0",
-    "lxml>=4.9.0",  # Better HTML parser for BeautifulSoup
+    "lxml>=4.9.0", # Better HTML parser for BeautifulSoup
+    "httpx[socks]>=0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]

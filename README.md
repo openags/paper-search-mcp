@@ -33,7 +33,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Features
 
-- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, and IACR ePrint Archive.
+- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Asynchronous Tools**: Efficiently handles network requests using `httpx`.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
@@ -76,7 +76,10 @@ For users who want to quickly run the server:
            "/path/to/your/paper-search-mcp",
            "-m",
            "paper_search_mcp.server"
-         ]
+         ],
+         "env": {
+           "SEMANTIC_SCHOLAR_API_KEY": "" // Optional: For enhanced Semantic Scholar features
+         }
        }
      }
    }
@@ -153,7 +156,7 @@ We welcome contributions! Here's how to get started:
 - [√] medRxiv
 - [√] Google Scholar
 - [√] IACR ePrint Archive
-- [ ] Semantic Scholar
+- [√] Semantic Scholar
 - [ ] PubMed Central (PMC)
 - [ ] Science Direct
 - [ ] Springer Link

@@ -9,6 +9,8 @@ from .academic_platforms.medrxiv import MedRxivSearcher
 from .academic_platforms.google_scholar import GoogleScholarSearcher
 from .academic_platforms.iacr import IACRSearcher
 from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.scopus import ScopusSearcher
+from .academic_platforms.pmc import PMCSearcher # Added PMC
 
 # from .academic_platforms.hub import SciHubSearcher
 from .paper import Paper
@@ -22,8 +24,15 @@ pubmed_searcher = PubMedSearcher()
 biorxiv_searcher = BioRxivSearcher()
 medrxiv_searcher = MedRxivSearcher()
 google_scholar_searcher = GoogleScholarSearcher()
+pmc_searcher = PMCSearcher() # Added PMC
+import os # Import os module
+
 iacr_searcher = IACRSearcher()
 semantic_searcher = SemanticSearcher()
+# Initialize ScopusSearcher, it will try to get API key from os.environ.get("SCOPUS_API_KEY")
+# or it can be passed explicitly: ScopusSearcher(api_key=os.environ.get("SCOPUS_API_KEY"))
+# For simplicity, relying on the constructor's default behavior to pick up the env var.
+scopus_searcher = ScopusSearcher()
 # scihub_searcher = SciHubSearcher()
 
 
@@ -340,6 +349,112 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
         print(f"Error reading paper {paper_id}: {e}")
         return ""
 
+
+@mcp.tool()
+async def search_scopus(query: str, max_results: int = 10) -> List[Dict]:
+    """Search academic papers from Scopus.
+
+    Args:
+        query: Search query string (e.g., 'machine learning').
+        max_results: Maximum number of papers to return (default: 10).
+    Returns:
+        List of paper metadata in dictionary format.
+    """
+    papers = await async_search(scopus_searcher, query, max_results)
+    return papers if papers else []
+
+
+@mcp.tool()
+async def download_scopus(paper_id: str, save_path: str = "./downloads") -> str:
+    """Attempt to download PDF of a Scopus paper.
+    Note: Direct PDF download from Scopus is generally not supported via API.
+
+    Args:
+        paper_id: Scopus paper ID.
+        save_path: Directory to save the PDF (default: './downloads').
+    Returns:
+        Message indicating that direct PDF download is not supported or path to file if successful (unlikely).
+    """
+    try:
+        return scopus_searcher.download_pdf(paper_id, save_path)
+    except NotImplementedError as e:
+        return str(e)
+    except Exception as e:
+        print(f"Error during Scopus download attempt for {paper_id}: {e}")
+        return f"An unexpected error occurred: {e}"
+
+
+@mcp.tool()
+async def read_scopus_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Attempt to read/extract text from a Scopus paper.
+    Note: Direct full-text access from Scopus is generally not supported via API.
+
+    Args:
+        paper_id: Scopus paper ID.
+        save_path: Directory where the PDF would be saved (default: './downloads').
+    Returns:
+        Message indicating that direct paper reading is not supported or extracted text if successful (unlikely).
+    """
+    try:
+        return scopus_searcher.read_paper(paper_id, save_path)
+    except NotImplementedError as e:
+        return str(e)
+    except Exception as e:
+        print(f"Error during Scopus read attempt for {paper_id}: {e}")
+        return f"An unexpected error occurred: {e}"
+
+@mcp.tool()
+async def search_pmc(query: str, max_results: int = 10) -> List[Dict]:
+    """Search academic papers from PubMed Central (PMC).
+
+    Args:
+        query: Search query string (e.g., 'crispr gene editing').
+        max_results: Maximum number of papers to return (default: 10).
+    Returns:
+        List of paper metadata in dictionary format.
+    """
+    papers = await async_search(pmc_searcher, query, max_results)
+    return papers if papers else []
+
+@mcp.tool()
+async def download_pmc(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download PDF of a PubMed Central (PMC) paper.
+
+    Args:
+        paper_id: PMC paper ID (e.g., 'PMC3539183' or '3539183').
+        save_path: Directory to save the PDF (default: './downloads').
+    Returns:
+        Path to the downloaded PDF file or an error message.
+    """
+    try:
+        # PMCSearcher.download_pdf is synchronous, adapt if needed or call directly
+        # For simplicity, calling it directly assuming it's okay in this context
+        # If strict async is required, it should be wrapped like other searchers.
+        return pmc_searcher.download_pdf(paper_id, save_path)
+    except ConnectionError as e:
+        return str(e)
+    except Exception as e:
+        print(f"Error downloading PMC paper {paper_id}: {e}")
+        return f"An unexpected error occurred during PMC download: {e}"
+
+@mcp.tool()
+async def read_pmc_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Read and extract text content from a PubMed Central (PMC) paper PDF.
+
+    Args:
+        paper_id: PMC paper ID (e.g., 'PMC3539183' or '3539183').
+        save_path: Directory where the PDF is/will be saved (default: './downloads').
+    Returns:
+        str: The extracted text content of the paper or an error message.
+    """
+    try:
+        # PMCSearcher.read_paper is synchronous
+        return pmc_searcher.read_paper(paper_id, save_path)
+    except ConnectionError as e: # Catch connection errors from download_pdf
+        return str(e)
+    except Exception as e:
+        print(f"Error reading PMC paper {paper_id}: {e}")
+        return f"An unexpected error occurred during PMC paper reading: {e}"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

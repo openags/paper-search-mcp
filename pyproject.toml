@@ -22,6 +22,7 @@ dependencies = [
     "lxml>=4.9.0", # Better HTML parser for BeautifulSoup
     "httpx[socks]>=0.28.1",
     "elsapy",
+    "pandas",
 ]
 
 [tool.hatch.build.targets.wheel]

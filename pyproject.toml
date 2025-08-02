@@ -23,5 +23,8 @@ dependencies = [
     "httpx[socks]>=0.28.1",
 ]
 
+[project.scripts]
+paper-search-mcp = "paper_search_mcp.server:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["paper_search_mcp"]

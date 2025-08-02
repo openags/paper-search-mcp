@@ -341,5 +341,10 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
         return ""
 
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the MCP server."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

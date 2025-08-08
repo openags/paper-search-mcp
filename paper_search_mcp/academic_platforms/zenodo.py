@@ -57,13 +57,27 @@ class ZenodoSearcher(PaperSource):
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         if not date_str:
             return None
-        # Try common formats from Zenodo (YYYY-MM-DD or YYYY-MM)
+        s = str(date_str).strip()
+        # Try ISO 8601 first (e.g., 2025-08-07T22:52:05.283108+00:00 or ...Z)
+        try:
+            s_iso = s.replace("Z", "+00:00")
+            return datetime.fromisoformat(s_iso)
+        except Exception:
+            pass
+        # If a timestamp, try the date part only
+        if "T" in s:
+            try:
+                return datetime.strptime(s.split("T")[0], "%Y-%m-%d")
+            except Exception:
+                pass
+        # Try common formats from Zenodo (YYYY-MM-DD or YYYY-MM or YYYY)
         for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
             try:
-                return datetime.strptime(date_str.strip(), fmt)
+                return datetime.strptime(s, fmt)
             except Exception:
                 continue
-        logger.warning(f"Zenodo: could not parse date: {date_str}")
+        # Avoid noisy warnings; log at debug level
+        logger.debug(f"Zenodo: could not parse date: {s}")
         return None
 
     def _select_pdf_file(self, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -91,8 +105,26 @@ class ZenodoSearcher(PaperSource):
             creators = metadata.get("creators") or []
             authors = [c.get("name") for c in creators if isinstance(c, dict) and c.get("name")]
             description = metadata.get("description") or ""
-            publication_date = metadata.get("publication_date") or rec.get("updated")
-            published_date = self._parse_date(publication_date)
+
+            # Publication date: prefer metadata.publication_date, then metadata.dates[*].date, then rec.updated/created
+            publication_date_raw: Optional[str] = metadata.get("publication_date")
+            if not publication_date_raw:
+                dates_field = metadata.get("dates")
+                if isinstance(dates_field, list):
+                    # Prefer Issued/Published if present, else the first date
+                    preferred = None
+                    for d in dates_field:
+                        if isinstance(d, dict) and d.get("date"):
+                            if str(d.get("type", "")).lower() in {"issued", "published", "publication"}:
+                                preferred = d["date"]
+                                break
+                            if not preferred:
+                                preferred = d["date"]
+                    publication_date_raw = preferred
+            if not publication_date_raw:
+                publication_date_raw = rec.get("updated") or rec.get("created")
+
+            published_date = self._parse_date(publication_date_raw)
             doi = rec.get("doi") or metadata.get("doi") or ""
             links = rec.get("links") or {}
             url = links.get("html") or links.get("latest_html") or ""

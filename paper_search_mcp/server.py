@@ -9,6 +9,7 @@ from .academic_platforms.medrxiv import MedRxivSearcher
 from .academic_platforms.google_scholar import GoogleScholarSearcher
 from .academic_platforms.iacr import IACRSearcher
 from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.crossref import CrossRefSearcher
 
 # from .academic_platforms.hub import SciHubSearcher
 from .paper import Paper
@@ -24,6 +25,7 @@ medrxiv_searcher = MedRxivSearcher()
 google_scholar_searcher = GoogleScholarSearcher()
 iacr_searcher = IACRSearcher()
 semantic_searcher = SemanticSearcher()
+crossref_searcher = CrossRefSearcher()
 # scihub_searcher = SciHubSearcher()
 
 
@@ -339,6 +341,93 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
     except Exception as e:
         print(f"Error reading paper {paper_id}: {e}")
         return ""
+
+
+@mcp.tool()
+async def search_crossref(query: str, max_results: int = 10, **kwargs) -> List[Dict]:
+    """Search academic papers from CrossRef database.
+    
+    CrossRef is a scholarly infrastructure organization that provides 
+    persistent identifiers (DOIs) for scholarly content and metadata.
+    It's one of the largest citation databases covering millions of 
+    academic papers, journals, books, and other scholarly content.
+
+    Args:
+        query: Search query string (e.g., 'machine learning', 'climate change').
+        max_results: Maximum number of papers to return (default: 10, max: 1000).
+        **kwargs: Additional search parameters:
+            - filter: CrossRef filter string (e.g., 'has-full-text:true,from-pub-date:2020')
+            - sort: Sort field ('relevance', 'published', 'updated', 'deposited', etc.)
+            - order: Sort order ('asc' or 'desc')
+    Returns:
+        List of paper metadata in dictionary format.
+        
+    Examples:
+        # Basic search
+        search_crossref("deep learning", 20)
+        
+        # Search with filters
+        search_crossref("climate change", 10, filter="from-pub-date:2020,has-full-text:true")
+        
+        # Search sorted by publication date
+        search_crossref("neural networks", 15, sort="published", order="desc")
+    """
+    papers = await async_search(crossref_searcher, query, max_results, **kwargs)
+    return papers if papers else []
+
+
+@mcp.tool()
+async def get_crossref_paper_by_doi(doi: str) -> Dict:
+    """Get a specific paper from CrossRef by its DOI.
+
+    Args:
+        doi: Digital Object Identifier (e.g., '10.1038/nature12373').
+    Returns:
+        Paper metadata in dictionary format, or empty dict if not found.
+        
+    Example:
+        get_crossref_paper_by_doi("10.1038/nature12373")
+    """
+    async with httpx.AsyncClient() as client:
+        paper = crossref_searcher.get_paper_by_doi(doi)
+        return paper.to_dict() if paper else {}
+
+
+@mcp.tool()
+async def download_crossref(paper_id: str, save_path: str = "./downloads") -> str:
+    """Attempt to download PDF of a CrossRef paper.
+
+    Args:
+        paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
+        save_path: Directory to save the PDF (default: './downloads').
+    Returns:
+        str: Message indicating that direct PDF download is not supported.
+        
+    Note:
+        CrossRef is a citation database and doesn't provide direct PDF downloads.
+        Use the DOI to access the paper through the publisher's website.
+    """
+    try:
+        return crossref_searcher.download_pdf(paper_id, save_path)
+    except NotImplementedError as e:
+        return str(e)
+
+
+@mcp.tool()
+async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Attempt to read and extract text content from a CrossRef paper.
+
+    Args:
+        paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
+        save_path: Directory where the PDF is/will be saved (default: './downloads').
+    Returns:
+        str: Message indicating that direct paper reading is not supported.
+        
+    Note:
+        CrossRef is a citation database and doesn't provide direct paper content.
+        Use the DOI to access the paper through the publisher's website.
+    """
+    return crossref_searcher.read_paper(paper_id, save_path)
 
 
 if __name__ == "__main__":

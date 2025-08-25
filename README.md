@@ -1,6 +1,6 @@
 # Paper Search MCP
 
-A Model Context Protocol (MCP) server for searching and downloading academic papers from multiple sources, including arXiv, PubMed, bioRxiv, and Sci-Hub (optional). Designed for seamless integration with large language models like Claude Desktop.
+A Model Context Protocol (MCP) server for searching and downloading academic papers from multiple sources, including arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, and Zenodo. Designed for seamless integration with large language models like Claude Desktop.
 
 ![PyPI](https://img.shields.io/pypi/v/paper-search-mcp.svg) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 [![smithery badge](https://smithery.ai/badge/@openags/paper-search-mcp)](https://smithery.ai/server/@openags/paper-search-mcp)
@@ -33,11 +33,23 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Features
 
-- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar.
+- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, and Zenodo.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Asynchronous Tools**: Efficiently handles network requests using `httpx`.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
+
+### Zenodo tools overview
+
+The Zenodo tools help you find and retrieve research papers recorded on Zenodo (and interact with their records):
+
+- `search_zenodo`: Search research papers recorded on Zenodo (supports Lucene query and filters like community, year, resource_type, subtype, creators, keywords, sort, order).
+- `download_zenodo`: Download the PDF of a research paper recorded on Zenodo when the record includes a PDF.
+- `read_zenodo_paper`: Extract text from the PDF of a research paper recorded on Zenodo.
+- `search_zenodo_communities`: Discover Zenodo communities (by title/slug/description) to find collections of research papers.
+- `get_zenodo_record_details`: Retrieve the raw Zenodo record JSON for a paper or any record.
+- `list_zenodo_files`: List files attached to a research paper recorded on Zenodo (or any record).
+- `search_zenodo_by_creator`: Convenience search for research papers recorded on Zenodo by a single creator/author.
 
 ---
 
@@ -157,6 +169,7 @@ We welcome contributions! Here's how to get started:
 - [√] Google Scholar
 - [√] IACR ePrint Archive
 - [√] Semantic Scholar
+- [√] Zenodo
 - [ ] PubMed Central (PMC)
 - [ ] Science Direct
 - [ ] Springer Link

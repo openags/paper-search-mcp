@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/openags-paper-search-mcp-badge.png)](https://mseep.ai/app/openags-paper-search-mcp)
+
 # Paper Search MCP
 
 A Model Context Protocol (MCP) server for searching and downloading academic papers from multiple sources, including arXiv, PubMed, bioRxiv, and Sci-Hub (optional). Designed for seamless integration with large language models like Claude Desktop.

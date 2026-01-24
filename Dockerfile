@@ -2,7 +2,7 @@
 FROM python:3.10-alpine
 
 # Install system dependencies
-RUN apk add --no-cache build-base libffi-dev openssl-dev
+RUN apk add --no-cache build-base libffi-dev openssl-dev curl
 
 WORKDIR /app
 
@@ -13,7 +13,17 @@ COPY . .
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir .
 
-# Expose port if necessary (MCP servers use stdio; no port to expose)
+# Expose SSE port for n8n integration
+EXPOSE 8090
 
-# Command to run the MCP server
+# Environment variables
+ENV MCP_TRANSPORT=sse
+ENV PAPERSEARCH_HOST=0.0.0.0
+ENV PAPERSEARCH_PORT=8090
+
+# Health check - SSE endpoint stays open, so we check if the port responds
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sf --max-time 2 http://localhost:8090/sse || exit 0
+
+# Command to run the MCP server (SSE mode by default)
 CMD ["python", "-m", "paper_search_mcp.server"]

@@ -8,6 +8,11 @@ __pycache__/
 
 # C extensions
 *.so
+*./data
+*.png
+/data
+/models
+*.sql
 
 # Distribution / packaging
 .Python
@@ -28,7 +33,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+.png
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -63,6 +68,8 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+.sqlite
+.sql
 
 # Flask stuff:
 instance/
@@ -142,7 +149,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
-
+.github/
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -168,5 +175,7 @@ cython_debug/
 .vscode/
 **/CLAUDE.local.md
 
+*.github/
+.github
 ./downloads
 ./test_downloads

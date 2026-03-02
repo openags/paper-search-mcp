@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
+from PyPDF2 import PdfReader
 
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
@@ -22,10 +23,23 @@ from .academic_platforms.iacr import IACRSearcher
 from .academic_platforms.semantic import SemanticSearcher
 from .academic_platforms.crossref import CrossRefSearcher
 
-# from .academic_platforms.hub import SciHubSearcher
+from .academic_platforms.sci_hub import SciHubFetcher
 from .paper import Paper
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean value for %s=%r; using default=%s", name, raw, default)
+    return default
 
 
 def _normalize_transport(value: str | None) -> str | None:
@@ -87,6 +101,7 @@ mcp = FastMCP(
 )
 
 DOWNLOAD_DIR = os.environ.get("PAPER_SEARCH_DOWNLOAD_DIR", "./downloads")
+DISABLE_SCIHUB = _env_flag("PAPER_SEARCH_MCP_DISABLE_SCIHUB", False)
 DEFAULT_MAX_RESULTS = 15
 RESULTS_PER_SOURCE = 5
 MAX_CACHE_SIZE = 128
@@ -112,7 +127,7 @@ google_scholar_searcher = SEARCHERS["google_scholar"]
 iacr_searcher = SEARCHERS["iacr"]
 semantic_searcher = SEARCHERS["semantic"]
 crossref_searcher = SEARCHERS["crossref"]
-# scihub_searcher = SciHubSearcher()
+scihub_searcher = None if DISABLE_SCIHUB else SciHubFetcher()
 
 
 # Cached metadata for fetch requests
@@ -479,6 +494,91 @@ async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
         Path to the downloaded PDF file.
     """
     return iacr_searcher.download_pdf(paper_id, save_path)
+
+
+if not DISABLE_SCIHUB:
+    @mcp.tool()
+    async def download_scihub(identifier: str, save_path: str = "./downloads") -> str:
+        """Download a PDF via Sci-Hub using DOI, PMID, URL, or direct PDF URL.
+
+        Args:
+            identifier: DOI, PMID, article URL, or direct PDF URL.
+            save_path: Directory to save the PDF (default: './downloads').
+        Returns:
+            Path to the downloaded PDF file, or an error message on failure.
+        """
+        try:
+            fetcher = SciHubFetcher(output_dir=save_path)
+            result = fetcher.download_pdf(identifier)
+            return result if result else "Failed to download PDF from Sci-Hub."
+        except Exception as e:
+            return f"Failed to download PDF from Sci-Hub: {e}"
+
+
+    @mcp.tool()
+    async def search_scihub(identifier: str, max_results: int = 1) -> List[Dict]:
+        """Resolve a Sci-Hub identifier into a downloadable PDF result.
+
+        Args:
+            identifier: DOI, PMID, article URL, or direct PDF URL.
+            max_results: Maximum number of results to return (default: 1).
+        Returns:
+            List containing a single resolved result if found, otherwise empty list.
+        """
+        if not identifier or not identifier.strip() or max_results < 1:
+            return []
+
+        try:
+            fetcher = SciHubFetcher(output_dir=DOWNLOAD_DIR)
+            pdf_url = fetcher._get_direct_url(identifier.strip())
+            if not pdf_url:
+                return []
+            return [{
+                "paper_id": identifier.strip(),
+                "title": f"Sci-Hub result for {identifier.strip()}",
+                "authors": "",
+                "abstract": "",
+                "doi": "",
+                "published_date": "",
+                "pdf_url": pdf_url,
+                "url": pdf_url,
+                "source": "scihub",
+                "updated_date": "",
+                "categories": "",
+                "keywords": "",
+                "citations": 0,
+                "references": "",
+                "extra": "",
+            }]
+        except Exception:
+            return []
+
+
+    @mcp.tool()
+    async def read_scihub_paper(identifier: str, save_path: str = "./downloads") -> str:
+        """Download and extract text from a paper via Sci-Hub.
+
+        Args:
+            identifier: DOI, PMID, article URL, or direct PDF URL.
+            save_path: Directory where the PDF is/will be saved (default: './downloads').
+        Returns:
+            Extracted paper text, or an error message if unavailable.
+        """
+        try:
+            fetcher = SciHubFetcher(output_dir=save_path)
+            pdf_path = fetcher.download_pdf(identifier)
+            if not pdf_path:
+                return "Failed to download PDF from Sci-Hub."
+
+            reader = PdfReader(pdf_path)
+            text_parts: List[str] = []
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                text_parts.append(page_text)
+            text = "\n".join(text_parts).strip()
+            return text or "No extractable text found in PDF."
+        except Exception as e:
+            return f"Failed to read paper from Sci-Hub: {e}"
 
 
 @mcp.tool()

@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 - [Overview](#overview)
 - [Features](#features)
+- [Sci-Hub](#sci-hub)
 - [Installation](#installation)
   - [Quick Start](#quick-start)
     - [Install Package](#install-package)
@@ -33,7 +34,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Features
 
-- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar.
+- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, and Sci-Hub (optional).
 - **Deep Research Ready**: Provides the standardized `search` and `fetch` tools required by OpenAI Deep Research and ChatGPT connectors.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Asynchronous Tools**: Efficiently handles network requests using `httpx`.
@@ -79,7 +80,8 @@ For users who want to quickly run the server:
            "paper_search_mcp.server"
          ],
          "env": {
-           "SEMANTIC_SCHOLAR_API_KEY": "" // Optional: For enhanced Semantic Scholar features
+           "SEMANTIC_SCHOLAR_API_KEY": "", // Optional: For enhanced Semantic Scholar features
+           "PAPER_SEARCH_MCP_DISABLE_SCIHUB": "false" // Optional: Set to "true" to hide Sci-Hub tools
          }
        }
      }

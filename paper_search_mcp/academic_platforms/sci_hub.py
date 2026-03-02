@@ -15,9 +15,18 @@ from bs4 import BeautifulSoup
 class SciHubFetcher:
     """Simple Sci-Hub PDF downloader."""
 
-    def __init__(self, base_url: str = "https://sci-hub.se", output_dir: str = "./downloads"):
+    MIRRORS = (
+        "https://sci-hub.ru",
+        "https://sci-hub.st",
+        "https://sci-hub.su",
+        "https://sci-hub.box",
+        "https://sci-hub.red",
+    )
+
+    def __init__(self, base_url: str = "https://sci-hub.ru", output_dir: str = "./downloads"):
         """Initialize with Sci-Hub URL and output directory."""
         self.base_url = base_url.rstrip("/")
+        self.mirrors = [self.base_url] + [m for m in self.MIRRORS if m != self.base_url]
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
@@ -81,76 +90,68 @@ class SciHubFetcher:
             if identifier.endswith('.pdf'):
                 return identifier
 
-            # Search on Sci-Hub
-            search_url = f"{self.base_url}/{identifier}"
-            response = self.session.get(search_url, verify=False, timeout=20)
-            
-            if response.status_code != 200:
-                return None
+            for base_url in self.mirrors:
+                try:
+                    # Search on Sci-Hub
+                    search_url = f"{base_url}/{identifier}"
+                    response = self.session.get(search_url, verify=False, timeout=20)
+                    if response.status_code != 200:
+                        continue
 
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Check for article not found
-            if "article not found" in response.text.lower():
-                logging.warning("Article not found on Sci-Hub")
-                return None
+                    soup = BeautifulSoup(response.content, 'html.parser')
 
-            # Look for embed tag with PDF (most common in modern Sci-Hub)
-            embed = soup.find('embed', {'type': 'application/pdf'})
-            logging.debug(f"Found embed tag: {embed}")
-            if embed:
-                src = embed.get('src') if hasattr(embed, 'get') else None
-                logging.debug(f"Embed src: {src}")
-                if src and isinstance(src, str):
-                    if src.startswith('//'):
-                        pdf_url = 'https:' + src
-                        logging.debug(f"Returning PDF URL: {pdf_url}")
-                        return pdf_url
-                    elif src.startswith('/'):
-                        pdf_url = self.base_url + src
-                        logging.debug(f"Returning PDF URL: {pdf_url}")
-                        return pdf_url
-                    else:
-                        logging.debug(f"Returning PDF URL: {src}")
-                        return src
+                    # Check for article not found
+                    if "article not found" in response.text.lower():
+                        continue
 
-            # Look for iframe with PDF (fallback)
-            iframe = soup.find('iframe')
-            if iframe:
-                src = iframe.get('src') if hasattr(iframe, 'get') else None
-                if src and isinstance(src, str):
-                    if src.startswith('//'):
-                        return 'https:' + src
-                    elif src.startswith('/'):
-                        return self.base_url + src
-                    else:
-                        return src
+                    # Look for embed tag with PDF (most common in modern Sci-Hub)
+                    embed = soup.find('embed', {'type': 'application/pdf'})
+                    if embed:
+                        src = embed.get('src') if hasattr(embed, 'get') else None
+                        if src and isinstance(src, str):
+                            if src.startswith('//'):
+                                return 'https:' + src
+                            if src.startswith('/'):
+                                return base_url + src
+                            return src
 
-            # Look for download button with onclick
-            for button in soup.find_all('button'):
-                onclick = button.get('onclick', '') if hasattr(button, 'get') else ''
-                if isinstance(onclick, str) and 'pdf' in onclick.lower():
-                    # Extract URL from onclick JavaScript
-                    url_match = re.search(r"location\.href='([^']+)'", onclick)
-                    if url_match:
-                        url = url_match.group(1)
-                        if url.startswith('//'):
-                            return 'https:' + url
-                        elif url.startswith('/'):
-                            return self.base_url + url
-                        else:
-                            return url
+                    # Look for iframe with PDF (fallback)
+                    iframe = soup.find('iframe')
+                    if iframe:
+                        src = iframe.get('src') if hasattr(iframe, 'get') else None
+                        if src and isinstance(src, str):
+                            if src.startswith('//'):
+                                return 'https:' + src
+                            if src.startswith('/'):
+                                return base_url + src
+                            return src
 
-            # Look for direct download links
-            for link in soup.find_all('a'):
-                href = link.get('href', '') if hasattr(link, 'get') else ''
-                if isinstance(href, str) and href and ('pdf' in href.lower() or href.endswith('.pdf')):
-                    if href.startswith('//'):
-                        return 'https:' + href
-                    elif href.startswith('/'):
-                        return self.base_url + href
-                    elif href.startswith('http'):
-                        return href
+                    # Look for download button with onclick
+                    for button in soup.find_all('button'):
+                        onclick = button.get('onclick', '') if hasattr(button, 'get') else ''
+                        if isinstance(onclick, str) and 'pdf' in onclick.lower():
+                            # Extract URL from onclick JavaScript
+                            url_match = re.search(r"location\.href='([^']+)'", onclick)
+                            if url_match:
+                                url = url_match.group(1)
+                                if url.startswith('//'):
+                                    return 'https:' + url
+                                if url.startswith('/'):
+                                    return base_url + url
+                                return url
+
+                    # Look for direct download links
+                    for link in soup.find_all('a'):
+                        href = link.get('href', '') if hasattr(link, 'get') else ''
+                        if isinstance(href, str) and href and ('pdf' in href.lower() or href.endswith('.pdf')):
+                            if href.startswith('//'):
+                                return 'https:' + href
+                            if href.startswith('/'):
+                                return base_url + href
+                            if href.startswith('http'):
+                                return href
+                except Exception as mirror_error:
+                    logging.warning("Sci-Hub mirror %s failed: %s", base_url, mirror_error)
 
             return None
 

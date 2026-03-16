@@ -5,20 +5,10 @@ import requests
 import time
 import random
 from ..paper import Paper
+from .base import PaperSource
 import logging
 
 logger = logging.getLogger(__name__)
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
 
 class CrossRefSearcher(PaperSource):
     """Searcher for CrossRef database papers"""
@@ -135,6 +125,10 @@ class CrossRefSearcher(PaperSource):
             else:
                 keywords = []
             
+            citations = item.get('is-referenced-by-count')
+            if not isinstance(citations, int):
+                citations = 0
+
             return Paper(
                 paper_id=doi,
                 title=title,
@@ -147,7 +141,7 @@ class CrossRefSearcher(PaperSource):
                 source='crossref',
                 categories=categories,
                 keywords=keywords,
-                citations=item.get('is-referenced-by-count', 0),
+                citations=citations,
                 extra={
                     'publisher': publisher,
                     'container_title': container_title,
@@ -203,11 +197,11 @@ class CrossRefSearcher(PaperSource):
             
         parts = date_parts[0]
         try:
-            year = parts[0] if len(parts) > 0 else 1970
-            month = parts[1] if len(parts) > 1 else 1
-            day = parts[2] if len(parts) > 2 else 1
+            year = parts[0] if len(parts) > 0 and parts[0] is not None else 1970
+            month = parts[1] if len(parts) > 1 and parts[1] is not None else 1
+            day = parts[2] if len(parts) > 2 and parts[2] is not None else 1
             return datetime(year, month, day)
-        except (ValueError, IndexError):
+        except (TypeError, ValueError, IndexError):
             return None
     
     def _extract_container_title(self, item: Dict[str, Any]) -> str:

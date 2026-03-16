@@ -4,18 +4,9 @@ import requests
 from xml.etree import ElementTree as ET
 from datetime import datetime
 from ..paper import Paper
+from ..utils import extract_doi
+from .base import PaperSource
 import os
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
 
 class PubMedSearcher(PaperSource):
     """Searcher for PubMed papers"""
@@ -31,7 +22,9 @@ class PubMedSearcher(PaperSource):
         }
         search_response = requests.get(self.SEARCH_URL, params=search_params)
         search_root = ET.fromstring(search_response.content)
-        ids = [id.text for id in search_root.findall('.//Id')]
+        ids = [id.text for id in search_root.findall('.//Id') if id.text]
+        if not ids:
+            return []
         
         fetch_params = {
             'db': 'pubmed',
@@ -44,14 +37,42 @@ class PubMedSearcher(PaperSource):
         papers = []
         for article in fetch_root.findall('.//PubmedArticle'):
             try:
-                pmid = article.find('.//PMID').text
-                title = article.find('.//ArticleTitle').text
-                authors = [f"{author.find('LastName').text} {author.find('Initials').text}" 
-                           for author in article.findall('.//Author')]
-                abstract = article.find('.//AbstractText').text if article.find('.//AbstractText') is not None else ''
-                pub_date = article.find('.//PubDate/Year').text
-                published = datetime.strptime(pub_date, '%Y')
-                doi = article.find('.//ELocationID[@EIdType="doi"]').text if article.find('.//ELocationID[@EIdType="doi"]') is not None else ''
+                pmid_elem = article.find('.//PMID')
+                pmid = pmid_elem.text.strip() if pmid_elem is not None and pmid_elem.text else ''
+                if not pmid:
+                    continue
+
+                title_elem = article.find('.//ArticleTitle')
+                title = ''.join(title_elem.itertext()).strip() if title_elem is not None else ''
+                if not title:
+                    continue
+
+                authors = []
+                for author in article.findall('.//Author'):
+                    last_name = author.find('LastName')
+                    initials = author.find('Initials')
+                    if last_name is not None and last_name.text:
+                        name = last_name.text.strip()
+                        if initials is not None and initials.text:
+                            name = f"{name} {initials.text.strip()}"
+                        authors.append(name)
+
+                abstract_parts = []
+                for abstract_elem in article.findall('.//AbstractText'):
+                    text = ''.join(abstract_elem.itertext()).strip()
+                    if text:
+                        abstract_parts.append(text)
+                abstract = ' '.join(abstract_parts)
+
+                year_elem = article.find('.//PubDate/Year')
+                pub_date = year_elem.text if year_elem is not None else None
+                published = datetime.strptime(pub_date, '%Y') if pub_date else None
+                doi_elem = article.find('.//ELocationID[@EIdType="doi"]')
+                doi = doi_elem.text if doi_elem is not None else ''
+
+                if not doi and abstract:
+                    doi = extract_doi(abstract)
+
                 papers.append(Paper(
                     paper_id=pmid,
                     title=title,
@@ -66,8 +87,8 @@ class PubMedSearcher(PaperSource):
                     keywords=[],
                     doi=doi
                 ))
-            except Exception as e:
-                print(f"Error parsing PubMed article: {e}")
+            except Exception:
+                continue
         return papers
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:

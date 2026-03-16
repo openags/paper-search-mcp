@@ -1,29 +1,19 @@
 from typing import List, Optional
 from datetime import datetime
+import os
 import requests
 from bs4 import BeautifulSoup
 import time
 import random
 from ..paper import Paper
+from ..utils import extract_doi
+from .base import PaperSource
 import logging
 from PyPDF2 import PdfReader
-import os
 import re
+from ..config import get_env
 
 logger = logging.getLogger(__name__)
-
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
 
 
 class SemanticSearcher(PaperSource):
@@ -46,7 +36,7 @@ class SemanticSearcher(PaperSource):
         self.session.headers.update(
             {
                 "User-Agent": random.choice(self.BROWSERS),
-                "Accept": "text/html,application/xhtml+xml",
+                "Accept": "application/json",
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
@@ -121,6 +111,9 @@ class SemanticSearcher(PaperSource):
             if item.get('externalIds') and item['externalIds'].get('DOI'):
                 doi = item['externalIds']['DOI']
             
+            if not doi and item.get('abstract'):
+                doi = extract_doi(item['abstract'])
+            
             # Safely get categories
             categories = item.get('fieldsOfStudy', [])
             if not categories:
@@ -150,7 +143,7 @@ class SemanticSearcher(PaperSource):
         Get the Semantic Scholar API key from environment variables.
         Returns None if no API key is set or if it's empty, enabling unauthenticated access.
         """
-        api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+        api_key = get_env("SEMANTIC_SCHOLAR_API_KEY", "")
         if not api_key or api_key.strip() == "":
             logger.warning("No SEMANTIC_SCHOLAR_API_KEY set or it's empty. Using unauthenticated access with lower rate limits.")
             return None
@@ -161,19 +154,27 @@ class SemanticSearcher(PaperSource):
         Make a request to the Semantic Scholar API with optional API key.
         """
         max_retries = 3
-        retry_delay = 2  # seconds
+        api_key = self.get_api_key()
+        retry_delay = 5 if api_key is None else 2
+        has_retried_without_key = False
         
         for attempt in range(max_retries):
             try:
-                api_key = self.get_api_key()
                 headers = {"x-api-key": api_key} if api_key else {}
                 url = f"{self.SEMANTIC_BASE_URL}/{path}"
-                response = self.session.get(url, params=params, headers=headers)
+                response = self.session.get(url, params=params, headers=headers, timeout=30)
+
+                if response.status_code == 403 and api_key and not has_retried_without_key:
+                    logger.warning("Semantic Scholar API key was rejected (403). Retrying without API key.")
+                    api_key = None
+                    has_retried_without_key = True
+                    continue
                 
                 # 检查是否是429错误（限流）
                 if response.status_code == 429:
                     if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)  # 指数退避
+                        retry_after = response.headers.get("Retry-After")
+                        wait_time = int(retry_after) if retry_after and retry_after.isdigit() else retry_delay * (2 ** attempt)
                         logger.warning(f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
                         time.sleep(wait_time)
                         continue
@@ -185,9 +186,15 @@ class SemanticSearcher(PaperSource):
                 return response
                 
             except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 403 and api_key and not has_retried_without_key:
+                    logger.warning("Semantic Scholar API key was rejected (403). Retrying without API key.")
+                    api_key = None
+                    has_retried_without_key = True
+                    continue
                 if e.response.status_code == 429:
                     if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
+                        retry_after = e.response.headers.get("Retry-After")
+                        wait_time = int(retry_after) if retry_after and retry_after.isdigit() else retry_delay * (2 ** attempt)
                         logger.warning(f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
                         time.sleep(wait_time)
                         continue
@@ -203,7 +210,13 @@ class SemanticSearcher(PaperSource):
         
         return {"error": "max_retries_exceeded", "message": "Maximum retry attempts exceeded"}
 
-    def search(self, query: str, year: Optional[str] = None, max_results: int = 10) -> List[Paper]:
+    def search(
+        self,
+        query: str,
+        year: Optional[str] = None,
+        max_results: int = 10,
+        fetch_details: bool = False,
+    ) -> List[Paper]:
         """
         Search Semantic Scholar
 
@@ -215,6 +228,9 @@ class SemanticSearcher(PaperSource):
             - Since year: "2010-"
             - Until year: "-2015"
             max_results: Maximum number of results to return
+            fetch_details: Backward-compatible flag retained for older callers.
+                Semantic search responses already include the fields this connector uses,
+                so the current implementation does not perform extra per-paper detail fetches.
 
         Returns:
             List[Paper]: List of paper objects
@@ -222,7 +238,18 @@ class SemanticSearcher(PaperSource):
         papers = []
 
         try:
-            fields = ["title", "abstract", "year", "citationCount", "authors", "url","publicationDate","externalIds","fieldsOfStudy"]
+            fields = [
+                "title",
+                "abstract",
+                "year",
+                "citationCount",
+                "authors",
+                "url",
+                "publicationDate",
+                "externalIds",
+                "fieldsOfStudy",
+                "openAccessPdf",
+            ]
             # Construct search parameters
             params = {
                 "query": query,
@@ -331,24 +358,22 @@ class SemanticSearcher(PaperSource):
             str: Extracted text from the PDF or error message
         """
         try:
-            # First get paper details to get the PDF URL
-            paper = self.get_paper_details(paper_id)
-            if not paper or not paper.pdf_url:
-                return f"Error: Could not find PDF URL for paper {paper_id}"
-
-            # Download the PDF
-            pdf_response = requests.get(paper.pdf_url, timeout=30)
-            pdf_response.raise_for_status()
-
-            # Create download directory if it doesn't exist
             os.makedirs(save_path, exist_ok=True)
-
-            # Save the PDF
             filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
             pdf_path = os.path.join(save_path, filename)
 
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
+            if not os.path.exists(pdf_path):
+                paper = self.get_paper_details(paper_id)
+                if not paper or not paper.pdf_url:
+                    return f"Error: Could not find PDF URL for paper {paper_id}"
+
+                pdf_response = requests.get(paper.pdf_url, timeout=30)
+                pdf_response.raise_for_status()
+
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_response.content)
+            else:
+                paper = self.get_paper_details(paper_id)
 
             # Extract text using PyPDF2
             reader = PdfReader(pdf_path)
@@ -372,10 +397,10 @@ class SemanticSearcher(PaperSource):
                 )
 
             # Add paper metadata at the beginning
-            metadata = f"Title: {paper.title}\n"
-            metadata += f"Authors: {', '.join(paper.authors)}\n"
-            metadata += f"Published Date: {paper.published_date}\n"
-            metadata += f"URL: {paper.url}\n"
+            metadata = f"Title: {paper.title if paper else paper_id}\n"
+            metadata += f"Authors: {', '.join(paper.authors) if paper else ''}\n"
+            metadata += f"Published Date: {paper.published_date if paper else ''}\n"
+            metadata += f"URL: {paper.url if paper else ''}\n"
             metadata += f"PDF downloaded to: {pdf_path}\n"
             metadata += "=" * 80 + "\n\n"
 
@@ -407,7 +432,18 @@ class SemanticSearcher(PaperSource):
             Paper: Detailed paper object with full metadata
         """
         try:
-            fields = ["title", "abstract", "year", "citationCount", "authors", "url","publicationDate","externalIds","fieldsOfStudy"]
+            fields = [
+                "title",
+                "abstract",
+                "year",
+                "citationCount",
+                "authors",
+                "url",
+                "publicationDate",
+                "externalIds",
+                "fieldsOfStudy",
+                "openAccessPdf",
+            ]
             params = {
                 "fields": ",".join(fields),
             }

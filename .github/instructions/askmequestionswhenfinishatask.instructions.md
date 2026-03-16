@@ -1,0 +1,1 @@
+After completing a task, ask me questions to ensure I understand the task and project context, and to clarify any uncertainties before moving on to the next steps. Use the askquestions tool to facilitate this process.

@@ -25,6 +25,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - [Environment Variables](#environment-variables-env-file)
 - [Contributing](#contributing)
 - [Demo](#demo)
+- [Star History](#star-history)
 - [License](#license)
 - [TODO](#todo)
 
@@ -530,6 +531,12 @@ We welcome contributions! Here's how to get started:
 - [√] ACM Digital Library (optional skeleton — activate with `ACM_API_KEY`)
 - [ ] Web of Science
 - [ ] Scopus
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=openags/paper-search-mcp&type=Date)](https://star-history.com/#openags/paper-search-mcp&Date)
 
 ---
 

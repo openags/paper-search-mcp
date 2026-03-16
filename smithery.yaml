@@ -3,11 +3,41 @@
 startCommand:
   type: stdio
   configSchema:
-    # JSON Schema defining the configuration options for the MCP.
     type: object
-    properties: {}
+    properties:
+      PAPER_SEARCH_MCP_UNPAYWALL_EMAIL:
+        type: string
+        description: "Email for Unpaywall API (required for Unpaywall source)"
+      PAPER_SEARCH_MCP_CORE_API_KEY:
+        type: string
+        description: "Free API key for CORE (recommended)"
+      PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY:
+        type: string
+        description: "API key for Semantic Scholar (optional, improves rate limits)"
+      PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN:
+        type: string
+        description: "Access token for Zenodo (optional)"
+      PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL:
+        type: string
+        description: "HTTP/HTTPS proxy URL for Google Scholar (optional)"
+      PAPER_SEARCH_MCP_IEEE_API_KEY:
+        type: string
+        description: "API key to enable IEEE Xplore (optional)"
+      PAPER_SEARCH_MCP_ACM_API_KEY:
+        type: string
+        description: "API key to enable ACM Digital Library (optional)"
   commandFunction:
-    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
     |-
-    (config) => ({ command: 'python', args: ['-m', 'paper_search_mcp.server'] })
-  exampleConfig: {}
+    (config) => {
+      const env = {};
+      if (config.PAPER_SEARCH_MCP_UNPAYWALL_EMAIL) env.PAPER_SEARCH_MCP_UNPAYWALL_EMAIL = config.PAPER_SEARCH_MCP_UNPAYWALL_EMAIL;
+      if (config.PAPER_SEARCH_MCP_CORE_API_KEY) env.PAPER_SEARCH_MCP_CORE_API_KEY = config.PAPER_SEARCH_MCP_CORE_API_KEY;
+      if (config.PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY) env.PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY = config.PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY;
+      if (config.PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN) env.PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN = config.PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN;
+      if (config.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL) env.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL = config.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL;
+      if (config.PAPER_SEARCH_MCP_IEEE_API_KEY) env.PAPER_SEARCH_MCP_IEEE_API_KEY = config.PAPER_SEARCH_MCP_IEEE_API_KEY;
+      if (config.PAPER_SEARCH_MCP_ACM_API_KEY) env.PAPER_SEARCH_MCP_ACM_API_KEY = config.PAPER_SEARCH_MCP_ACM_API_KEY;
+      return { command: 'paper-search-mcp', env };
+    }
+  exampleConfig:
+    PAPER_SEARCH_MCP_UNPAYWALL_EMAIL: "your@email.com"

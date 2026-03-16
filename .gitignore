@@ -171,3 +171,5 @@ cython_debug/
 
 ./downloads
 ./test_downloads
+downloads/
+test_downloads/

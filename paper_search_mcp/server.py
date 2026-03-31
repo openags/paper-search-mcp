@@ -1,7 +1,18 @@
 # paper_search_mcp/server.py
+import os
+import hmac
 from typing import List, Dict, Optional
+
 import httpx
+import uvicorn
+from dotenv import load_dotenv
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Mount, Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -13,6 +24,40 @@ from .academic_platforms.crossref import CrossRefSearcher
 
 # from .academic_platforms.hub import SciHubSearcher
 from .paper import Paper
+
+load_dotenv()
+
+BEARER_TOKEN = os.environ.get("BEARER_TOKEN", "")
+if not BEARER_TOKEN:
+    raise RuntimeError("BEARER_TOKEN environment variable must be set")
+
+DEFAULT_DOWNLOAD_PATH = os.environ.get("DOWNLOAD_PATH", "./downloads")
+MCP_MESSAGES_PATH = os.environ.get("MCP_MESSAGES_PATH", "/messages/")
+
+LARAVEL_INGEST_URL = os.environ.get("LARAVEL_INGEST_URL", "")
+LARAVEL_MCP_TOKEN = os.environ.get("LARAVEL_MCP_TOKEN", "")
+
+
+class BearerAuthMiddleware:
+    """ASGI middleware that validates Bearer token on every HTTP request."""
+
+    def __init__(self, app: ASGIApp, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_value = headers.get(b"authorization", b"").decode()
+            if (
+                not auth_value.startswith("Bearer ")
+                or not hmac.compare_digest(auth_value[7:], self.token)
+            ):
+                response = Response("Unauthorized", status_code=401)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
@@ -130,7 +175,7 @@ async def search_iacr(
 
 
 @mcp.tool()
-async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_arxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of an arXiv paper.
 
     Args:
@@ -144,7 +189,7 @@ async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_pubmed(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to download PDF of a PubMed paper.
 
     Args:
@@ -160,7 +205,7 @@ async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_biorxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a bioRxiv paper.
 
     Args:
@@ -173,7 +218,7 @@ async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str
 
 
 @mcp.tool()
-async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_medrxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a medRxiv paper.
 
     Args:
@@ -186,7 +231,7 @@ async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str
 
 
 @mcp.tool()
-async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_iacr(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of an IACR ePrint paper.
 
     Args:
@@ -199,7 +244,7 @@ async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_arxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from an arXiv paper PDF.
 
     Args:
@@ -216,7 +261,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str
 
 
 @mcp.tool()
-async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_pubmed_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a PubMed paper.
 
     Args:
@@ -229,7 +274,7 @@ async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> st
 
 
 @mcp.tool()
-async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_biorxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a bioRxiv paper PDF.
 
     Args:
@@ -246,7 +291,7 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
 
 
 @mcp.tool()
-async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_medrxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a medRxiv paper PDF.
 
     Args:
@@ -263,7 +308,7 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
 
 
 @mcp.tool()
-async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_iacr_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from an IACR ePrint paper PDF.
 
     Args:
@@ -298,7 +343,7 @@ async def search_semantic(query: str, year: Optional[str] = None, max_results: i
 
 
 @mcp.tool()
-async def download_semantic(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_semantic(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a Semantic Scholar paper.    
 
     Args:
@@ -319,7 +364,7 @@ async def download_semantic(paper_id: str, save_path: str = "./downloads") -> st
 
 
 @mcp.tool()
-async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_semantic_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a Semantic Scholar paper. 
 
     Args:
@@ -394,7 +439,7 @@ async def get_crossref_paper_by_doi(doi: str) -> Dict:
 
 
 @mcp.tool()
-async def download_crossref(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_crossref(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to download PDF of a CrossRef paper.
 
     Args:
@@ -414,7 +459,7 @@ async def download_crossref(paper_id: str, save_path: str = "./downloads") -> st
 
 
 @mcp.tool()
-async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_crossref_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to read and extract text content from a CrossRef paper.
 
     Args:
@@ -430,5 +475,148 @@ async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> 
     return crossref_searcher.read_paper(paper_id, save_path)
 
 
+_SEARCHER_MAP = {
+    "arxiv": arxiv_searcher,
+    "pubmed": pubmed_searcher,
+    "biorxiv": biorxiv_searcher,
+    "medrxiv": medrxiv_searcher,
+    "iacr": iacr_searcher,
+    "semantic": semantic_searcher,
+    "crossref": crossref_searcher,
+}
+
+
+@mcp.tool()
+async def ingest_paper(
+    paper_id: str,
+    source: str,
+    projekt_id: str,
+    save_path: str = DEFAULT_DOWNLOAD_PATH,
+) -> Dict:
+    """Download and ingest a paper into the RAG vector store, linked to a project.
+
+    Args:
+        paper_id: Platform-specific paper ID (e.g., arXiv '2106.12345', DOI, PMID).
+        source: Platform name: 'arxiv', 'pubmed', 'biorxiv', 'medrxiv', 'iacr', 'semantic', 'crossref'.
+        projekt_id: UUID of the review project to associate this paper with.
+        save_path: Directory where the PDF is/will be saved (default: './downloads').
+    Returns:
+        Dict with 'status' key indicating 'queued' or an error message.
+    """
+    if not LARAVEL_INGEST_URL or not LARAVEL_MCP_TOKEN:
+        return {"error": "LARAVEL_INGEST_URL or LARAVEL_MCP_TOKEN not configured"}
+
+    searcher = _SEARCHER_MAP.get(source)
+    if searcher is None:
+        return {"error": f"Unknown source '{source}'. Valid: {list(_SEARCHER_MAP.keys())}"}
+
+    try:
+        text = searcher.read_paper(paper_id, save_path)
+    except Exception as e:
+        return {"error": f"Failed to read paper: {e}"}
+
+    try:
+        papers = searcher.search(paper_id, max_results=1)
+        title = papers[0].title if papers else paper_id
+    except Exception:
+        title = paper_id
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            LARAVEL_INGEST_URL,
+            json={
+                "paper_id": paper_id,
+                "source": source,
+                "title": title,
+                "text": text,
+                "projekt_id": projekt_id,
+            },
+            headers={"Authorization": f"Bearer {LARAVEL_MCP_TOKEN}"},
+        )
+
+    if response.is_error:
+        return {"error": f"Ingest endpoint returned {response.status_code}: {response.text}"}
+
+    return response.json()
+
+
+@mcp.tool()
+async def search_rag_papers(
+    query: str,
+    projekt_id: Optional[str] = None,
+    max_results: int = 5,
+) -> List[Dict]:
+    """Semantic search over ingested papers in the RAG vector store.
+
+    Args:
+        query: Natural language query (e.g., 'CRISPR off-target effects').
+        projekt_id: Optional UUID to restrict search to a specific review project.
+                    Omit for a global search across all ingested papers.
+        max_results: Number of chunks to return (default: 5, max: 50).
+    Returns:
+        List of matching chunks with 'paper_id', 'title', 'source', 'chunk_index',
+        'text_chunk', 'similarity', and 'metadata'.
+    """
+    if not LARAVEL_INGEST_URL or not LARAVEL_MCP_TOKEN:
+        return [{"error": "LARAVEL_INGEST_URL or LARAVEL_MCP_TOKEN not configured"}]
+
+    base_url = LARAVEL_INGEST_URL.rsplit("/ingest", 1)[0]
+    params: Dict = {"q": query, "max_results": max_results}
+    if projekt_id:
+        params["projekt_id"] = projekt_id
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{base_url}/rag-search",
+            params=params,
+            headers={"Authorization": f"Bearer {LARAVEL_MCP_TOKEN}"},
+        )
+
+    if response.is_error:
+        return [{"error": f"Search endpoint returned {response.status_code}: {response.text}"}]
+
+    return response.json()
+
+
+def create_app() -> Starlette:
+    """Create a Starlette ASGI app with Bearer auth and SSE transport."""
+    # Keep the endpoint configurable so reverse proxies can avoid path collisions.
+    message_path = MCP_MESSAGES_PATH
+    if not message_path.startswith("/"):
+        message_path = f"/{message_path}"
+    if not message_path.endswith("/"):
+        message_path = f"{message_path}/"
+
+    sse = SseServerTransport(message_path)
+
+    async def handle_sse(request: Request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp._mcp_server.run(
+                streams[0],
+                streams[1],
+                mcp._mcp_server.create_initialization_options(),
+            )
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount(message_path, app=sse.handle_post_message),
+        ],
+    )
+
+    return BearerAuthMiddleware(app, BEARER_TOKEN)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import anyio
+
+    async def main():
+        mcp._setup_handlers()
+        app = create_app()
+        config = uvicorn.Config(app, host="0.0.0.0", port=8089)
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    anyio.run(main)

@@ -13,7 +13,8 @@ COPY . .
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir .
 
-# Expose port if necessary (MCP servers use stdio; no port to expose)
+# Expose the MCP server port
+EXPOSE 8089
 
-# Command to run the MCP server
+# Command to run the MCP server with SSE transport and Bearer auth
 CMD ["python", "-m", "paper_search_mcp.server"]

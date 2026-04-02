@@ -14,6 +14,7 @@ from starlette.responses import Response
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -496,7 +497,7 @@ async def download_arxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) 
 
     Args:
         paper_id: arXiv paper ID (e.g., '2106.12345').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
@@ -509,10 +510,11 @@ async def download_pubmed(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH)
 
     Args:
         paper_id: PubMed ID (PMID).
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         str: Message indicating that direct PDF download is not supported.
     """
+    os.makedirs(save_path, exist_ok=True)
     try:
         return pubmed_searcher.download_pdf(paper_id, save_path)
     except NotImplementedError as e:
@@ -525,10 +527,11 @@ async def download_biorxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH
 
     Args:
         paper_id: bioRxiv DOI.
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return biorxiv_searcher.download_pdf(paper_id, save_path)
 
 
@@ -538,10 +541,11 @@ async def download_medrxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH
 
     Args:
         paper_id: medRxiv DOI.
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return medrxiv_searcher.download_pdf(paper_id, save_path)
 
 
@@ -551,10 +555,11 @@ async def download_iacr(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -
 
     Args:
         paper_id: IACR paper ID (e.g., '2009/101').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return iacr_searcher.download_pdf(paper_id, save_path)
 
 
@@ -564,7 +569,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH
 
     Args:
         paper_id: arXiv paper ID (e.g., '2106.12345').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -594,7 +599,7 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PA
 
     Args:
         paper_id: bioRxiv DOI.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -611,7 +616,7 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PA
 
     Args:
         paper_id: medRxiv DOI.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -628,7 +633,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH)
 
     Args:
         paper_id: IACR paper ID (e.g., '2009/101').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -671,10 +676,11 @@ async def download_semantic(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PAT
             - PMID:<id> (e.g., "PMID:19872477")
             - PMCID:<id> (e.g., "PMCID:2323736")
             - URL:<url> (e.g., "URL:https://arxiv.org/abs/2106.15928v1")
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
-    """ 
+    """
+    os.makedirs(save_path, exist_ok=True)
     return semantic_searcher.download_pdf(paper_id, save_path)
 
 
@@ -692,7 +698,7 @@ async def read_semantic_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_P
             - PMID:<id> (e.g., "PMID:19872477")
             - PMCID:<id> (e.g., "PMCID:2323736")
             - URL:<url> (e.g., "URL:https://arxiv.org/abs/2106.15928v1")
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -754,7 +760,7 @@ async def download_crossref(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PAT
 
     Args:
         paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         str: Message indicating that direct PDF download is not supported.
         
@@ -889,7 +895,7 @@ async def read_crossref_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_P
 
     Args:
         paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: Message indicating that direct paper reading is not supported.
         
@@ -1034,5 +1040,21 @@ def create_app() -> Starlette:
     return BearerAuthMiddleware(app, BEARER_TOKEN)
 
 
+def main():
+    import sys
+
+    transport = os.getenv("MCP_TRANSPORT", "sse")
+    if len(sys.argv) > 1 and sys.argv[1] == "stdio":
+        transport = "stdio"
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        host = os.getenv("PAPERSEARCH_HOST", "0.0.0.0")
+        port = int(os.getenv("PAPERSEARCH_PORT", "8089"))
+        uvicorn.run(create_app(), host=host, port=port)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    main()
+

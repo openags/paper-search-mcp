@@ -35,7 +35,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "python-dotenv>=1.0.0",
     "uvicorn>=0.30.0",
-    "starlette",
+    "starlette>=0.38.0",
 ]
 
 [project.urls]

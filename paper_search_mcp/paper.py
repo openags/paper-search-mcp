@@ -12,18 +12,18 @@ class Paper:
     authors: List[str]         # List of author names
     abstract: str              # Abstract text
     doi: str                   # Digital Object Identifier
-    published_date: datetime   # Publication date
+    published_date: Optional[datetime]   # Publication date
     pdf_url: str               # Direct PDF link
     url: str                   # URL to paper page
     source: str                # Source platform (e.g., 'arxiv', 'pubmed')
 
     # 可选字段
-    updated_date: Optional[datetime] = None    # Last updated date
-    categories: List[str] = None               # Subject categories
-    keywords: List[str] = None                 # Keywords
-    citations: int = 0                         # Citation count
-    references: Optional[List[str]] = None     # List of reference IDs/DOIs
-    extra: Optional[Dict] = None               # Source-specific extra metadata
+    updated_date: Optional[datetime] = None        # Last updated date
+    categories: Optional[List[str]] = None         # Subject categories
+    keywords: Optional[List[str]] = None           # Keywords
+    citations: int = 0                             # Citation count
+    references: Optional[List[str]] = None         # List of reference IDs/DOIs
+    extra: Optional[Dict] = None                   # Source-specific extra metadata
 
     def __post_init__(self):
         """Post-initialization to handle default values"""

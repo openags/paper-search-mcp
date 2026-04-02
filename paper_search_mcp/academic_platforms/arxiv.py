@@ -3,33 +3,48 @@ from typing import List
 from datetime import datetime
 import requests
 import feedparser
+import time
 from ..paper import Paper
+from ..utils import extract_doi
+from .base import PaperSource
 from PyPDF2 import PdfReader
 import os
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
 
 class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers"""
     BASE_URL = "http://export.arxiv.org/api/query"
 
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
+            'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
+        })
+
     def search(self, query: str, max_results: int = 10) -> List[Paper]:
         params = {
-            'search_query': query,
+            'search_query': f'all:{query}',
             'max_results': max_results,
             'sortBy': 'submittedDate',
             'sortOrder': 'descending'
         }
-        response = requests.get(self.BASE_URL, params=params)
+        response = None
+        for attempt in range(3):
+            try:
+                response = self.session.get(self.BASE_URL, params=params, timeout=30)
+            except requests.RequestException:
+                time.sleep((attempt + 1) * 1.5)
+                continue
+            if response.status_code == 200:
+                break
+            if response.status_code in (429, 500, 502, 503, 504):
+                time.sleep((attempt + 1) * 1.5)
+                continue
+            break
+
+        if response is None or response.status_code != 200:
+            return []
+
         feed = feedparser.parse(response.content)
         papers = []
         for entry in feed.entries:
@@ -38,6 +53,13 @@ class ArxivSearcher(PaperSource):
                 published = datetime.strptime(entry.published, '%Y-%m-%dT%H:%M:%SZ')
                 updated = datetime.strptime(entry.updated, '%Y-%m-%dT%H:%M:%SZ')
                 pdf_url = next((link.href for link in entry.links if link.type == 'application/pdf'), '')
+                
+                # Try to extract DOI from entry.doi or links or summary
+                doi = entry.get('doi', '') or extract_doi(entry.summary) or extract_doi(entry.id)
+                for link in entry.links:
+                    if link.get('title') == 'doi':
+                        doi = doi or extract_doi(link.href)
+
                 papers.append(Paper(
                     paper_id=entry.id.split('/')[-1],
                     title=entry.title,
@@ -50,7 +72,7 @@ class ArxivSearcher(PaperSource):
                     source='arxiv',
                     categories=[tag.term for tag in entry.tags],
                     keywords=[],
-                    doi=entry.get('doi', '')
+                    doi=doi
                 ))
             except Exception as e:
                 print(f"Error parsing arXiv entry: {e}")
@@ -59,6 +81,7 @@ class ArxivSearcher(PaperSource):
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"
         response = requests.get(pdf_url)
+        os.makedirs(save_path, exist_ok=True)
         output_file = f"{save_path}/{paper_id}.pdf"
         with open(output_file, 'wb') as f:
             f.write(response.content)

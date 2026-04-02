@@ -4,22 +4,14 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import random
+import re
 from ..paper import Paper
+from ..utils import extract_doi
+from ..config import get_env
+from .base import PaperSource
 import logging
 
 logger = logging.getLogger(__name__)
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-    
 
 class GoogleScholarSearcher(PaperSource):
     """Custom implementation of Google Scholar paper search"""
@@ -31,7 +23,10 @@ class GoogleScholarSearcher(PaperSource):
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
     ]
 
-    def __init__(self):
+    def __init__(self, max_retries: int = 3, retry_delay: float = 2.0, proxy_url: Optional[str] = None):
+        self.max_retries = max(1, max_retries)
+        self.retry_delay = max(0.5, retry_delay)
+        self.proxy_url = (proxy_url or get_env("GOOGLE_SCHOLAR_PROXY_URL", "")).strip()
         self._setup_session()
 
     def _setup_session(self):
@@ -42,6 +37,23 @@ class GoogleScholarSearcher(PaperSource):
             'Accept': 'text/html,application/xhtml+xml',
             'Accept-Language': 'en-US,en;q=0.9'
         })
+
+        if self.proxy_url:
+            self.session.proxies.update({
+                'http': self.proxy_url,
+                'https': self.proxy_url
+            })
+
+    def _rotate_user_agent(self):
+        self.session.headers.update({'User-Agent': random.choice(self.BROWSERS)})
+
+    @staticmethod
+    def _is_captcha_page(soup: BeautifulSoup) -> bool:
+        return bool(
+            soup.find('form', {'id': 'gs_captcha_f'})
+            or soup.find('input', {'name': 'captcha'})
+            or 'please show you\'re not a robot' in soup.get_text(' ', strip=True).lower()
+        )
 
     def _extract_year(self, text: str) -> Optional[int]:
         """Extract year from publication info"""
@@ -70,6 +82,12 @@ class GoogleScholarSearcher(PaperSource):
             info_text = info_elem.get_text()
             authors = [a.strip() for a in info_text.split('-')[0].split(',')]
             year = self._extract_year(info_text)
+            doi = (
+                extract_doi(url)
+                or extract_doi(title)
+                or extract_doi(info_text)
+                or extract_doi(abstract_elem.get_text() if abstract_elem else "")
+            )
 
             # Create paper object
             return Paper(
@@ -84,7 +102,7 @@ class GoogleScholarSearcher(PaperSource):
                 source="google_scholar",
                 categories=[],
                 keywords=[],
-                doi="",
+                doi=doi,
                 citations=0
             )
         except Exception as e:
@@ -109,16 +127,46 @@ class GoogleScholarSearcher(PaperSource):
                     'as_sdt': '0,5'  # Include articles and citations
                 }
 
-                # Make request with random delay
-                time.sleep(random.uniform(1.0, 3.0))
-                response = self.session.get(self.SCHOLAR_URL, params=params)
-                
-                if response.status_code != 200:
-                    logger.error(f"Search failed with status {response.status_code}")
+                response = None
+                for attempt in range(self.max_retries):
+                    self._rotate_user_agent()
+                    time.sleep(random.uniform(1.0, 2.5))
+
+                    response = self.session.get(self.SCHOLAR_URL, params=params, timeout=30)
+                    if response.status_code == 200:
+                        break
+
+                    if response.status_code in (403, 429, 503):
+                        wait_time = self.retry_delay * (2 ** attempt)
+                        wait_time += random.uniform(0, 0.5)
+                        logger.warning(
+                            "Google Scholar returned %s (attempt %s/%s). Backing off %.1fs",
+                            response.status_code,
+                            attempt + 1,
+                            self.max_retries,
+                            wait_time,
+                        )
+                        time.sleep(wait_time)
+                        continue
+
+                    logger.error("Search failed with non-retryable status %s", response.status_code)
+                    break
+
+                if response is None or response.status_code != 200:
+                    logger.error("Google Scholar search aborted after retries")
                     break
 
                 # Parse results
                 soup = BeautifulSoup(response.text, 'html.parser')
+
+                if self._is_captcha_page(soup):
+                    logger.warning(
+                        "Google Scholar returned a bot-detection/captcha page. "
+                        "Set PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL/GOOGLE_SCHOLAR_PROXY_URL "
+                        "or reduce request frequency."
+                    )
+                    break
+
                 results = soup.find_all('div', class_='gs_ri')
 
                 if not results:

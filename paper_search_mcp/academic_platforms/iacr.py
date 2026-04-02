@@ -5,24 +5,13 @@ from bs4 import BeautifulSoup
 import time
 import random
 from ..paper import Paper
+from ..utils import extract_doi
+from .base import PaperSource
 import logging
 from PyPDF2 import PdfReader
 import os
 
 logger = logging.getLogger(__name__)
-
-
-class PaperSource:
-    """Abstract base class for paper sources"""
-
-    def search(self, query: str, **kwargs) -> List[Paper]:
-        raise NotImplementedError
-
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
-
-    def read_paper(self, paper_id: str, save_path: str) -> str:
-        raise NotImplementedError
 
 
 class IACRSearcher(PaperSource):
@@ -142,7 +131,7 @@ class IACRSearcher(PaperSource):
                 source="iacr",
                 categories=categories,
                 keywords=[],
-                doi="",
+                doi=extract_doi(abstract),
                 citations=0,
             )
 
@@ -220,6 +209,7 @@ class IACRSearcher(PaperSource):
 
             if response.status_code == 200:
                 filename = f"{save_path}/iacr_{paper_id.replace('/', '_')}.pdf"
+                os.makedirs(save_path, exist_ok=True)
                 with open(filename, "wb") as f:
                     f.write(response.content)
                 return filename
@@ -424,7 +414,7 @@ class IACRSearcher(PaperSource):
                 source="iacr",
                 categories=[],
                 keywords=keywords,
-                doi="",
+                doi=extract_doi(abstract) or extract_doi(publication_info),
                 citations=0,
                 extra={"publication_info": publication_info, "history": history},
             )

@@ -7,7 +7,7 @@ import argparse
 import asyncio
 import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .config import get_env
 from .academic_platforms.arxiv import ArxivSearcher
@@ -22,7 +22,6 @@ from .academic_platforms.openalex import OpenAlexSearcher
 from .academic_platforms.pmc import PMCSearcher
 from .academic_platforms.core import CORESearcher
 from .academic_platforms.europepmc import EuropePMCSearcher
-from .academic_platforms.sci_hub import SciHubFetcher
 from .academic_platforms.dblp import DBLPSearcher
 from .academic_platforms.openaire import OpenAiresearcher
 from .academic_platforms.citeseerx import CiteSeerXSearcher
@@ -32,7 +31,6 @@ from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
-from .utils import extract_doi
 
 # ---------------------------------------------------------------------------
 # Searcher registry
@@ -134,12 +132,12 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
 # Commands
 # ---------------------------------------------------------------------------
 
-async def cmd_search(args: argparse.Namespace) -> None:
+async def cmd_search(args: argparse.Namespace) -> int:
     _init_searchers()
     selected = _parse_sources(args.sources)
     if not selected:
         print(json.dumps({"error": "No valid sources selected", "available": sorted(SEARCHERS.keys())}))
-        return
+        return 1
 
     tasks = {}
     for src in selected:
@@ -178,43 +176,49 @@ async def cmd_search(args: argparse.Namespace) -> None:
         "papers": deduped,
     }
     print(json.dumps(output, indent=2, default=str))
+    return 0
 
 
-async def cmd_download(args: argparse.Namespace) -> None:
+async def cmd_download(args: argparse.Namespace) -> int:
     _init_searchers()
     source = args.source.strip().lower()
 
     if source not in SEARCHERS:
         print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
-        return
+        return 1
 
     searcher = SEARCHERS[source]
     try:
         result = await asyncio.to_thread(searcher.download_pdf, args.paper_id, args.save_path)
         print(json.dumps({"status": "ok", "path": result}))
+        return 0
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
+        return 1
 
 
-async def cmd_read(args: argparse.Namespace) -> None:
+async def cmd_read(args: argparse.Namespace) -> int:
     _init_searchers()
     source = args.source.strip().lower()
 
     if source not in SEARCHERS:
         print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
-        return
+        return 1
 
     searcher = SEARCHERS[source]
     try:
         text = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path)
         print(text)
+        return 0
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
+        return 1
 
 
-async def cmd_sources(args: argparse.Namespace) -> None:
+async def cmd_sources(args: argparse.Namespace) -> int:
     _init_searchers()
     print(json.dumps({"sources": sorted(SEARCHERS.keys())}, indent=2))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +270,8 @@ def main() -> None:
         "sources": cmd_sources,
     }
 
-    asyncio.run(dispatch[args.command](args))
+    exit_code = asyncio.run(dispatch[args.command](args))
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

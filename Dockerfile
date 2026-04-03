@@ -15,7 +15,7 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin/paper-search-mcp /usr/local/bin/paper-search-mcp
 
-# Environment variables (override at runtime with -e)
+# Environment variables — set at runtime via docker-compose, not here
 ENV PAPER_SEARCH_MCP_UNPAYWALL_EMAIL=""
 ENV PAPER_SEARCH_MCP_CORE_API_KEY=""
 ENV PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY=""

@@ -15,6 +15,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - [Source Strategy](#source-strategy)
 - [Sci-Hub Notice](#sci-hub-notice)
 - [Installation](#installation)
+  - [Claude Code (Skill)](#claude-code-skill--recommended-for-claude-code-users)
   - [Method 1 — Smithery](#method-1--smithery-one-command-recommended-for-claude-desktop)
   - [Method 2 — uvx](#method-2--uvx-no-install-always-latest)
   - [Method 3 — uv](#method-3--uv-persistent-install)
@@ -33,7 +34,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## Overview
 
-`paper-search-mcp` is a Python-based MCP server that enables users to search and download academic papers from various platforms. It provides tools for searching papers (e.g., `search_arxiv`) and downloading PDFs (e.g., `download_arxiv`), making it ideal for researchers and AI-driven workflows. Built with the MCP Python SDK, it integrates seamlessly with LLM clients like Claude Desktop.
+`paper-search-mcp` is a Python-based tool for searching and downloading academic papers from various platforms. It provides tools for searching papers, downloading PDFs, and extracting text, making it ideal for researchers and AI-driven workflows. It can be used as an MCP server (for Claude Desktop and other MCP clients) or as a Claude Code skill with a CLI interface.
 
 ## Project Principles
 
@@ -192,7 +193,46 @@ Sci-Hub support can remain available as an optional connector for users who expl
 
 Choose the method that best fits your workflow. All methods support the same [optional API keys](#credential--api-key-requirements).
 
-> **Config file locations**
+---
+
+### Claude Code (Skill) — recommended for Claude Code users
+
+Install as a Claude Code skill instead of an MCP server. This gives Claude automatic access to paper search when you mention finding papers, academic literature, etc. — no MCP configuration needed.
+
+**Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
+
+**Step 1 — Clone the repo:**
+
+```bash
+git clone https://github.com/openags/paper-search-mcp.git ~/paper-search-mcp
+```
+
+**Step 2 — Install the skill:**
+
+```bash
+mkdir -p ~/.claude/skills/paper-search
+cp ~/paper-search-mcp/claude-code/SKILL.md ~/.claude/skills/paper-search/SKILL.md
+```
+
+**Step 3 — Update the repo path in the skill:**
+
+Edit `~/.claude/skills/paper-search/SKILL.md` and replace every `<REPO_PATH>` with the absolute path to your clone (e.g. `/Users/yourname/paper-search-mcp`).
+
+**Step 4 (optional) — Configure API keys:**
+
+Create a `.env` file in the repo root for optional API keys (see [Environment Variables](#environment-variables-env-file)).
+
+**That's it.** Next time you start Claude Code, just ask it to find papers — the skill activates automatically. For example:
+
+- "Find me recent papers on CRISPR base editing"
+- "Search arxiv and semantic scholar for transformer attention mechanisms"
+- "Download the PDF for arxiv paper 2106.12345"
+
+The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
+
+---
+
+> **MCP Server Config file locations** (for methods below)
 > - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 > - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 > - **Linux**: `~/.config/Claude/claude_desktop_config.json`

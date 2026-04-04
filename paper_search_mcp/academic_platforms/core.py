@@ -10,7 +10,7 @@ from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
 from .base import PaperSource
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
 

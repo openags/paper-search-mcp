@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import random
+from urllib.parse import urlparse
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
@@ -66,11 +67,19 @@ class SemanticSearcher(PaperSource):
         if not all_urls:
             return ""
         
-        doi_urls = [url for url in all_urls if 'doi.org' in url]
+        def _host_matches(url: str, domain: str) -> bool:
+            try:
+                host = (urlparse(url).hostname or "").lower()
+            except ValueError:
+                return False
+            domain = domain.lower()
+            return host == domain or host.endswith(f".{domain}")
+
+        doi_urls = [url for url in all_urls if _host_matches(url, "doi.org")]
         if doi_urls:
             return doi_urls[0]
         
-        non_unpaywall_urls = [url for url in all_urls if 'unpaywall.org' not in url]
+        non_unpaywall_urls = [url for url in all_urls if not _host_matches(url, "unpaywall.org")]
         if non_unpaywall_urls:
             url = non_unpaywall_urls[0]
             if 'arxiv.org/abs/' in url:

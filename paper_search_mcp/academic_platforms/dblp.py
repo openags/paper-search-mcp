@@ -5,6 +5,7 @@ import requests
 import logging
 import xml.etree.ElementTree as ET
 import time
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from ..paper import Paper
@@ -257,9 +258,13 @@ class DBLPSearcher(PaperSource):
             ee_elems = info.findall('ee')
             for ee_elem in ee_elems:
                 ee_text = ee_elem.text.strip() if ee_elem.text else ""
-                if 'doi.org' in ee_text:
-                    doi = ee_text.split('doi.org/')[-1]
-                    break
+                parsed_ee = urlparse(ee_text)
+                ee_host = (parsed_ee.hostname or "").lower()
+                if ee_host in {"doi.org", "dx.doi.org"}:
+                    extracted_doi = parsed_ee.path.lstrip("/")
+                    if extracted_doi:
+                        doi = extracted_doi
+                        break
                 elif ee_text.startswith('10.'):
                     doi = ee_text
                     break

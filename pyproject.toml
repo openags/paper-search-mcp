@@ -29,7 +29,7 @@ dependencies = [
     "feedparser",
     "fastmcp",
     "mcp[cli]>=1.6.0",
-    "PyPDF2>=3.0.0",
+    "pypdf>=3.9.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
     "httpx[socks]>=0.28.1",

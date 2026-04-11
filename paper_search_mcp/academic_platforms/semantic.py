@@ -10,7 +10,7 @@ from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
 import logging
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import re
 from ..config import get_env
 
@@ -384,7 +384,7 @@ class SemanticSearcher(PaperSource):
             else:
                 paper = self.get_paper_details(paper_id)
 
-            # Extract text using PyPDF2
+            # Extract text using pypdf
             reader = PdfReader(pdf_path)
             text = ""
 

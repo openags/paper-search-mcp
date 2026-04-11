@@ -8,7 +8,7 @@ from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
 import logging
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import os
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,7 @@ class IACRSearcher(PaperSource):
             with open(pdf_path, "wb") as f:
                 f.write(pdf_response.content)
 
-            # Extract text using PyPDF2
+            # Extract text using pypdf
             reader = PdfReader(pdf_path)
             text = ""
 

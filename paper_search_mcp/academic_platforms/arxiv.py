@@ -7,7 +7,7 @@ import time
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 import os
 
 class ArxivSearcher(PaperSource):

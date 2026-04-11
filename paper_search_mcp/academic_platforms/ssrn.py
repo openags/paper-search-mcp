@@ -168,7 +168,7 @@ class SSRNSearcher(PaperSource):
             return pdf_path
 
         try:
-            from PyPDF2 import PdfReader
+            from pypdf import PdfReader
 
             reader = PdfReader(pdf_path)
             text_parts = []

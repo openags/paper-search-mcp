@@ -431,7 +431,7 @@ class DOAJSearcher(PaperSource):
             pdf_path = self.download_pdf(paper_id, save_path)
 
             # Extract text from PDF
-            from PyPDF2 import PdfReader
+            from pypdf import PdfReader
             reader = PdfReader(pdf_path)
             text = ""
             for page in reader.pages:

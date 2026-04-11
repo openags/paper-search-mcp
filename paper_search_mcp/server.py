@@ -1012,6 +1012,8 @@ async def search_rag_papers(
 
 def create_app() -> Starlette:
     """Create a Starlette ASGI app with Bearer auth and SSE transport."""
+    import json as _json
+
     # Keep the endpoint configurable so reverse proxies can avoid path collisions.
     message_path = MCP_MESSAGES_PATH
     if not message_path.startswith("/"):
@@ -1031,9 +1033,57 @@ def create_app() -> Starlette:
                 mcp._mcp_server.create_initialization_options(),
             )
 
+    async def handle_rest_search(request: Request):
+        """Plain REST endpoint — callable from PHP without MCP protocol.
+
+        POST /search   body: {"query": "...", "sources": [...], "max_results_per_source": 5}
+        GET  /search   params: query=...&sources=pubmed,arxiv&max_results_per_source=5
+        """
+        try:
+            if request.method == "POST":
+                body = await request.body()
+                params = _json.loads(body) if body else {}
+            else:
+                params = dict(request.query_params)
+
+            query = str(params.get("query", "")).strip()
+            if not query:
+                return Response(
+                    _json.dumps({"error": "query parameter required"}),
+                    media_type="application/json",
+                    status_code=400,
+                )
+
+            raw_sources = params.get("sources", "pubmed,arxiv,semantic")
+            if isinstance(raw_sources, list):
+                raw_sources = ",".join(raw_sources)
+
+            max_results = int(params.get("max_results_per_source", 5))
+            year = params.get("year") or None
+
+            results = await search_papers(
+                query=query,
+                max_results_per_source=max_results,
+                sources=raw_sources,
+                year=year,
+            )
+
+            return Response(
+                _json.dumps(results, default=str, ensure_ascii=False),
+                media_type="application/json",
+            )
+        except Exception as exc:
+            logging.exception("REST /search error")
+            return Response(
+                _json.dumps({"error": str(exc)}),
+                media_type="application/json",
+                status_code=500,
+            )
+
     app = Starlette(
         routes=[
             Route("/sse", endpoint=handle_sse),
+            Route("/search", endpoint=handle_rest_search, methods=["GET", "POST"]),
             Mount(message_path, app=sse.handle_post_message),
         ],
     )

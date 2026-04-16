@@ -76,6 +76,18 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
     return [paper.to_dict() for paper in papers]
 
 
+SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS = 45
+
+
+async def _run_search_with_timeout(source_name: str, search_task):
+    try:
+        return await asyncio.wait_for(search_task, timeout=SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"search for source '{source_name}' timed out after {SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS} seconds"
+        ) from exc
+
+
 ALL_SOURCES = [
     "arxiv",
     "pubmed",
@@ -272,53 +284,65 @@ async def search_papers(
     task_map = {}
     for source in selected_sources:
         if source == "arxiv":
-            task_map[source] = search_arxiv(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_arxiv(query, max_results_per_source))
         elif source == "pubmed":
-            task_map[source] = search_pubmed(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_pubmed(query, max_results_per_source))
         elif source == "biorxiv":
-            task_map[source] = search_biorxiv(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_biorxiv(query, max_results_per_source))
         elif source == "medrxiv":
-            task_map[source] = search_medrxiv(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_medrxiv(query, max_results_per_source))
         elif source == "google_scholar":
-            task_map[source] = search_google_scholar(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_google_scholar(query, max_results_per_source))
         elif source == "iacr":
-            task_map[source] = search_iacr(query, max_results_per_source, fetch_details=False)
+            task_map[source] = _run_search_with_timeout(
+                source,
+                search_iacr(query, max_results_per_source, fetch_details=False),
+            )
         elif source == "semantic":
-            task_map[source] = search_semantic(query, year=year, max_results=max_results_per_source)
+            task_map[source] = _run_search_with_timeout(
+                source,
+                search_semantic(query, year=year, max_results=max_results_per_source),
+            )
         elif source == "crossref":
-            task_map[source] = search_crossref(query, max_results=max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_crossref(query, max_results=max_results_per_source))
         elif source == "openalex":
-            task_map[source] = search_openalex(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_openalex(query, max_results_per_source))
         elif source == "pmc":
-            task_map[source] = search_pmc(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_pmc(query, max_results_per_source))
         elif source == "core":
-            task_map[source] = search_core(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_core(query, max_results_per_source))
         elif source == "europepmc":
-            task_map[source] = search_europepmc(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_europepmc(query, max_results_per_source))
         elif source == "dblp":
-            task_map[source] = search_dblp(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_dblp(query, max_results_per_source))
         elif source == "openaire":
-            task_map[source] = search_openaire(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_openaire(query, max_results_per_source))
         elif source == "citeseerx":
-            task_map[source] = search_citeseerx(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_citeseerx(query, max_results_per_source))
         elif source == "doaj":
-            task_map[source] = search_doaj(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_doaj(query, max_results_per_source))
         elif source == "base":
-            task_map[source] = search_base(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_base(query, max_results_per_source))
         elif source == "zenodo":
-            task_map[source] = search_zenodo(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_zenodo(query, max_results_per_source))
         elif source == "hal":
-            task_map[source] = search_hal(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_hal(query, max_results_per_source))
         elif source == "ssrn":
-            task_map[source] = search_ssrn(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_ssrn(query, max_results_per_source))
         elif source == "unpaywall":
-            task_map[source] = search_unpaywall(query, max_results_per_source)
+            task_map[source] = _run_search_with_timeout(source, search_unpaywall(query, max_results_per_source))
         elif source == "ieee":
             if ieee_searcher is not None:
-                task_map[source] = async_search(ieee_searcher, query, max_results_per_source)
+                task_map[source] = _run_search_with_timeout(
+                    source,
+                    async_search(ieee_searcher, query, max_results_per_source),
+                )
         elif source == "acm":
             if acm_searcher is not None:
-                task_map[source] = async_search(acm_searcher, query, max_results_per_source)
+                task_map[source] = _run_search_with_timeout(
+                    source,
+                    async_search(acm_searcher, query, max_results_per_source),
+                )
 
     source_names = list(task_map.keys())
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)

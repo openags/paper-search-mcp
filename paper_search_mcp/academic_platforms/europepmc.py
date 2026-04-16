@@ -7,7 +7,7 @@ from pathlib import Path
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
 

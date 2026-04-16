@@ -5,14 +5,20 @@ build-backend = "hatchling.build"
 [project]
 name = "paper-search-mcp"
 version = "0.1.4"
-authors = [
-  { name = "P.S Zhang", email = "pengsongzhang96@gmail.com" },
-]
+authors = [{ name = "P.S Zhang", email = "pengsongzhang96@gmail.com" }]
 description = "A MCP server for searching and downloading academic papers from multiple sources."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-keywords = ["mcp", "academic", "papers", "search", "arxiv", "pubmed", "semantic-scholar"]
+keywords = [
+    "mcp",
+    "academic",
+    "papers",
+    "search",
+    "arxiv",
+    "pubmed",
+    "semantic-scholar",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -28,8 +34,8 @@ dependencies = [
     "requests",
     "feedparser",
     "fastmcp",
+    "pypdf",
     "mcp[cli]>=1.6.0",
-    "PyPDF2>=3.0.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
     "httpx[socks]>=0.28.1",

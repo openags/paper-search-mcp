@@ -37,8 +37,10 @@ class TestBioRxivSearchModes(unittest.TestCase):
 
     def test_doi_lookup_uses_doi_endpoint(self):
         doi = "10.1101/2024.01.01.999999"
+        self.searcher.session.get = Mock(return_value=_mock_response([_paper_item(doi)]))
         papers = self.searcher.search(doi, max_results=1)
         self.assertEqual(len(papers), 1)
+        self.assertEqual(papers[0].doi, doi)
         called_url = self.searcher.session.get.call_args[0][0]
         self.assertEqual(called_url, f"https://api.biorxiv.org/details/biorxiv/{doi}/na/json")
 

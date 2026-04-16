@@ -51,8 +51,9 @@ class GoogleScholarSearcher(PaperSource):
         self.session.headers.update({'User-Agent': random.choice(self.BROWSERS)})
 
     @staticmethod
-    def _is_captcha_page(soup: BeautifulSoup) -> bool:
-        page_text = soup.get_text(' ', strip=True).lower()
+    def _is_captcha_page(soup: BeautifulSoup, page_text: Optional[str] = None) -> bool:
+        if page_text is None:
+            page_text = soup.get_text(' ', strip=True).lower()
         return bool(
             soup.find('form', {'id': 'gs_captcha_f'})
             or soup.find('input', {'name': 'captcha'})
@@ -61,12 +62,12 @@ class GoogleScholarSearcher(PaperSource):
         )
 
     @staticmethod
-    def _is_consent_page(soup: BeautifulSoup) -> bool:
-        page_text = soup.get_text(' ', strip=True).lower()
+    def _is_consent_page(soup: BeautifulSoup, page_text: Optional[str] = None) -> bool:
+        if page_text is None:
+            page_text = soup.get_text(' ', strip=True).lower()
         return bool(
             soup.find("form", {"action": re.compile(r"consent\.google", re.IGNORECASE)})
             or "before you continue to google scholar" in page_text
-            or "consent.google.com" in str(soup)
         )
 
     def _extract_year(self, text: str) -> Optional[int]:
@@ -173,17 +174,19 @@ class GoogleScholarSearcher(PaperSource):
 
                 # Parse results
                 soup = BeautifulSoup(response.text, 'html.parser')
+                page_text = soup.get_text(' ', strip=True).lower()
 
-                if self._is_consent_page(soup):
+                if self._is_consent_page(soup, page_text):
                     if not consent_retry_attempted:
                         consent_retry_attempted = True
-                        self.session.cookies.set("CONSENT", self.CONSENT_COOKIE_VALUE, domain=".google.com")
+                        if self.session.cookies.get("CONSENT", domain=".google.com") != self.CONSENT_COOKIE_VALUE:
+                            self.session.cookies.set("CONSENT", self.CONSENT_COOKIE_VALUE, domain=".google.com")
                         logger.info("Google Scholar consent page detected; retrying search with consent cookie")
                         continue
                     logger.warning("Google Scholar returned a consent page; unable to retrieve results")
                     break
 
-                if self._is_captcha_page(soup):
+                if self._is_captcha_page(soup, page_text):
                     logger.warning(
                         "Google Scholar returned a bot-detection/captcha page. "
                         "Set PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL/GOOGLE_SCHOLAR_PROXY_URL "

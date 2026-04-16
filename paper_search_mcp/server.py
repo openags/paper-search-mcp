@@ -613,7 +613,7 @@ async def search_semantic(query: str, year: str = "", max_results: int = 10) -> 
         List of paper metadata in dictionary format.
     """
     kwargs = {}
-    if year:
+    if year != "":
         kwargs['year'] = year
     papers = await async_search(semantic_searcher, query, max_results, **kwargs)
     return papers if papers else []
@@ -689,7 +689,7 @@ async def search_crossref(
     Returns:
         List of paper metadata in dictionary format.
     """
-    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v}
+    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v != ""}
     papers = await async_search(crossref_searcher, query, max_results, **extra)
     return papers if papers else []
 

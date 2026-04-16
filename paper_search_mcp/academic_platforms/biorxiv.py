@@ -25,6 +25,7 @@ class BioRxivSearcher(PaperSource):
         self.max_retries = 3
 
     def _resolve_query_mode(self, query: str, days: int) -> Tuple[str, str, str, Optional[str]]:
+        """Resolve query into (mode, start_or_doi, end_or_na, category)."""
         normalized_query = (query or "").strip()
         doi = extract_doi(normalized_query)
         if doi:

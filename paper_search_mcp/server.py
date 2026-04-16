@@ -29,6 +29,7 @@ from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
+from .academic_platforms.wos import WebOfScienceSearcher
 from .utils import extract_doi
 
 # from .academic_platforms.hub import SciHubSearcher
@@ -61,6 +62,7 @@ unpaywall_searcher = UnpaywallSearcher(resolver=unpaywall_resolver)
 zenodo_searcher = ZenodoSearcher()
 hal_searcher = HALSearcher()
 ssrn_searcher = SSRNSearcher()
+wos_searcher = None
 # scihub_searcher = SciHubSearcher()
 
 
@@ -108,6 +110,7 @@ ALL_SOURCES = [
 # ---------------------------------------------------------------------------
 _ieee_api_key = get_env("IEEE_API_KEY", "")
 _acm_api_key = get_env("ACM_API_KEY", "")
+_wos_api_key = get_env("WOS_API_KEY", "")
 
 if _ieee_api_key:
     from .academic_platforms.ieee import IEEESearcher
@@ -124,6 +127,11 @@ if _acm_api_key:
     logger.info("ACM Digital Library enabled via configured environment key.")
 else:
     acm_searcher = None
+
+if _wos_api_key:
+    wos_searcher = WebOfScienceSearcher()
+    ALL_SOURCES.append("wos")
+    logger.info("Web of Science enabled via configured environment key.")
 
 
 def _parse_sources(sources: str) -> List[str]:
@@ -319,6 +327,9 @@ async def search_papers(
         elif source == "acm":
             if acm_searcher is not None:
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
+        elif source == "wos":
+            if wos_searcher is not None:
+                task_map[source] = async_search(wos_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
@@ -1373,6 +1384,47 @@ if acm_searcher is not None:
             str: Extracted text content.
         """
         return acm_searcher.read_paper(paper_id, save_path)
+
+
+# ---------------------------------------------------------------------------
+# Optional Web of Science tools — registered only when API key is set
+# ---------------------------------------------------------------------------
+if wos_searcher is not None:
+    @mcp.tool()
+    async def search_wos(query: str, max_results: int = 10) -> List[Dict]:
+        """Search Web of Science for papers. Requires PAPER_SEARCH_MCP_WOS_API_KEY (or WOS_API_KEY).
+
+        Args:
+            query: Search query string.
+            max_results: Maximum number of results (default: 10).
+        Returns:
+            List of paper dicts from Web of Science.
+        """
+        return await async_search(wos_searcher, query, max_results)
+
+    @mcp.tool()
+    async def download_wos(paper_id: str, save_path: str = "./downloads") -> str:
+        """Download a PDF from Web of Science (not supported directly).
+
+        Args:
+            paper_id: Web of Science paper identifier.
+            save_path: Directory to save the PDF (unused).
+        Returns:
+            str: Error message indicating Web of Science is metadata-only.
+        """
+        return await asyncio.to_thread(wos_searcher.download_pdf, paper_id, save_path)
+
+    @mcp.tool()
+    async def read_wos_paper(paper_id: str, save_path: str = "./downloads") -> str:
+        """Read a Web of Science paper (not supported directly).
+
+        Args:
+            paper_id: Web of Science paper identifier.
+            save_path: Directory where the PDF is/will be saved (unused).
+        Returns:
+            str: Error message indicating direct reading is unsupported.
+        """
+        return wos_searcher.read_paper(paper_id, save_path)
 
 
 def main():

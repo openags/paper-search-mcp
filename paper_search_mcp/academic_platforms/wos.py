@@ -52,6 +52,13 @@ class WebOfScienceSearcher(PaperSource):
                     return WebOfScienceSearcher._pick_text(selected)
         return ""
 
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:  # type: ignore[override]
         if not self.is_configured():
             raise NotImplementedError(_NOT_CONFIGURED_MSG)
@@ -123,7 +130,7 @@ class WebOfScienceSearcher(PaperSource):
                     pdf_url="",
                     url=url,
                     source="wos",
-                    citations=int(item.get("timesCited") or item.get("citationCount") or 0),
+                    citations=self._safe_int(item.get("timesCited") or item.get("citationCount")),
                     extra={"source_title": self._pick_text((item.get("source") or {}).get("sourceTitle"))},
                 )
             )

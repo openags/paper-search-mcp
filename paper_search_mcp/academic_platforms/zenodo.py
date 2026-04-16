@@ -175,8 +175,12 @@ class ZenodoSearcher(PaperSource):
             from pypdf import PdfReader
 
             reader = PdfReader(path)
-            text_parts = [page.extract_text() for page in reader.pages if page.extract_text()]
-            return "\n\n".join(text_parts) if text_parts else "No extractable text in PDF."
+            text_parts = [
+                page.extract_text() for page in reader.pages if page.extract_text()
+            ]
+            return (
+                "\n\n".join(text_parts) if text_parts else "No extractable text in PDF."
+            )
         except ImportError:
             return f"PDF downloaded to {path}. Install 'pypdf' to extract text."
         except Exception as exc:
@@ -229,13 +233,15 @@ class ZenodoSearcher(PaperSource):
 
             creators = meta.get("creators", [])
             authors = ", ".join(
-                c.get("name", "") or f"{c.get('given_name', '')} {c.get('family_name', '')}".strip()
+                c.get("name", "")
+                or f"{c.get('given_name', '')} {c.get('family_name', '')}".strip()
                 for c in creators
             )
 
             abstract = (meta.get("description") or "").strip()
             # Zenodo descriptions can contain HTML — strip tags minimally
             import re
+
             abstract = re.sub(r"<[^>]+>", " ", abstract).strip()
 
             pub_date = meta.get("publication_date", "")
@@ -250,7 +256,9 @@ class ZenodoSearcher(PaperSource):
                     pdf_url = links.get("self", "") or links.get("download", "")
                     break
 
-            record_url = hit.get("links", {}).get("html", f"https://zenodo.org/record/{record_id}")
+            record_url = hit.get("links", {}).get(
+                "html", f"https://zenodo.org/record/{record_id}"
+            )
 
             return Paper(
                 paper_id=f"zenodo:{record_id}",

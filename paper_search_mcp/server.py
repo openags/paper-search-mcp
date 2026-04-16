@@ -243,7 +243,7 @@ async def search_papers(
     query: str,
     max_results_per_source: int = 5,
     sources: str = "all",
-    year: Optional[str] = None,
+    year: str = "",
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -602,7 +602,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def search_semantic(query: str, year: Optional[str] = None, max_results: int = 10) -> List[Dict]:
+async def search_semantic(query: str, year: str = "", max_results: int = 10) -> List[Dict]:
     """Search academic papers from Semantic Scholar.
 
     Args:
@@ -613,7 +613,7 @@ async def search_semantic(query: str, year: Optional[str] = None, max_results: i
         List of paper metadata in dictionary format.
     """
     kwargs = {}
-    if year is not None:
+    if year:
         kwargs['year'] = year
     papers = await async_search(semantic_searcher, query, max_results, **kwargs)
     return papers if papers else []
@@ -669,9 +669,9 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
 async def search_crossref(
     query: str,
     max_results: int = 10,
-    filter: Optional[str] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
+    filter: str = "",
+    sort: str = "",
+    order: str = "",
 ) -> List[Dict]:
     """Search academic papers from CrossRef database.
     
@@ -689,7 +689,7 @@ async def search_crossref(
     Returns:
         List of paper metadata in dictionary format.
     """
-    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v is not None}
+    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v}
     papers = await async_search(crossref_searcher, query, max_results, **extra)
     return papers if papers else []
 

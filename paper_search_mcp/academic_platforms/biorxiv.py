@@ -11,6 +11,8 @@ from PyPDF2 import PdfReader
 class BioRxivSearcher(PaperSource):
     """Searcher for bioRxiv papers"""
     BASE_URL = "https://api.biorxiv.org/details/biorxiv"
+    # Supports "YYYY-MM-DD/YYYY-MM-DD", "YYYY-MM-DD:YYYY-MM-DD",
+    # "YYYY-MM-DD..YYYY-MM-DD", and "YYYY-MM-DD to YYYY-MM-DD".
     DATE_RANGE_PATTERN = re.compile(
         r"^\s*(\d{4}-\d{2}-\d{2})\s*(?:/|:|\.\.|to)\s*(\d{4}-\d{2}-\d{2})\s*$",
         re.IGNORECASE

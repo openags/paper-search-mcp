@@ -170,6 +170,11 @@ def _safe_filename(filename_hint: str, default: str = "paper") -> str:
     return safe[:120]
 
 
+def _select_fallback_identifier(doi: str, title: str, paper_id: str) -> str:
+    """Choose fallback identifier in priority order: DOI -> title -> source paper_id."""
+    return (doi or "").strip() or (title or "").strip() or paper_id
+
+
 async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = "paper") -> Optional[str]:
     if not pdf_url:
         return None
@@ -861,7 +866,7 @@ async def download_with_fallback(
         attempt_errors.append("unpaywall: DOI not provided")
 
     if use_annas_archive:
-        fallback_identifier = (doi or "").strip() or (title or "").strip() or paper_id
+        fallback_identifier = _select_fallback_identifier(doi, title, paper_id)
         annas_fetcher = AnnasArchiveFetcher(base_url=annas_archive_base_url, output_dir=save_path)
         annas_result = await asyncio.to_thread(annas_fetcher.download_pdf, fallback_identifier)
         if annas_result:
@@ -873,7 +878,7 @@ async def download_with_fallback(
     if not use_scihub:
         return "Download failed after OA fallback chain. Details: " + " | ".join(attempt_errors)
 
-    fallback_identifier = (doi or "").strip() or (title or "").strip() or paper_id
+    fallback_identifier = _select_fallback_identifier(doi, title, paper_id)
     fetcher = SciHubFetcher(base_url=scihub_base_url, output_dir=save_path)
     fallback_result = await asyncio.to_thread(fetcher.download_pdf, fallback_identifier)
     if fallback_result:

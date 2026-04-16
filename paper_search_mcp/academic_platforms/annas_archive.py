@@ -104,7 +104,7 @@ class AnnasArchiveFetcher:
             return None
 
         safe_hint = re.sub(r"[^a-zA-Z0-9._-]+", "_", identifier)[:80] or "paper"
-        digest = hashlib.md5((url + identifier).encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha256((url + identifier).encode("utf-8")).hexdigest()[:8]
         output_path = os.path.join(self.output_dir, f"annas_archive_{safe_hint}_{digest}.pdf")
         with open(output_path, "wb") as fh:
             if first_chunk:

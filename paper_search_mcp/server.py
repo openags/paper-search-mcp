@@ -20,6 +20,7 @@ from .academic_platforms.pmc import PMCSearcher
 from .academic_platforms.core import CORESearcher
 from .academic_platforms.europepmc import EuropePMCSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
+from .academic_platforms.annas_archive import AnnasArchiveFetcher
 from .academic_platforms.dblp import DBLPSearcher
 from .academic_platforms.openaire import OpenAiresearcher
 from .academic_platforms.citeseerx import CiteSeerXSearcher
@@ -753,16 +754,40 @@ async def download_scihub(
 
 
 @mcp.tool()
+async def download_annas_archive(
+    identifier: str,
+    save_path: str = "./downloads",
+    base_url: str = "https://annas-archive.org",
+) -> str:
+    """Download paper PDF via Anna's Archive (best-effort fallback connector).
+
+    Args:
+        identifier: DOI, title, PMID, or paper URL.
+        save_path: Directory to save the PDF.
+        base_url: Anna's Archive base URL.
+    Returns:
+        Downloaded PDF path on success; error message on failure.
+    """
+    fetcher = AnnasArchiveFetcher(base_url=base_url, output_dir=save_path)
+    result = await asyncio.to_thread(fetcher.download_pdf, identifier)
+    if result:
+        return result
+    return "Anna's Archive download failed. Try DOI first, then title, or check base URL availability."
+
+
+@mcp.tool()
 async def download_with_fallback(
     source: str,
     paper_id: str,
     doi: str = "",
     title: str = "",
     save_path: str = "./downloads",
+    use_annas_archive: bool = True,
+    annas_archive_base_url: str = "https://annas-archive.org",
     use_scihub: bool = True,
     scihub_base_url: str = "https://sci-hub.se",
 ) -> str:
-    """Try source-native download, OA repositories, Unpaywall, then optional Sci-Hub.
+    """Try source-native download, OA repositories, Unpaywall, then optional Anna's Archive/Sci-Hub.
 
     Args:
         source: Source name (arxiv, biorxiv, medrxiv, iacr, semantic, crossref, pubmed, pmc, core, europepmc, citeseerx, doaj, base, zenodo, hal, ssrn).
@@ -770,7 +795,9 @@ async def download_with_fallback(
         doi: Optional DOI used for repository/unpaywall/Sci-Hub fallback.
         title: Optional title used for repository/Sci-Hub fallback when DOI is unavailable.
         save_path: Directory to save downloaded files.
-        use_scihub: Whether to fallback to Sci-Hub after OA attempts fail.
+        use_annas_archive: Whether to try Anna's Archive fallback after OA attempts fail.
+        annas_archive_base_url: Anna's Archive base URL for fallback.
+        use_scihub: Whether to fallback to Sci-Hub after OA/Anna's Archive attempts fail.
         scihub_base_url: Sci-Hub mirror URL for fallback.
     Returns:
         Download path on success or explanatory error message.
@@ -832,6 +859,16 @@ async def download_with_fallback(
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:
         attempt_errors.append("unpaywall: DOI not provided")
+
+    if use_annas_archive:
+        fallback_identifier = (doi or "").strip() or (title or "").strip() or paper_id
+        annas_fetcher = AnnasArchiveFetcher(base_url=annas_archive_base_url, output_dir=save_path)
+        annas_result = await asyncio.to_thread(annas_fetcher.download_pdf, fallback_identifier)
+        if annas_result:
+            return annas_result
+        attempt_errors.append("annas_archive: no downloadable PDF found")
+    else:
+        attempt_errors.append("annas_archive: disabled")
 
     if not use_scihub:
         return "Download failed after OA fallback chain. Details: " + " | ".join(attempt_errors)

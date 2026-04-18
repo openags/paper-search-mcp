@@ -1,13 +1,16 @@
 # paper_search_mcp/server.py
 import asyncio
+import hashlib
 import hmac
 import logging
 import os
 from typing import Any, Dict, List, Optional
+import asyncpg
 import httpx
 import uvicorn
 from dotenv import load_dotenv
 from .config import get_env
+from .context import _request_user_email
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
@@ -57,23 +60,104 @@ LARAVEL_MCP_TOKEN = os.environ.get("LARAVEL_MCP_TOKEN", "")
 
 
 class BearerAuthMiddleware:
-    """ASGI middleware that validates Bearer token on every HTTP request."""
+    """ASGI middleware — validates static token OR Sanctum token from DB."""
 
-    def __init__(self, app: ASGIApp, token: str):
+    def __init__(self, app: ASGIApp, static_token: str):
         self.app = app
-        self.token = token
+        self.static_token = static_token
+        self._db_pool: Optional[asyncpg.Pool] = None
+
+    async def _get_pool(self) -> asyncpg.Pool:
+        if self._db_pool is None:
+            db_host = os.environ.get("LARAVEL_DB_HOST", "postgres")
+            db_port = int(os.environ.get("LARAVEL_DB_PORT", "5432"))
+            db_user = os.environ.get("LARAVEL_DB_USER")
+            db_pass = os.environ.get("LARAVEL_DB_PASSWORD")
+            db_name = os.environ.get("LARAVEL_DB_NAME")
+            if db_user and db_pass and db_name:
+                self._db_pool = await asyncpg.create_pool(
+                    host=db_host, port=db_port, user=db_user,
+                    password=db_pass, database=db_name,
+                    min_size=1, max_size=3,
+                )
+            else:
+                raise RuntimeError("LARAVEL_DB_* env vars not set for Sanctum auth")
+        return self._db_pool
+
+    async def _validate_sanctum_token(self, token: str) -> tuple[bool, Optional[str]]:
+        """Validate Sanctum token. Returns (is_valid, user_email_or_None)."""
+        if "|" not in token:
+            return False, None
+        token_id_str, raw = token.split("|", 1)
+        try:
+            token_id = int(token_id_str)
+        except ValueError:
+            return False, None
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        try:
+            pool = await self._get_pool()
+            row = await pool.fetchrow(
+                "SELECT id FROM personal_access_tokens WHERE id = $1 AND token = $2",
+                token_id, token_hash,
+            )
+            if row:
+                await pool.execute(
+                    "UPDATE personal_access_tokens SET last_used_at = NOW() WHERE id = $1",
+                    token_id,
+                )
+                user_row = await pool.fetchrow(
+                    "SELECT u.email FROM users u "
+                    "JOIN personal_access_tokens pat ON pat.tokenable_id = u.id "
+                    "WHERE pat.id = $1",
+                    token_id,
+                )
+                user_email = user_row["email"] if user_row else None
+                return True, user_email
+        except Exception as e:
+            logging.warning(f"Sanctum DB lookup failed: {e}")
+        return False, None
+
+    def _extract_token(self, scope) -> Optional[str]:
+        headers = dict(scope.get("headers", []))
+        auth_value = headers.get(b"authorization", b"").decode()
+        if auth_value.startswith("Bearer "):
+            return auth_value[7:]
+        query_string = scope.get("query_string", b"").decode()
+        from urllib.parse import parse_qs
+        params = parse_qs(query_string)
+        token_list = params.get("token", [])
+        if token_list:
+            return token_list[0]
+        return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] == "http":
-            headers = dict(scope.get("headers", []))
-            auth_value = headers.get(b"authorization", b"").decode()
-            if (
-                not auth_value.startswith("Bearer ")
-                or not hmac.compare_digest(auth_value[7:], self.token)
-            ):
+            path = scope.get("path", "")
+            if path.startswith("/.well-known/") or path == "/register":
+                response = Response("Not Found", status_code=404)
+                await response(scope, receive, send)
+                return
+
+            token = self._extract_token(scope)
+            if not token:
                 response = Response("Unauthorized", status_code=401)
                 await response(scope, receive, send)
                 return
+
+            if hmac.compare_digest(token, self.static_token):
+                _request_user_email.set(None)
+                await self.app(scope, receive, send)
+                return
+
+            is_valid, user_email = await self._validate_sanctum_token(token)
+            if is_valid:
+                _request_user_email.set(user_email)
+                await self.app(scope, receive, send)
+                return
+
+            response = Response("Unauthorized", status_code=401)
+            await response(scope, receive, send)
+            return
         await self.app(scope, receive, send)
 
 
@@ -1023,10 +1107,9 @@ def create_app() -> Starlette:
 
     sse = SseServerTransport(message_path)
 
-    async def handle_sse(request: Request):
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
+    async def handle_sse(scope: Scope, receive: Receive, send: Send):
+        """ASGI app for SSE endpoint — must be mounted via Mount, not Route."""
+        async with sse.connect_sse(scope, receive, send) as streams:
             await mcp._mcp_server.run(
                 streams[0],
                 streams[1],
@@ -1082,9 +1165,46 @@ def create_app() -> Starlette:
 
     app = Starlette(
         routes=[
-            Route("/sse", endpoint=handle_sse),
+            Mount("/sse", app=handle_sse),
             Route("/search", endpoint=handle_rest_search, methods=["GET", "POST"]),
             Mount(message_path, app=sse.handle_post_message),
+        ],
+    )
+
+    return BearerAuthMiddleware(app, BEARER_TOKEN)
+
+
+def create_streamable_app():
+    """Create Streamable HTTP app via FastMCP + REST search + Bearer auth."""
+    import json as _json
+
+    streamable_app = mcp.streamable_http_app()
+
+    async def handle_rest_search(request: Request):
+        """Plain REST endpoint for PHP (same as SSE version)."""
+        try:
+            if request.method == "POST":
+                body = await request.body()
+                params = _json.loads(body) if body else {}
+            else:
+                params = dict(request.query_params)
+            query = str(params.get("query", "")).strip()
+            if not query:
+                return Response(_json.dumps({"error": "query parameter required"}), media_type="application/json", status_code=400)
+            sources_raw = params.get("sources", ["pubmed", "arxiv", "semantic"])
+            if isinstance(sources_raw, str):
+                sources_raw = [s.strip() for s in sources_raw.split(",")]
+            max_results = int(params.get("max_results_per_source", params.get("max_results", 5)))
+            results = await search_papers_impl(query=query, sources=",".join(sources_raw), max_results_per_source=max_results)
+            return Response(_json.dumps(results, default=str), media_type="application/json")
+        except Exception as e:
+            logging.error(f"REST search error: {e}")
+            return Response(_json.dumps({"error": str(e)}), media_type="application/json", status_code=500)
+
+    app = Starlette(
+        routes=[
+            Route("/search", handle_rest_search, methods=["GET", "POST"]),
+            Mount("/", app=streamable_app),
         ],
     )
 
@@ -1100,6 +1220,16 @@ def main():
 
     if transport == "stdio":
         mcp.run(transport="stdio")
+    elif transport == "streamable-http":
+        from mcp.server.transport_security import TransportSecuritySettings
+        host = os.getenv("PAPERSEARCH_HOST", "0.0.0.0")
+        port = int(os.getenv("PAPERSEARCH_PORT", "8089"))
+        mcp.settings.host = host
+        mcp.settings.port = port
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        mcp.run(transport="streamable-http")
     else:
         host = os.getenv("PAPERSEARCH_HOST", "0.0.0.0")
         port = int(os.getenv("PAPERSEARCH_PORT", "8089"))

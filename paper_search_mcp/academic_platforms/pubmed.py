@@ -13,12 +13,13 @@ class PubMedSearcher(PaperSource):
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    def search(self, query: str, max_results: int = 10, sort: str = 'relevance') -> List[Paper]:
         search_params = {
             'db': 'pubmed',
             'term': query,
             'retmax': max_results,
-            'retmode': 'xml'
+            'retmode': 'xml',
+            'sort': sort,
         }
         search_response = requests.get(self.SEARCH_URL, params=search_params)
         search_root = ET.fromstring(search_response.content)

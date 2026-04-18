@@ -482,30 +482,33 @@ async def search_papers(
 
 # Tool definitions
 @mcp.tool()
-async def search_arxiv(query: str, max_results: int = 10) -> List[Dict]:
+async def search_arxiv(query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Dict]:
     """Search academic papers from arXiv.
 
     Args:
         query: Search query string (e.g., 'machine learning').
         max_results: Maximum number of papers to return (default: 10).
+        sort_by: Sort criterion — 'relevance', 'submittedDate', or 'lastUpdatedDate' (default: 'relevance').
+        sort_order: Sort direction — 'descending' or 'ascending' (default: 'descending').
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(arxiv_searcher, query, max_results)
+    papers = await async_search(arxiv_searcher, query, max_results, sort_by=sort_by, sort_order=sort_order)
     return papers if papers else []
 
 
 @mcp.tool()
-async def search_pubmed(query: str, max_results: int = 10) -> List[Dict]:
+async def search_pubmed(query: str, max_results: int = 10, sort: str = 'relevance') -> List[Dict]:
     """Search academic papers from PubMed.
 
     Args:
         query: Search query string (e.g., 'machine learning').
         max_results: Maximum number of papers to return (default: 10).
+        sort: Sort order — 'relevance' or 'pub_date' (default: 'relevance').
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(pubmed_searcher, query, max_results)
+    papers = await async_search(pubmed_searcher, query, max_results, sort=sort)
     return papers if papers else []
 
 

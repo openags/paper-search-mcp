@@ -21,12 +21,12 @@ class ArxivSearcher(PaperSource):
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    def search(self, query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Paper]:
         params = {
             'search_query': f'all:{query}',
             'max_results': max_results,
-            'sortBy': 'submittedDate',
-            'sortOrder': 'descending'
+            'sortBy': sort_by,
+            'sortOrder': sort_order,
         }
         response = None
         for attempt in range(3):

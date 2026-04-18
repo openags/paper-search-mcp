@@ -170,8 +170,12 @@ class HALSearcher(PaperSource):
             from pypdf import PdfReader
 
             reader = PdfReader(path)
-            text_parts = [page.extract_text() for page in reader.pages if page.extract_text()]
-            return "\n\n".join(text_parts) if text_parts else "No extractable text in PDF."
+            text_parts = [
+                page.extract_text() for page in reader.pages if page.extract_text()
+            ]
+            return (
+                "\n\n".join(text_parts) if text_parts else "No extractable text in PDF."
+            )
         except ImportError:
             return f"PDF downloaded to {path}. Install 'pypdf' to extract text."
         except Exception as exc:
@@ -235,7 +239,9 @@ class HALSearcher(PaperSource):
                 doi = doi[0] if doi else ""
 
             year = doc.get("publicationDateY_i") or doc.get("producedDateY_i", "")
-            pub_date = str(year) if year else (doc.get("submittedDate_s", "") or "")[:10]
+            pub_date = (
+                str(year) if year else (doc.get("submittedDate_s", "") or "")[:10]
+            )
 
             pdf_url = doc.get("fileMain_s", "") or ""
             record_url = doc.get("uri_s", f"https://hal.archives-ouvertes.fr/{hal_id}")

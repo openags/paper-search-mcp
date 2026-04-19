@@ -230,7 +230,7 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
                 if not pdf_url:
                     continue
 
-                paper_id = (getattr(paper, "paper_id", "") or query).strip()
+                paper_id = str(getattr(paper, "paper_id", "") or query).strip()
                 downloaded = await _download_from_url(pdf_url, save_path, f"{repo_name}_{paper_id}")
                 if downloaded:
                     return downloaded, ""

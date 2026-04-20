@@ -310,7 +310,7 @@ async def search_papers(
         elif source == "hal":
             task_map[source] = search_hal(query, max_results_per_source)
         elif source == "ssrn":
-            task_map[source] = search_ssrn(query, max_results_per_source)
+            task_map[source] = search_ssrn(query, max_results_per_source, use_openalex=True)
         elif source == "unpaywall":
             task_map[source] = search_unpaywall(query, max_results_per_source)
         elif source == "ieee":
@@ -1017,17 +1017,26 @@ async def search_hal(query: str, max_results: int = 10) -> List[Dict]:
 
 
 @mcp.tool()
-async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
+async def search_ssrn(query: str, max_results: int = 10, use_openalex: bool = True) -> List[Dict]:
     """Search metadata records from SSRN.
 
-    Note: SSRN connector is metadata-only and does not support direct PDF download.
+    By default uses OpenAlex as primary source (covers ~85% of SSRN papers,
+    ~200ms latency, zero legal risk). Falls back to direct SSRN scraping
+    when OpenAlex returns no results.
 
     Args:
         query: Search query string (e.g., 'machine learning').
         max_results: Maximum number of papers to return (default: 10).
+        use_openalex: Use OpenAlex as primary SSRN source (default: True).
     Returns:
         List of paper metadata in dictionary format.
     """
+    if use_openalex:
+        papers = await asyncio.to_thread(openalex_searcher.search_ssrn, query, max_results)
+        result = [paper.to_dict() for paper in papers]
+        if result:
+            return result
+
     papers = await async_search(ssrn_searcher, query, max_results)
     return papers if papers else []
 

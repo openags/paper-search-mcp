@@ -1377,11 +1377,20 @@ if acm_searcher is not None:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--path", default="/mcp")
+    parser = argparse.ArgumentParser(description="Paper Search MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="MCP transport mode (default: stdio).",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind for network transports.")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind for network transports.")
+    parser.add_argument(
+        "--path",
+        default="/mcp",
+        help="HTTP path for streamable-http transport (default: /mcp).",
+    )
     args = parser.parse_args()
 
     mcp.settings.host = args.host

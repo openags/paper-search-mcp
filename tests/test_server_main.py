@@ -54,6 +54,32 @@ class TestServerMain(unittest.TestCase):
         self.assertEqual(server.mcp.settings.port, 9000)
         self.assertEqual(server.mcp.settings.streamable_http_path, "/gateway/mcp")
 
+    def test_main_sse_updates_host_and_port_only(self):
+        server.mcp.settings.streamable_http_path = "/preexisting-path"
+
+        with patch.object(server.mcp, "run") as mock_run:
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "paper-search-mcp",
+                    "--transport",
+                    "sse",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "9100",
+                    "--path",
+                    "/should-be-ignored",
+                ],
+            ):
+                server.main()
+
+        mock_run.assert_called_once_with(transport="sse")
+        self.assertEqual(server.mcp.settings.host, "0.0.0.0")
+        self.assertEqual(server.mcp.settings.port, 9100)
+        self.assertEqual(server.mcp.settings.streamable_http_path, "/preexisting-path")
+
 
 if __name__ == "__main__":
     unittest.main()

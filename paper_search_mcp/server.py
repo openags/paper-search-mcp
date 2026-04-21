@@ -1405,6 +1405,7 @@ def main():
     if args.transport != "stdio":
         mcp.settings.host = args.host
         mcp.settings.port = args.port
+    if args.transport == "streamable-http":
         mcp.settings.streamable_http_path = args.path
     mcp.run(transport=args.transport)
 

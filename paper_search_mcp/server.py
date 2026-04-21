@@ -1,6 +1,7 @@
 # paper_search_mcp/server.py
 from typing import List, Dict, Optional, Any
 import asyncio
+import argparse
 import os
 import logging
 import re
@@ -1376,7 +1377,17 @@ if acm_searcher is not None:
 
 
 def main():
-    mcp.run(transport="stdio")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--path", default="/mcp")
+    args = parser.parse_args()
+
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    mcp.settings.streamable_http_path = args.path
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,14 @@ class TestServerMain(unittest.TestCase):
 
         mock_run.assert_not_called()
 
+    def test_main_rejects_non_integer_port(self):
+        with patch.object(server.mcp, "run") as mock_run:
+            with patch.object(sys, "argv", ["paper-search-mcp", "--port", "abc"]):
+                with self.assertRaises(SystemExit):
+                    server.main()
+
+        mock_run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

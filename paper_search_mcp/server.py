@@ -1378,10 +1378,13 @@ if acm_searcher is not None:
 
 def main():
     def valid_port(raw: str) -> int:
-        port = int(raw)
+        try:
+            port = int(raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("port must be a valid integer between 1 and 65535") from exc
         if 1 <= port <= 65535:
             return port
-        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+        raise argparse.ArgumentTypeError("port must be a valid integer between 1 and 65535")
 
     parser = argparse.ArgumentParser(description="Paper Search MCP server")
     parser.add_argument(
@@ -1408,7 +1411,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.transport != "stdio":
+    if args.transport in ("sse", "streamable-http"):
         mcp.settings.host = args.host
         mcp.settings.port = args.port
     if args.transport == "streamable-http":

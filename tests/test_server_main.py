@@ -80,6 +80,14 @@ class TestServerMain(unittest.TestCase):
         self.assertEqual(server.mcp.settings.port, 9100)
         self.assertEqual(server.mcp.settings.streamable_http_path, "/preexisting-path")
 
+    def test_main_rejects_invalid_port(self):
+        with patch.object(server.mcp, "run") as mock_run:
+            with patch.object(sys, "argv", ["paper-search-mcp", "--port", "70000"]):
+                with self.assertRaises(SystemExit):
+                    server.main()
+
+        mock_run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,14 +17,18 @@ class TestServerMain(unittest.TestCase):
         server.mcp.settings.streamable_http_path = self.original_path
 
     def test_main_defaults_to_stdio(self):
+        server.mcp.settings.host = "10.0.0.1"
+        server.mcp.settings.port = 9999
+        server.mcp.settings.streamable_http_path = "/custom-before-main"
+
         with patch.object(server.mcp, "run") as mock_run:
             with patch.object(sys, "argv", ["paper-search-mcp"]):
                 server.main()
 
         mock_run.assert_called_once_with(transport="stdio")
-        self.assertEqual(server.mcp.settings.host, "127.0.0.1")
-        self.assertEqual(server.mcp.settings.port, 8000)
-        self.assertEqual(server.mcp.settings.streamable_http_path, "/mcp")
+        self.assertEqual(server.mcp.settings.host, "10.0.0.1")
+        self.assertEqual(server.mcp.settings.port, 9999)
+        self.assertEqual(server.mcp.settings.streamable_http_path, "/custom-before-main")
 
     def test_main_accepts_transport_and_network_options(self):
         with patch.object(server.mcp, "run") as mock_run:

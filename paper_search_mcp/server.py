@@ -1384,18 +1384,28 @@ def main():
         default="stdio",
         help="MCP transport mode (default: stdio).",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind for network transports.")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind for network transports.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind for sse/streamable-http transports (ignored for stdio).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind for sse/streamable-http transports (ignored for stdio).",
+    )
     parser.add_argument(
         "--path",
         default="/mcp",
-        help="HTTP path for streamable-http transport (default: /mcp).",
+        help="HTTP path for streamable-http transport (ignored for stdio/sse).",
     )
     args = parser.parse_args()
 
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
-    mcp.settings.streamable_http_path = args.path
+    if args.transport != "stdio":
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.settings.streamable_http_path = args.path
     mcp.run(transport=args.transport)
 
 

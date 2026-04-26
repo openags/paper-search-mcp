@@ -41,8 +41,11 @@ class SemanticSearcher(PaperSource):
             }
         )
 
-    def _parse_date(self, date_str: str) -> Optional[datetime]:
+    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         """Parse date from Semantic Scholar format (e.g., '2025-06-02')"""
+        if not date_str:
+            return None
+
         try:
             return datetime.strptime(date_str.strip(), "%Y-%m-%d")
         except ValueError:

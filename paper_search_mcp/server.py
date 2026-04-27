@@ -1,6 +1,7 @@
 # paper_search_mcp/server.py
 from typing import List, Dict, Optional, Any
 import asyncio
+import argparse
 import os
 import logging
 import re
@@ -1376,7 +1377,46 @@ if acm_searcher is not None:
 
 
 def main():
-    mcp.run(transport="stdio")
+    def valid_port(raw: str) -> int:
+        try:
+            port = int(raw)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("port must be a valid integer between 1 and 65535") from exc
+        if 1 <= port <= 65535:
+            return port
+        raise argparse.ArgumentTypeError("port must be a valid integer between 1 and 65535")
+
+    parser = argparse.ArgumentParser(description="Paper Search MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="MCP transport mode (default: stdio).",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind for sse/streamable-http transports (ignored for stdio).",
+    )
+    parser.add_argument(
+        "--port",
+        type=valid_port,
+        default=8000,
+        help="Port to bind for sse/streamable-http transports (ignored for stdio).",
+    )
+    parser.add_argument(
+        "--path",
+        default="/mcp",
+        help="HTTP path for streamable-http transport (ignored for stdio/sse).",
+    )
+    args = parser.parse_args()
+
+    if args.transport in ("sse", "streamable-http"):
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+    if args.transport == "streamable-http":
+        mcp.settings.streamable_http_path = args.path
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

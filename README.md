@@ -456,6 +456,15 @@ For example, if you cloned to `/Users/mac/Pengsong/paper-search-mcp`:
 
 > `uv run` automatically installs dependencies into an isolated environment on first run — no `pip install` or `venv` needed.
 
+You can also run the MCP server over network transports:
+
+```bash
+paper-search-mcp --transport sse --host 0.0.0.0 --port 8000
+paper-search-mcp --transport streamable-http --host 0.0.0.0 --port 8000 --path /mcp
+```
+
+`--transport` defaults to `stdio`, so existing subprocess-based setups remain unchanged.
+
 For active development, optionally install an editable copy:
 
 ```bash

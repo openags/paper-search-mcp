@@ -1,12 +1,24 @@
 # paper_search_mcp/server.py
-from typing import List, Dict, Optional, Any
 import asyncio
-import os
+import hashlib
+import hmac
 import logging
-import re
+import os
+from typing import Any, Dict, List, Optional
+import asyncpg
 import httpx
-from mcp.server.fastmcp import FastMCP
+import uvicorn
+from dotenv import load_dotenv
 from .config import get_env
+from .context import _request_user_email
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Mount, Route
+from starlette.types import ASGIApp, Receive, Scope, Send
+from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
+from mcp.server.transport_security import TransportSecuritySettings
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -33,6 +45,121 @@ from .utils import extract_doi
 
 # from .academic_platforms.hub import SciHubSearcher
 from .paper import Paper
+
+load_dotenv()
+
+BEARER_TOKEN = os.environ.get("BEARER_TOKEN", "")
+if not BEARER_TOKEN:
+    raise RuntimeError("BEARER_TOKEN environment variable must be set")
+
+DEFAULT_DOWNLOAD_PATH = os.environ.get("DOWNLOAD_PATH", "./downloads")
+MCP_MESSAGES_PATH = os.environ.get("MCP_MESSAGES_PATH", "/messages/")
+
+LARAVEL_INGEST_URL = os.environ.get("LARAVEL_INGEST_URL", "")
+LARAVEL_MCP_TOKEN = os.environ.get("LARAVEL_MCP_TOKEN", "")
+
+
+class BearerAuthMiddleware:
+    """ASGI middleware — validates static token OR Sanctum token from DB."""
+
+    def __init__(self, app: ASGIApp, static_token: str):
+        self.app = app
+        self.static_token = static_token
+        self._db_pool: Optional[asyncpg.Pool] = None
+
+    async def _get_pool(self) -> asyncpg.Pool:
+        if self._db_pool is None:
+            db_host = os.environ.get("LARAVEL_DB_HOST", "postgres")
+            db_port = int(os.environ.get("LARAVEL_DB_PORT", "5432"))
+            db_user = os.environ.get("LARAVEL_DB_USER")
+            db_pass = os.environ.get("LARAVEL_DB_PASSWORD")
+            db_name = os.environ.get("LARAVEL_DB_NAME")
+            if db_user and db_pass and db_name:
+                self._db_pool = await asyncpg.create_pool(
+                    host=db_host, port=db_port, user=db_user,
+                    password=db_pass, database=db_name,
+                    min_size=1, max_size=3,
+                )
+            else:
+                raise RuntimeError("LARAVEL_DB_* env vars not set for Sanctum auth")
+        return self._db_pool
+
+    async def _validate_sanctum_token(self, token: str) -> tuple[bool, Optional[str]]:
+        """Validate Sanctum token. Returns (is_valid, user_email_or_None)."""
+        if "|" not in token:
+            return False, None
+        token_id_str, raw = token.split("|", 1)
+        try:
+            token_id = int(token_id_str)
+        except ValueError:
+            return False, None
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        try:
+            pool = await self._get_pool()
+            row = await pool.fetchrow(
+                "SELECT id FROM personal_access_tokens WHERE id = $1 AND token = $2",
+                token_id, token_hash,
+            )
+            if row:
+                await pool.execute(
+                    "UPDATE personal_access_tokens SET last_used_at = NOW() WHERE id = $1",
+                    token_id,
+                )
+                user_row = await pool.fetchrow(
+                    "SELECT u.email FROM users u "
+                    "JOIN personal_access_tokens pat ON pat.tokenable_id = u.id "
+                    "WHERE pat.id = $1",
+                    token_id,
+                )
+                user_email = user_row["email"] if user_row else None
+                return True, user_email
+        except Exception as e:
+            logging.warning(f"Sanctum DB lookup failed: {e}")
+        return False, None
+
+    def _extract_token(self, scope) -> Optional[str]:
+        headers = dict(scope.get("headers", []))
+        auth_value = headers.get(b"authorization", b"").decode()
+        if auth_value.startswith("Bearer "):
+            return auth_value[7:]
+        query_string = scope.get("query_string", b"").decode()
+        from urllib.parse import parse_qs
+        params = parse_qs(query_string)
+        token_list = params.get("token", [])
+        if token_list:
+            return token_list[0]
+        return None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path.startswith("/.well-known/") or path == "/register":
+                response = Response("Not Found", status_code=404)
+                await response(scope, receive, send)
+                return
+
+            token = self._extract_token(scope)
+            if not token:
+                response = Response("Unauthorized", status_code=401)
+                await response(scope, receive, send)
+                return
+
+            if hmac.compare_digest(token, self.static_token):
+                _request_user_email.set(None)
+                await self.app(scope, receive, send)
+                return
+
+            is_valid, user_email = await self._validate_sanctum_token(token)
+            if is_valid:
+                _request_user_email.set(user_email)
+                await self.app(scope, receive, send)
+                return
+
+            response = Response("Unauthorized", status_code=401)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
@@ -453,12 +580,12 @@ async def search_iacr(
 
 
 @mcp.tool()
-async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_arxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of an arXiv paper.
 
     Args:
         paper_id: arXiv paper ID (e.g., '2106.12345').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
@@ -466,15 +593,16 @@ async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_pubmed(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to download PDF of a PubMed paper.
 
     Args:
         paper_id: PubMed ID (PMID).
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         str: Message indicating that direct PDF download is not supported.
     """
+    os.makedirs(save_path, exist_ok=True)
     try:
         return pubmed_searcher.download_pdf(paper_id, save_path)
     except NotImplementedError as e:
@@ -482,51 +610,54 @@ async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_biorxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a bioRxiv paper.
 
     Args:
         paper_id: bioRxiv DOI.
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return biorxiv_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
-async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_medrxiv(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a medRxiv paper.
 
     Args:
         paper_id: medRxiv DOI.
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return medrxiv_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
-async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_iacr(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of an IACR ePrint paper.
 
     Args:
         paper_id: IACR paper ID (e.g., '2009/101').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
     """
+    os.makedirs(save_path, exist_ok=True)
     return iacr_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
-async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_arxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from an arXiv paper PDF.
 
     Args:
         paper_id: arXiv paper ID (e.g., '2106.12345').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -538,7 +669,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str
 
 
 @mcp.tool()
-async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_pubmed_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a PubMed paper.
 
     Args:
@@ -551,12 +682,12 @@ async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> st
 
 
 @mcp.tool()
-async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_biorxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a bioRxiv paper PDF.
 
     Args:
         paper_id: bioRxiv DOI.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -568,12 +699,12 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
 
 
 @mcp.tool()
-async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_medrxiv_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a medRxiv paper PDF.
 
     Args:
         paper_id: medRxiv DOI.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -585,12 +716,12 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
 
 
 @mcp.tool()
-async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_iacr_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from an IACR ePrint paper PDF.
 
     Args:
         paper_id: IACR paper ID (e.g., '2009/101').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -620,7 +751,7 @@ async def search_semantic(query: str, year: Optional[str] = None, max_results: i
 
 
 @mcp.tool()
-async def download_semantic(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_semantic(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Download PDF of a Semantic Scholar paper.    
 
     Args:
@@ -633,15 +764,16 @@ async def download_semantic(paper_id: str, save_path: str = "./downloads") -> st
             - PMID:<id> (e.g., "PMID:19872477")
             - PMCID:<id> (e.g., "PMCID:2323736")
             - URL:<url> (e.g., "URL:https://arxiv.org/abs/2106.15928v1")
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         Path to the downloaded PDF file.
-    """ 
+    """
+    os.makedirs(save_path, exist_ok=True)
     return semantic_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
-async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_semantic_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Read and extract text content from a Semantic Scholar paper. 
 
     Args:
@@ -654,7 +786,7 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
             - PMID:<id> (e.g., "PMID:19872477")
             - PMCID:<id> (e.g., "PMCID:2323736")
             - URL:<url> (e.g., "URL:https://arxiv.org/abs/2106.15928v1")
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: The extracted text content of the paper.
     """
@@ -711,12 +843,12 @@ async def get_crossref_paper_by_doi(doi: str) -> Dict:
 
 
 @mcp.tool()
-async def download_crossref(paper_id: str, save_path: str = "./downloads") -> str:
+async def download_crossref(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to download PDF of a CrossRef paper.
 
     Args:
         paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
-        save_path: Directory to save the PDF (default: './downloads').
+        save_path: Directory to save the PDF (uses shared volume by default).
     Returns:
         str: Message indicating that direct PDF download is not supported.
         
@@ -846,12 +978,12 @@ async def download_with_fallback(
 
 
 @mcp.tool()
-async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> str:
+async def read_crossref_paper(paper_id: str, save_path: str = DEFAULT_DOWNLOAD_PATH) -> str:
     """Attempt to read and extract text content from a CrossRef paper.
 
     Args:
         paper_id: CrossRef DOI (e.g., '10.1038/nature12373').
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
+        save_path: Directory where the PDF is/will be saved (uses shared volume by default).
     Returns:
         str: Message indicating that direct paper reading is not supported.
         
@@ -862,522 +994,251 @@ async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> 
     return crossref_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool()
-async def search_openalex(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from OpenAlex.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(openalex_searcher, query, max_results)
-    return papers if papers else []
+_SEARCHER_MAP = {
+    "arxiv": arxiv_searcher,
+    "pubmed": pubmed_searcher,
+    "biorxiv": biorxiv_searcher,
+    "medrxiv": medrxiv_searcher,
+    "iacr": iacr_searcher,
+    "semantic": semantic_searcher,
+    "crossref": crossref_searcher,
+}
 
 
 @mcp.tool()
-async def search_pmc(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from PubMed Central (PMC).
+async def ingest_paper(
+    paper_id: str,
+    source: str,
+    projekt_id: str,
+    save_path: str = DEFAULT_DOWNLOAD_PATH,
+) -> Dict:
+    """Download and ingest a paper into the RAG vector store, linked to a project.
 
     Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(pmc_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_core(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from CORE.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(core_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_europepmc(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from Europe PMC.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(europepmc_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_dblp(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from dblp computer science bibliography.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(dblp_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_openaire(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from OpenAIRE European Open Access infrastructure.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(openaire_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_citeseerx(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from CiteSeerX digital library.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(citeseerx_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_doaj(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from DOAJ (Directory of Open Access Journals).
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(doaj_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_base(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from BASE (Bielefeld Academic Search Engine).
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(base_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_zenodo(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from Zenodo open repository.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(zenodo_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_hal(query: str, max_results: int = 10) -> List[Dict]:
-    """Search academic papers from HAL open archive.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(hal_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
-    """Search metadata records from SSRN.
-
-    Note: SSRN connector is metadata-only and does not support direct PDF download.
-
-    Args:
-        query: Search query string (e.g., 'machine learning').
-        max_results: Maximum number of papers to return (default: 10).
-    Returns:
-        List of paper metadata in dictionary format.
-    """
-    papers = await async_search(ssrn_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def search_unpaywall(query: str, max_results: int = 10) -> List[Dict]:
-    """Lookup a DOI via Unpaywall and return OA metadata.
-
-    Unpaywall is DOI-centric and does not support generic keyword search.
-    This tool extracts the first DOI from `query` and returns at most one record.
-
-    Args:
-        query: DOI string or text containing a DOI.
-        max_results: Kept for API consistency; Unpaywall returns max 1 record.
-    Returns:
-        List with one paper metadata dict when DOI is resolvable, else empty list.
-    """
-    papers = await async_search(unpaywall_searcher, query, max_results)
-    return papers if papers else []
-
-
-@mcp.tool()
-async def read_dblp_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Attempt to read and extract text content from a dblp paper.
-
-    Note: dblp doesn't provide direct paper content access.
-    This function returns an informative message.
-
-    Args:
-        paper_id: dblp paper identifier.
-        save_path: Directory where the PDF would be saved (unused).
-    Returns:
-        str: Message indicating that direct paper reading is not supported.
-    """
-    return dblp_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_dblp(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from dblp.
-
-    Note: dblp doesn't provide direct PDF access.
-    This function returns an informative message.
-
-    Args:
-        paper_id: dblp paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Message indicating that direct PDF download is not supported.
-    """
-    return dblp_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_openaire_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Attempt to read and extract text content from an OpenAIRE paper.
-
-    Args:
-        paper_id: OpenAIRE paper identifier.
+        paper_id: Platform-specific paper ID (e.g., arXiv '2106.12345', DOI, PMID).
+        source: Platform name: 'arxiv', 'pubmed', 'biorxiv', 'medrxiv', 'iacr', 'semantic', 'crossref'.
+        projekt_id: UUID of the review project to associate this paper with.
         save_path: Directory where the PDF is/will be saved (default: './downloads').
     Returns:
-        str: Extracted text or error message.
+        Dict with 'status' key indicating 'queued' or an error message.
     """
-    return openaire_searcher.read_paper(paper_id, save_path)
+    if not LARAVEL_INGEST_URL or not LARAVEL_MCP_TOKEN:
+        return {"error": "LARAVEL_INGEST_URL or LARAVEL_MCP_TOKEN not configured"}
+
+    searcher = _SEARCHER_MAP.get(source)
+    if searcher is None:
+        return {"error": f"Unknown source '{source}'. Valid: {list(_SEARCHER_MAP.keys())}"}
+
+    try:
+        text = searcher.read_paper(paper_id, save_path)
+    except Exception as e:
+        return {"error": f"Failed to read paper: {e}"}
+
+    try:
+        papers = searcher.search(paper_id, max_results=1)
+        title = papers[0].title if papers else paper_id
+    except Exception:
+        title = paper_id
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            LARAVEL_INGEST_URL,
+            json={
+                "paper_id": paper_id,
+                "source": source,
+                "title": title,
+                "text": text,
+                "projekt_id": projekt_id,
+            },
+            headers={"Authorization": f"Bearer {LARAVEL_MCP_TOKEN}"},
+        )
+
+    if response.is_error:
+        return {"error": f"Ingest endpoint returned {response.status_code}: {response.text}"}
+
+    return response.json()
 
 
 @mcp.tool()
-async def download_openaire(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from OpenAIRE.
+async def search_rag_papers(
+    query: str,
+    projekt_id: Optional[str] = None,
+    max_results: int = 5,
+) -> List[Dict]:
+    """Semantic search over ingested papers in the RAG vector store.
 
     Args:
-        paper_id: OpenAIRE paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
+        query: Natural language query (e.g., 'CRISPR off-target effects').
+        projekt_id: Optional UUID to restrict search to a specific review project.
+                    Omit for a global search across all ingested papers.
+        max_results: Number of chunks to return (default: 5, max: 50).
     Returns:
-        str: Path to downloaded PDF or error message.
+        List of matching chunks with 'paper_id', 'title', 'source', 'chunk_index',
+        'text_chunk', 'similarity', and 'metadata'.
     """
-    return openaire_searcher.download_pdf(paper_id, save_path)
+    if not LARAVEL_INGEST_URL or not LARAVEL_MCP_TOKEN:
+        return [{"error": "LARAVEL_INGEST_URL or LARAVEL_MCP_TOKEN not configured"}]
+
+    base_url = LARAVEL_INGEST_URL.rsplit("/ingest", 1)[0]
+    params: Dict = {"q": query, "max_results": max_results}
+    if projekt_id:
+        params["projekt_id"] = projekt_id
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{base_url}/rag-search",
+            params=params,
+            headers={"Authorization": f"Bearer {LARAVEL_MCP_TOKEN}"},
+        )
+
+    if response.is_error:
+        return [{"error": f"Search endpoint returned {response.status_code}: {response.text}"}]
+
+    return response.json()
 
 
-@mcp.tool()
-async def read_citeseerx_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read and extract text content from a CiteSeerX paper.
+def create_app() -> Starlette:
+    """Create a Starlette ASGI app with Bearer auth and SSE transport."""
+    import json as _json
 
-    Args:
-        paper_id: CiteSeerX paper identifier.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Extracted text or fallback abstract/error message.
-    """
-    return citeseerx_searcher.read_paper(paper_id, save_path)
+    # Keep the endpoint configurable so reverse proxies can avoid path collisions.
+    message_path = MCP_MESSAGES_PATH
+    if not message_path.startswith("/"):
+        message_path = f"/{message_path}"
+    if not message_path.endswith("/"):
+        message_path = f"{message_path}/"
 
+    sse = SseServerTransport(message_path)
 
-@mcp.tool()
-async def download_citeseerx(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from CiteSeerX.
+    async def handle_sse(scope: Scope, receive: Receive, send: Send):
+        """ASGI app for SSE endpoint — must be mounted via Mount, not Route."""
+        async with sse.connect_sse(scope, receive, send) as streams:
+            await mcp._mcp_server.run(
+                streams[0],
+                streams[1],
+                mcp._mcp_server.create_initialization_options(),
+            )
 
-    Args:
-        paper_id: CiteSeerX paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Path to downloaded PDF or error message.
-    """
-    return citeseerx_searcher.download_pdf(paper_id, save_path)
+    async def handle_rest_search(request: Request):
+        """Plain REST endpoint — callable from PHP without MCP protocol.
 
-
-@mcp.tool()
-async def read_doaj_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read and extract text content from a DOAJ paper.
-
-    Args:
-        paper_id: DOAJ paper identifier.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Extracted text content.
-    """
-    return doaj_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_doaj(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from DOAJ.
-
-    Args:
-        paper_id: DOAJ paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Path to downloaded PDF.
-    """
-    return doaj_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_base_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read and extract text content from a BASE paper.
-
-    Args:
-        paper_id: BASE paper identifier.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Extracted text content.
-    """
-    return base_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_base(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from BASE.
-
-    Args:
-        paper_id: BASE paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Path to downloaded PDF.
-    """
-    return base_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_zenodo_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read and extract text content from a Zenodo paper.
-
-    Args:
-        paper_id: Zenodo paper identifier.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Extracted text content.
-    """
-    return zenodo_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_zenodo(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from Zenodo.
-
-    Args:
-        paper_id: Zenodo paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Path to downloaded PDF.
-    """
-    return zenodo_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_hal_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read and extract text content from a HAL paper.
-
-    Args:
-        paper_id: HAL paper identifier.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Extracted text content.
-    """
-    return hal_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_hal(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from HAL.
-
-    Args:
-        paper_id: HAL paper identifier.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Path to downloaded PDF.
-    """
-    return hal_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_ssrn_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Read paper content from SSRN.
-
-    Note: SSRN connector is metadata-only and read is not supported.
-
-    Args:
-        paper_id: SSRN paper identifier.
-        save_path: Directory where the PDF is/will be saved (unused).
-    Returns:
-        str: Error message from metadata-only SSRN connector.
-    """
-    return ssrn_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_ssrn(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from SSRN.
-
-    Note: SSRN connector is metadata-only and download is not supported.
-
-    Args:
-        paper_id: SSRN paper identifier.
-        save_path: Directory to save the PDF (unused).
-    Returns:
-        str: Error message from metadata-only SSRN connector.
-    """
-    return ssrn_searcher.download_pdf(paper_id, save_path)
-
-
-@mcp.tool()
-async def read_openalex_paper(paper_id: str, save_path: str = "./downloads") -> str:
-    """Attempt to read and extract text content from an OpenAlex paper.
-
-    Args:
-        paper_id: OpenAlex paper ID.
-        save_path: Directory where the PDF is/will be saved (default: './downloads').
-    Returns:
-        str: Message indicating that direct paper reading is not supported natively.
-    """
-    return openalex_searcher.read_paper(paper_id, save_path)
-
-
-@mcp.tool()
-async def download_openalex(paper_id: str, save_path: str = "./downloads") -> str:
-    """Download PDF for a paper from OpenAlex.
-
-    Args:
-        paper_id: OpenAlex paper ID.
-        save_path: Directory to save the PDF (default: './downloads').
-    Returns:
-        str: Error message, typically OpenAlex relies on extracted pdf_url instead of direct downloads.
-    """
-    return await asyncio.to_thread(openalex_searcher.download_pdf, paper_id, save_path)
-
-
-# ---------------------------------------------------------------------------
-# Optional IEEE Xplore tools — registered only when API key is set
-# ---------------------------------------------------------------------------
-if ieee_searcher is not None:
-    @mcp.tool()
-    async def search_ieee(query: str, max_results: int = 10) -> List[Dict]:
-        """Search IEEE Xplore for papers.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
-
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results (default: 10).
-        Returns:
-            List of paper dicts from IEEE Xplore.
+        POST /search   body: {"query": "...", "sources": [...], "max_results_per_source": 5}
+        GET  /search   params: query=...&sources=pubmed,arxiv&max_results_per_source=5
         """
-        return await async_search(ieee_searcher, query, max_results)
+        try:
+            if request.method == "POST":
+                body = await request.body()
+                params = _json.loads(body) if body else {}
+            else:
+                params = dict(request.query_params)
 
-    @mcp.tool()
-    async def download_ieee(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from IEEE Xplore.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY) and institutional access.
+            query = str(params.get("query", "")).strip()
+            if not query:
+                return Response(
+                    _json.dumps({"error": "query parameter required"}),
+                    media_type="application/json",
+                    status_code=400,
+                )
 
-        Args:
-            paper_id: IEEE Xplore paper identifier.
-            save_path: Directory to save the PDF (default: './downloads').
-        Returns:
-            str: Path to saved PDF or error message.
-        """
-        return await asyncio.to_thread(ieee_searcher.download_pdf, paper_id, save_path)
+            raw_sources = params.get("sources", "pubmed,arxiv,semantic")
+            if isinstance(raw_sources, list):
+                raw_sources = ",".join(raw_sources)
 
-    @mcp.tool()
-    async def read_ieee_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an IEEE Xplore paper.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
+            max_results = int(params.get("max_results_per_source", 5))
+            year = params.get("year") or None
 
-        Args:
-            paper_id: IEEE Xplore paper identifier.
-            save_path: Directory where the PDF is/will be saved (default: './downloads').
-        Returns:
-            str: Extracted text content.
-        """
-        return ieee_searcher.read_paper(paper_id, save_path)
+            results = await search_papers(
+                query=query,
+                max_results_per_source=max_results,
+                sources=raw_sources,
+                year=year,
+            )
+
+            return Response(
+                _json.dumps(results, default=str, ensure_ascii=False),
+                media_type="application/json",
+            )
+        except Exception as exc:
+            logging.exception("REST /search error")
+            return Response(
+                _json.dumps({"error": str(exc)}),
+                media_type="application/json",
+                status_code=500,
+            )
+
+    app = Starlette(
+        routes=[
+            Mount("/sse", app=handle_sse),
+            Route("/search", endpoint=handle_rest_search, methods=["GET", "POST"]),
+            Mount(message_path, app=sse.handle_post_message),
+        ],
+    )
+
+    return BearerAuthMiddleware(app, BEARER_TOKEN)
 
 
-# ---------------------------------------------------------------------------
-# Optional ACM Digital Library tools — registered only when API key is set
-# ---------------------------------------------------------------------------
-if acm_searcher is not None:
-    @mcp.tool()
-    async def search_acm(query: str, max_results: int = 10) -> List[Dict]:
-        """Search ACM Digital Library for papers.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
+def create_streamable_app():
+    """Create Streamable HTTP app via FastMCP + REST search + Bearer auth."""
+    import json as _json
 
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results (default: 10).
-        Returns:
-            List of paper dicts from ACM DL.
-        """
-        return await async_search(acm_searcher, query, max_results)
+    streamable_app = mcp.streamable_http_app()
 
-    @mcp.tool()
-    async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from ACM Digital Library.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY) and institutional access.
+    async def handle_rest_search(request: Request):
+        """Plain REST endpoint for PHP (same as SSE version)."""
+        try:
+            if request.method == "POST":
+                body = await request.body()
+                params = _json.loads(body) if body else {}
+            else:
+                params = dict(request.query_params)
+            query = str(params.get("query", "")).strip()
+            if not query:
+                return Response(_json.dumps({"error": "query parameter required"}), media_type="application/json", status_code=400)
+            sources_raw = params.get("sources", ["pubmed", "arxiv", "semantic"])
+            if isinstance(sources_raw, str):
+                sources_raw = [s.strip() for s in sources_raw.split(",")]
+            max_results = int(params.get("max_results_per_source", params.get("max_results", 5)))
+            results = await search_papers_impl(query=query, sources=",".join(sources_raw), max_results_per_source=max_results)
+            return Response(_json.dumps(results, default=str), media_type="application/json")
+        except Exception as e:
+            logging.error(f"REST search error: {e}")
+            return Response(_json.dumps({"error": str(e)}), media_type="application/json", status_code=500)
 
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory to save the PDF (default: './downloads').
-        Returns:
-            str: Path to saved PDF or error message.
-        """
-        return await asyncio.to_thread(acm_searcher.download_pdf, paper_id, save_path)
+    app = Starlette(
+        routes=[
+            Route("/search", handle_rest_search, methods=["GET", "POST"]),
+            Mount("/", app=streamable_app),
+        ],
+    )
 
-    @mcp.tool()
-    async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an ACM Digital Library paper.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
-
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory where the PDF is/will be saved (default: './downloads').
-        Returns:
-            str: Extracted text content.
-        """
-        return acm_searcher.read_paper(paper_id, save_path)
+    return BearerAuthMiddleware(app, BEARER_TOKEN)
 
 
 def main():
-    mcp.run(transport="stdio")
+    import sys
+
+    transport = os.getenv("MCP_TRANSPORT", "sse")
+    if len(sys.argv) > 1 and sys.argv[1] == "stdio":
+        transport = "stdio"
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport == "streamable-http":
+        from mcp.server.transport_security import TransportSecuritySettings
+        host = os.getenv("PAPERSEARCH_HOST", "0.0.0.0")
+        port = int(os.getenv("PAPERSEARCH_PORT", "8089"))
+        mcp.settings.host = host
+        mcp.settings.port = port
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
+        mcp.run(transport="streamable-http")
+    else:
+        host = os.getenv("PAPERSEARCH_HOST", "0.0.0.0")
+        port = int(os.getenv("PAPERSEARCH_PORT", "8089"))
+        uvicorn.run(create_app(), host=host, port=port)
 
 
 if __name__ == "__main__":
     main()
+

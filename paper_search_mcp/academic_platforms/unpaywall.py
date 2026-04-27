@@ -5,6 +5,7 @@ import requests
 from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
+from ..context import _request_user_email
 from .base import PaperSource
 
 logger = logging.getLogger(__name__)
@@ -17,20 +18,40 @@ class UnpaywallResolver:
     USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/openags/paper-search-mcp)"
 
     def __init__(self, email: Optional[str] = None):
-        configured_email = get_env("UNPAYWALL_EMAIL", "") if email is None else email
-        self.email = configured_email.strip()
+        self._override_email = (email or "").strip() or None
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": self.USER_AGENT,
             "Accept": "application/json",
         })
 
-        if not self.email:
+        if not self._override_email and not get_env("UNPAYWALL_EMAIL", ""):
             logger.warning(
                 "PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL not configured. "
-                "Unpaywall fallback will be skipped. "
+                "Unpaywall fallback will be resolved per-request from the authenticated "
+                "user's email. Anonymous/static-token requests without a server-wide "
+                "UNPAYWALL_EMAIL will skip Unpaywall. "
                 "You can request free access at https://unpaywall.org/products/api"
             )
+
+    @property
+    def email(self) -> str:
+        """Resolve Unpaywall contact email dynamically per request.
+
+        Priority: constructor override > per-request authenticated user email
+        > server-wide UNPAYWALL_EMAIL env var.
+        """
+        if self._override_email:
+            return self._override_email
+        request_email = _request_user_email.get()
+        if request_email:
+            return request_email.strip()
+        return get_env("UNPAYWALL_EMAIL", "").strip()
+
+    @email.setter
+    def email(self, value: str) -> None:
+        """Allow direct assignment (used in tests) by treating it as override."""
+        self._override_email = (value or "").strip() or None
 
     def resolve_best_pdf_url(self, doi: str) -> Optional[str]:
         """Return the best available OA PDF URL for a DOI."""

@@ -9,6 +9,7 @@ OAI-PMH, such as BASE and CiteSeerX.
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+from urllib.parse import urlparse
 import requests
 import xml.etree.ElementTree as ET
 import time
@@ -224,8 +225,13 @@ class OAIPMHSearcher(PaperSource):
             doi = ''
             identifier_elems = dc_root.findall(f'{{{DC_NS}}}identifier') or dc_root.findall('identifier')
             for elem in identifier_elems:
-                if elem.text and 'doi.org' in elem.text.lower():
-                    doi = elem.text
+                if not elem.text:
+                    continue
+                candidate = elem.text.strip()
+                parsed = urlparse(candidate)
+                host = (parsed.hostname or '').lower()
+                if parsed.scheme in ('http', 'https') and host in ('doi.org', 'www.doi.org'):
+                    doi = candidate
                     break
 
             # If no DOI found, try to extract from text

@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import random
+from urllib.parse import urlparse
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
@@ -69,7 +70,11 @@ class SemanticSearcher(PaperSource):
         if not all_urls:
             return ""
 
-        doi_urls = [url for url in all_urls if "doi.org" in url]
+        doi_urls = [
+            url
+            for url in all_urls
+            if (urlparse(url).hostname or "").lower() == "doi.org"
+        ]
         if doi_urls:
             return doi_urls[0]
 

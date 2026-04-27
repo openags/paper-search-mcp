@@ -11,6 +11,7 @@ Documentation: https://www.base-search.net/about/en/about_sources_date.php
 
 from typing import List, Optional, Dict, Any
 import logging
+from urllib.parse import urlparse
 from .oaipmh import OAIPMHSearcher
 from ..paper import Paper
 
@@ -123,12 +124,17 @@ class BASESearcher(OAIPMHSearcher):
         for ident_elem in identifiers:
             if ident_elem.text:
                 ident_text = ident_elem.text.lower()
-                if 'base-search.net' in ident_text:
+                parsed_ident = urlparse(ident_elem.text)
+                host = parsed_ident.hostname.lower() if parsed_ident.hostname else ""
+                if host == "base-search.net" or host.endswith(".base-search.net"):
                     paper.extra['base_id'] = ident_text
                 elif 'urn:nbn:' in ident_text:
                     paper.extra['urn'] = ident_text
-                elif 'hdl.handle.net' in ident_text:
-                    paper.extra['handle'] = ident_text
+                else:
+                    parsed = urlparse(ident_elem.text)
+                    host = (parsed.hostname or "").lower()
+                    if host == 'hdl.handle.net':
+                        paper.extra['handle'] = ident_text
 
         # Extract rights information
         rights_elems = dc_root.findall('.//{http://purl.org/dc/elements/1.1/}rights') or \

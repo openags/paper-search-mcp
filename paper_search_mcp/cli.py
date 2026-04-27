@@ -83,7 +83,7 @@ ALL_SOURCES = [
     "arxiv", "pubmed", "biorxiv", "medrxiv", "google_scholar", "iacr",
     "semantic", "crossref", "openalex", "pmc", "core", "europepmc",
     "dblp", "openaire", "citeseerx", "doaj", "base", "zenodo", "hal",
-    "ssrn", "unpaywall",
+    "ssrn", "unpaywall", "ieee", "acm",
 ]
 
 
@@ -128,6 +128,18 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
     return [p.to_dict() for p in papers]
 
 
+async def _async_search_openalex_ssrn(openalex_searcher: Any, query: str, max_results: int) -> List[Dict]:
+    """Search SSRN papers via OpenAlex filter."""
+    papers = await asyncio.to_thread(openalex_searcher.search_ssrn, query, max_results)
+    if papers:
+        return [p.to_dict() for p in papers]
+    # Fallback to direct SSRN searcher if no results
+    ssrn_searcher = SEARCHERS.get("ssrn")
+    if ssrn_searcher:
+        return await _async_search(ssrn_searcher, query, max_results)
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -145,6 +157,12 @@ async def cmd_search(args: argparse.Namespace) -> int:
         extra = {}
         if src == "semantic" and args.year:
             extra["year"] = args.year
+        if src == "ssrn":
+            # SSRN: prefer OpenAlex SSRN filter for better coverage and speed
+            openalex_searcher = SEARCHERS.get("openalex")
+            if openalex_searcher:
+                tasks[src] = _async_search_openalex_ssrn(openalex_searcher, args.query, args.max_results)
+                continue
         tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
 
     names = list(tasks.keys())

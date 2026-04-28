@@ -37,6 +37,7 @@ from .paper import Paper
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
 logger = logging.getLogger(__name__)
+GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS = 20.0
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -431,7 +432,18 @@ async def search_google_scholar(query: str, max_results: int = 10) -> List[Dict]
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(google_scholar_searcher, query, max_results)
+    try:
+        papers = await asyncio.wait_for(
+            async_search(google_scholar_searcher, query, max_results),
+            timeout=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Google Scholar search timed out after %.1fs for query=%r; returning no results.",
+            GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+            query,
+        )
+        return []
     return papers if papers else []
 
 

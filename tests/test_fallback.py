@@ -6,6 +6,29 @@ from paper_search_mcp import server
 
 
 class TestDownloadWithFallback(unittest.TestCase):
+    def test_download_annas_archive_tool(self):
+        with patch("paper_search_mcp.server.AnnasArchiveFetcher.download_pdf", return_value="/tmp/annas.pdf"):
+            result = asyncio.run(server.download_annas_archive("10.1000/test"))
+            self.assertEqual(result, "/tmp/annas.pdf")
+
+    def test_annas_archive_fallback_before_scihub(self):
+        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
+             patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=(None, "repo failed"))), \
+             patch.object(server.unpaywall_resolver, "resolve_best_pdf_url", return_value=None), \
+             patch("paper_search_mcp.server.AnnasArchiveFetcher.download_pdf", return_value="/tmp/annas.pdf"), \
+             patch("paper_search_mcp.server.SciHubFetcher.download_pdf", side_effect=AssertionError("Sci-Hub should not be called")):
+            result = asyncio.run(
+                server.download_with_fallback(
+                    source="arxiv",
+                    paper_id="1234.5678",
+                    doi="10.1000/test",
+                    title="test",
+                    use_annas_archive=True,
+                    use_scihub=True,
+                )
+            )
+            self.assertEqual(result, "/tmp/annas.pdf")
+
     def test_repository_fallback_before_scihub(self):
         with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
              patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=("/tmp/repo.pdf", ""))), \
@@ -16,6 +39,7 @@ class TestDownloadWithFallback(unittest.TestCase):
                     paper_id="1234.5678",
                     doi="10.1000/test",
                     title="test",
+                    use_annas_archive=False,
                     use_scihub=True,
                 )
             )
@@ -32,6 +56,7 @@ class TestDownloadWithFallback(unittest.TestCase):
                     paper_id="1234.5678",
                     doi="10.1000/test",
                     title="test",
+                    use_annas_archive=False,
                     use_scihub=True,
                 )
             )
@@ -47,6 +72,7 @@ class TestDownloadWithFallback(unittest.TestCase):
                     paper_id="1234.5678",
                     doi="10.1000/test",
                     title="test",
+                    use_annas_archive=False,
                     use_scihub=False,
                 )
             )

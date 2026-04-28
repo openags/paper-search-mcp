@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 import requests
@@ -239,9 +240,16 @@ class HALSearcher(PaperSource):
                 doi = doi[0] if doi else ""
 
             year = doc.get("publicationDateY_i") or doc.get("producedDateY_i", "")
-            pub_date = (
-                str(year) if year else (doc.get("submittedDate_s", "") or "")[:10]
-            )
+            pub_date_str = str(year) if year else (doc.get("submittedDate_s", "") or "")[:10]
+            pub_date = None
+            if pub_date_str:
+                try:
+                    pub_date = datetime.fromisoformat(pub_date_str[:10])
+                except ValueError:
+                    try:
+                        pub_date = datetime(int(pub_date_str[:4]), 1, 1)
+                    except (ValueError, TypeError):
+                        pub_date = None
 
             pdf_url = doc.get("fileMain_s", "") or ""
             record_url = doc.get("uri_s", f"https://hal.archives-ouvertes.fr/{hal_id}")
@@ -252,7 +260,7 @@ class HALSearcher(PaperSource):
                 authors=authors,
                 abstract=abstract.strip(),
                 doi=doi,
-                published_date=str(pub_date),
+                published_date=pub_date,
                 pdf_url=pdf_url,
                 url=record_url,
                 source="hal",

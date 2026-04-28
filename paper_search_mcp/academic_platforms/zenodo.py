@@ -10,6 +10,7 @@ API docs: https://developers.zenodo.org/
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 import requests
@@ -244,9 +245,13 @@ class ZenodoSearcher(PaperSource):
 
             abstract = re.sub(r"<[^>]+>", " ", abstract).strip()
 
-            pub_date = meta.get("publication_date", "")
-            if len(pub_date) >= 4:
-                pub_date = pub_date[:10]  # keep YYYY-MM-DD
+            pub_date_str = meta.get("publication_date", "")
+            pub_date = None
+            if len(pub_date_str) >= 4:
+                try:
+                    pub_date = datetime.fromisoformat(pub_date_str[:10])
+                except ValueError:
+                    pub_date = datetime(int(pub_date_str[:4]), 1, 1)
 
             # Pick the best available PDF url from top-level links
             pdf_url = ""

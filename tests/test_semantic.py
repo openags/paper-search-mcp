@@ -29,21 +29,151 @@ class TestSemanticSearcher(unittest.TestCase):
     def setUp(self):
         self.searcher = SemanticSearcher()
 
+    def _mock_response(
+        self,
+        content,
+        content_type="application/pdf",
+        url="https://example.com/paper.pdf",
+        error=None,
+    ):
+        response = Mock()
+        response.content = content
+        response.headers = {"Content-Type": content_type}
+        response.url = url
+        if error is not None:
+            response.raise_for_status.side_effect = error
+        else:
+            response.raise_for_status.side_effect = None
+            response.raise_for_status.return_value = None
+        return response
+
     def test_download_pdf_saves_file_when_pdf_url_available(self):
         paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
-        response = Mock()
-        response.content = b"%PDF-1.4 test content"
-        response.raise_for_status.return_value = None
+        response = self._mock_response(b"%PDF-1.4 test content")
 
         with tempfile.TemporaryDirectory(prefix="semantic_mock_download_") as test_dir:
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch("paper_search_mcp.academic_platforms.semantic.requests.get", return_value=response):
+                with patch.object(self.searcher.session, "get", return_value=response):
                     result = self.searcher.download_pdf("paper/123", test_dir)
 
             expected_path = Path(test_dir) / "semantic_paper_123.pdf"
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
             self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
+
+    def test_download_pdf_uses_pmcid_fallback_when_direct_url_is_forbidden(self):
+        direct_url = "https://academic.oup.com/article.pdf"
+        fallback_url = "https://europepmc.org/articles/PMC10516373?pdf=render"
+        paper = SimpleNamespace(
+            pdf_url=direct_url,
+            url="https://www.semanticscholar.org/paper/test",
+            extra={"externalIds": {"PubMedCentral": "10516373"}},
+        )
+        forbidden_response = self._mock_response(
+            b"<!DOCTYPE html><title>Just a moment...</title>",
+            content_type="text/html; charset=UTF-8",
+            url=direct_url,
+            error=requests.HTTPError("403 Client Error: Forbidden"),
+        )
+        pdf_response = self._mock_response(
+            b"%PDF-1.7 fallback content",
+            content_type="application/pdf",
+            url=fallback_url,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_fallback_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    side_effect=[forbidden_response, pdf_response],
+                ) as mocked_get:
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertEqual(result, str(expected_path))
+            self.assertEqual(expected_path.read_bytes(), b"%PDF-1.7 fallback content")
+            self.assertEqual(mocked_get.call_args_list[0].args[0], direct_url)
+            self.assertEqual(mocked_get.call_args_list[1].args[0], fallback_url)
+
+    def test_download_pdf_prefers_europe_pmc_for_pmc_article_url(self):
+        article_url = "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11326250"
+        fallback_url = "https://europepmc.org/articles/PMC11326250?pdf=render"
+        paper = SimpleNamespace(
+            pdf_url=article_url,
+            url="https://www.semanticscholar.org/paper/test",
+            extra={"externalIds": {"PubMedCentral": "11326250"}},
+        )
+        pdf_response = self._mock_response(
+            b"%PDF-1.7 fallback content",
+            content_type="application/pdf",
+            url=fallback_url,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_pmc_fallback_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    return_value=pdf_response,
+                ) as mocked_get:
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertEqual(result, str(expected_path))
+            self.assertEqual(mocked_get.call_args.args[0], fallback_url)
+
+    def test_download_pdf_does_not_save_html_as_pdf(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/article",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+        html_response = self._mock_response(
+            b"<!doctype html><html><body>not a pdf</body></html>",
+            content_type="text/html; charset=utf-8",
+            url="https://example.com/article",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_html_download_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    return_value=html_response,
+                ):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertTrue(result.startswith("Error downloading PDF for paper/123"))
+            self.assertFalse(expected_path.exists())
+
+    def test_download_pdf_replaces_invalid_cached_file(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+        pdf_response = self._mock_response(
+            b"%PDF-1.7 replacement content",
+            content_type="application/pdf",
+            url="https://example.com/paper.pdf",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_bad_cache_") as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"<!doctype html><html>cached challenge</html>")
+
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    return_value=pdf_response,
+                ):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            self.assertEqual(result, str(cached_path))
+            self.assertEqual(cached_path.read_bytes(), b"%PDF-1.7 replacement content")
 
     def test_parse_paper_handles_missing_publication_date(self):
         item = {

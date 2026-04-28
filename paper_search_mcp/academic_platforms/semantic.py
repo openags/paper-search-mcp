@@ -476,7 +476,7 @@ class SemanticSearcher(PaperSource):
         return candidates
 
     def _download_pdf_url(self, pdf_url: str, pdf_path: str) -> None:
-        response = requests.get(
+        response = self.session.get(
             pdf_url,
             headers=self._download_headers(),
             timeout=60,
@@ -662,7 +662,7 @@ class SemanticSearcher(PaperSource):
         for pmcid in self._extract_pmcids(paper):
             full_text_url = self.EUROPE_PMC_FULL_TEXT_XML_URL.format(pmcid=pmcid)
             try:
-                response = requests.get(
+                response = self.session.get(
                     full_text_url,
                     headers={
                         "User-Agent": self.session.headers.get(

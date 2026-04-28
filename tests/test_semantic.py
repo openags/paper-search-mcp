@@ -40,18 +40,20 @@ class TestSemanticSearcher(unittest.TestCase):
         response.content = content
         response.headers = {"Content-Type": content_type}
         response.url = url
-        response.raise_for_status.side_effect = error
+        if error is not None:
+            response.raise_for_status.side_effect = error
+        else:
+            response.raise_for_status.side_effect = None
+            response.raise_for_status.return_value = None
         return response
 
     def test_download_pdf_saves_file_when_pdf_url_available(self):
         paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
-        response = Mock()
-        response.content = b"%PDF-1.4 test content"
-        response.raise_for_status.return_value = None
+        response = self._mock_response(b"%PDF-1.4 test content")
 
         with tempfile.TemporaryDirectory(prefix="semantic_mock_download_") as test_dir:
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch("paper_search_mcp.academic_platforms.semantic.requests.get", return_value=response):
+                with patch.object(self.searcher.session, "get", return_value=response):
                     result = self.searcher.download_pdf("paper/123", test_dir)
 
             expected_path = Path(test_dir) / "semantic_paper_123.pdf"
@@ -81,8 +83,9 @@ class TestSemanticSearcher(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="semantic_fallback_") as test_dir:
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch(
-                    "paper_search_mcp.academic_platforms.semantic.requests.get",
+                with patch.object(
+                    self.searcher.session,
+                    "get",
                     side_effect=[forbidden_response, pdf_response],
                 ) as mocked_get:
                     result = self.searcher.download_pdf("paper/123", test_dir)
@@ -109,8 +112,9 @@ class TestSemanticSearcher(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="semantic_pmc_fallback_") as test_dir:
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch(
-                    "paper_search_mcp.academic_platforms.semantic.requests.get",
+                with patch.object(
+                    self.searcher.session,
+                    "get",
                     return_value=pdf_response,
                 ) as mocked_get:
                     result = self.searcher.download_pdf("paper/123", test_dir)
@@ -133,8 +137,9 @@ class TestSemanticSearcher(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="semantic_html_download_") as test_dir:
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch(
-                    "paper_search_mcp.academic_platforms.semantic.requests.get",
+                with patch.object(
+                    self.searcher.session,
+                    "get",
                     return_value=html_response,
                 ):
                     result = self.searcher.download_pdf("paper/123", test_dir)
@@ -160,8 +165,9 @@ class TestSemanticSearcher(unittest.TestCase):
             cached_path.write_bytes(b"<!doctype html><html>cached challenge</html>")
 
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
-                with patch(
-                    "paper_search_mcp.academic_platforms.semantic.requests.get",
+                with patch.object(
+                    self.searcher.session,
+                    "get",
                     return_value=pdf_response,
                 ):
                     result = self.searcher.download_pdf("paper/123", test_dir)

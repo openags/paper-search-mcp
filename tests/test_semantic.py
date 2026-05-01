@@ -11,9 +11,13 @@ from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
 def check_semantic_accessible():
     """Check if Semantic Scholar is accessible"""
     try:
-        response = requests.get("https://api.semanticscholar.org/graph/v1/paper/5bbfdf2e62f0508c65ba6de9c72fe2066fd98138", timeout=5)
+        response = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/"
+            "5bbfdf2e62f0508c65ba6de9c72fe2066fd98138",
+            timeout=5,
+        )
         return response.status_code == 200
-    except:
+    except requests.RequestException:
         return False
 
 
@@ -35,12 +39,16 @@ class TestSemanticSearcher(unittest.TestCase):
         content_type="application/pdf",
         url="https://example.com/paper.pdf",
         error=None,
+        headers=None,
     ):
+        chunks = list(content) if isinstance(content, (list, tuple)) else [content]
         response = Mock()
-        response.content = content
+        response.content = b"".join(chunks)
         response.headers = {"Content-Type": content_type}
+        if headers:
+            response.headers.update(headers)
         response.url = url
-        response.iter_content.return_value = iter([content])
+        response.iter_content.return_value = iter(chunks)
         response.close.return_value = None
         if error is not None:
             response.raise_for_status.side_effect = error
@@ -62,6 +70,19 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
             self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
+
+    def test_download_pdf_accepts_split_pdf_header(self):
+        paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
+        response = self._mock_response([b"%P", b"DF-1.4 split header"])
+
+        with tempfile.TemporaryDirectory(prefix="semantic_split_header_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(self.searcher.session, "get", return_value=response):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertEqual(result, str(expected_path))
+            self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 split header")
 
     def test_download_pdf_sanitizes_prefixed_identifier_for_filename(self):
         paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
@@ -166,6 +187,31 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertFalse(expected_path.exists())
             html_response.close.assert_called_once()
 
+    def test_download_pdf_rejects_non_pdf_body_with_pdf_content_type(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/article.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+        bad_response = self._mock_response(
+            b"not actually a pdf",
+            content_type="application/pdf",
+            url="https://example.com/article.pdf",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_fake_pdf_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    return_value=bad_response,
+                ):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertTrue(result.startswith("Error downloading PDF for paper/123"))
+            self.assertFalse(expected_path.exists())
+
     def test_download_pdf_closes_streamed_response_after_success(self):
         paper = SimpleNamespace(
             pdf_url="https://example.com/paper.pdf",
@@ -190,6 +236,32 @@ class TestSemanticSearcher(unittest.TestCase):
             expected_path = Path(test_dir) / "semantic_paper_123.pdf"
             self.assertEqual(result, str(expected_path))
             pdf_response.close.assert_called_once()
+
+    def test_download_pdf_removes_partial_temp_file_after_stream_failure(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+
+        def broken_stream():
+            yield b"%PDF-1.7 partial content"
+            raise requests.ConnectionError("connection lost")
+
+        response = self._mock_response(
+            b"%PDF-1.7 partial content",
+            url="https://example.com/paper.pdf",
+        )
+        response.iter_content.return_value = broken_stream()
+
+        with tempfile.TemporaryDirectory(prefix="semantic_partial_stream_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(self.searcher.session, "get", return_value=response):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            self.assertTrue(result.startswith("Error downloading PDF for paper/123"))
+            self.assertEqual(list(Path(test_dir).iterdir()), [])
+            response.close.assert_called_once()
 
     def test_download_pdf_replaces_invalid_cached_file(self):
         paper = SimpleNamespace(
@@ -243,7 +315,81 @@ class TestSemanticSearcher(unittest.TestCase):
                         result = self.searcher.read_paper("paper/123", test_dir)
 
             self.assertIn("text extraction failed", result)
+            self.assertIn("cached PDF was removed", result)
+            self.assertNotIn("PDF downloaded to", result)
             self.assertFalse(cached_path.exists())
+
+    def test_read_paper_omits_removed_pdf_path_when_full_text_fallback_succeeds(self):
+        paper = SimpleNamespace(
+            title="Fallback article",
+            authors=["Ada Lovelace"],
+            published_date=None,
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={"externalIds": {"PubMedCentral": "123456"}},
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="semantic_full_text_after_corrupt_"
+        ) as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"%PDF corrupt cached content")
+
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher,
+                    "_extract_pdf_text",
+                    side_effect=ValueError("broken pdf"),
+                ):
+                    with patch.object(
+                        self.searcher,
+                        "_read_europe_pmc_full_text",
+                        return_value=("Recovered full text", "https://example.com/xml"),
+                    ):
+                        result = self.searcher.read_paper("paper/123", test_dir)
+
+            self.assertIn("Full text source: https://example.com/xml", result)
+            self.assertIn("Recovered full text", result)
+            self.assertNotIn("PDF downloaded to:", result)
+            self.assertFalse(cached_path.exists())
+
+    def test_read_europe_pmc_full_text_closes_response(self):
+        paper = SimpleNamespace(
+            pdf_url="",
+            url="",
+            extra={"externalIds": {"PubMedCentral": "123456"}},
+        )
+        response = self._mock_response(
+            b"""
+            <article>
+              <front>
+                <article-meta>
+                  <title-group>
+                    <article-title>Article title</article-title>
+                  </title-group>
+                  <abstract><p>Abstract text</p></abstract>
+                </article-meta>
+              </front>
+              <body><sec><title>Results</title><p>Body text</p></sec></body>
+            </article>
+            """,
+            content_type="application/xml",
+            url=(
+                "https://www.ebi.ac.uk/europepmc/webservices/rest/"
+                "PMC123456/fullTextXML"
+            ),
+        )
+
+        with patch.object(self.searcher.session, "get", return_value=response):
+            text, source = self.searcher._read_europe_pmc_full_text(paper)
+
+        self.assertEqual(
+            source,
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123456/fullTextXML",
+        )
+        self.assertIn("Article title", text)
+        self.assertIn("Body text", text)
+        response.close.assert_called_once()
 
     def test_parse_paper_handles_missing_publication_date(self):
         item = {
@@ -373,19 +519,24 @@ class TestSemanticSearcher(unittest.TestCase):
                 self.assertIn("Title:", result)
                 self.assertIn("Authors:", result)
                 self.assertIn("Published Date:", result)
-                self.assertIn("PDF downloaded to:", result)
+                self.assertTrue(
+                    "PDF downloaded to:" in result or "Full text source:" in result
+                )
 
-                # Should contain page markers indicating text extraction
-                self.assertIn("--- Page", result)
+                if "PDF downloaded to:" in result:
+                    # Should contain page markers indicating PDF text extraction
+                    self.assertIn("--- Page", result)
 
-                # Check if PDF was actually downloaded
-                expected_filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
-                expected_path = os.path.join(test_dir, expected_filename)
-                self.assertTrue(os.path.exists(expected_path))
+                    # Check if PDF was actually downloaded
+                    expected_filename = (
+                        f"semantic_{self.searcher._safe_paper_id(paper_id)}.pdf"
+                    )
+                    expected_path = os.path.join(test_dir, expected_filename)
+                    self.assertTrue(os.path.exists(expected_path))
 
-                file_size = os.path.getsize(expected_path)
-                print(f"PDF file found: {expected_path} (size: {file_size} bytes)")
-                self.assertGreater(file_size, 1000)  # Should be at least 1KB
+                    file_size = os.path.getsize(expected_path)
+                    print(f"PDF file found: {expected_path} (size: {file_size} bytes)")
+                    self.assertGreater(file_size, 1000)  # Should be at least 1KB
 
                 # Show a preview of extracted text
                 preview = result[:500] + "..." if len(result) > 500 else result

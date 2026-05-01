@@ -99,6 +99,34 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
 
+    def test_download_pdf_caps_long_identifier_for_filename(self):
+        paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
+        response = self._mock_response(b"%PDF-1.4 test content")
+        paper_id = "URL:https://example.com/" + ("very-long-path/" * 30)
+
+        with tempfile.TemporaryDirectory(prefix="semantic_long_filename_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(self.searcher.session, "get", return_value=response):
+                    result = self.searcher.download_pdf(paper_id, test_dir)
+
+            filename = Path(result).name
+            safe_id = filename.removeprefix("semantic_").removesuffix(".pdf")
+            self.assertLessEqual(
+                len(safe_id),
+                self.searcher.SAFE_PAPER_ID_MAX_LENGTH,
+            )
+            self.assertTrue(Path(result).exists())
+
+    def test_safe_paper_id_adds_hash_for_distinct_long_identifiers(self):
+        base_id = "URL:https://example.com/" + ("segment/" * 40)
+
+        first = self.searcher._safe_paper_id(base_id + "a")
+        second = self.searcher._safe_paper_id(base_id + "b")
+
+        self.assertLessEqual(len(first), self.searcher.SAFE_PAPER_ID_MAX_LENGTH)
+        self.assertLessEqual(len(second), self.searcher.SAFE_PAPER_ID_MAX_LENGTH)
+        self.assertNotEqual(first, second)
+
     def test_download_pdf_uses_pmcid_fallback_when_direct_url_is_forbidden(self):
         direct_url = "https://academic.oup.com/article.pdf"
         fallback_url = "https://europepmc.org/articles/PMC10516373?pdf=render"
@@ -290,6 +318,20 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertEqual(result, str(cached_path))
             self.assertEqual(cached_path.read_bytes(), b"%PDF-1.7 replacement content")
 
+    def test_download_pdf_returns_valid_cached_file_without_api_lookup(self):
+        with tempfile.TemporaryDirectory(prefix="semantic_valid_cache_") as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"%PDF-1.7 cached content")
+
+            with patch.object(
+                self.searcher,
+                "get_paper_details",
+                side_effect=AssertionError("API lookup should not be called"),
+            ):
+                result = self.searcher.download_pdf("paper/123", test_dir)
+
+            self.assertEqual(result, str(cached_path))
+
     def test_read_paper_removes_cached_pdf_when_extraction_fails(self):
         paper = SimpleNamespace(
             pdf_url="https://example.com/paper.pdf",
@@ -390,6 +432,17 @@ class TestSemanticSearcher(unittest.TestCase):
         self.assertIn("Article title", text)
         self.assertIn("Body text", text)
         response.close.assert_called_once()
+
+    def test_extract_text_from_article_xml_rejects_dtd(self):
+        unsafe_xml = b"""
+        <!DOCTYPE article [
+          <!ENTITY repeated "unsafe">
+        ]>
+        <article><body><p>&repeated;</p></body></article>
+        """
+
+        with self.assertRaisesRegex(ValueError, "Unsafe XML declaration"):
+            self.searcher._extract_text_from_article_xml(unsafe_xml)
 
     def test_parse_paper_handles_missing_publication_date(self):
         item = {

@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import hashlib
 import os
 import requests
 import time
@@ -29,6 +30,7 @@ class SemanticSearcher(PaperSource):
     )
     DOWNLOAD_CHUNK_SIZE = 8192
     PDF_HEADER_SCAN_BYTES = 1024
+    SAFE_PAPER_ID_MAX_LENGTH = 120
     BROWSERS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -575,10 +577,19 @@ class SemanticSearcher(PaperSource):
                         "Could not remove partial PDF download: %s", temp_path
                     )
 
-    @staticmethod
-    def _safe_paper_id(paper_id: str) -> str:
+    @classmethod
+    def _safe_paper_id(cls, paper_id: str) -> str:
         safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", paper_id).strip("._")
-        return safe_id or "paper"
+        if not safe_id:
+            return "paper"
+
+        if len(safe_id) <= cls.SAFE_PAPER_ID_MAX_LENGTH:
+            return safe_id
+
+        digest = hashlib.sha256(paper_id.encode("utf-8")).hexdigest()[:12]
+        prefix_length = cls.SAFE_PAPER_ID_MAX_LENGTH - len(digest) - 1
+        prefix = safe_id[:prefix_length].rstrip("._-") or "paper"
+        return f"{prefix}_{digest}"
 
     @staticmethod
     def _remove_pdf_file(pdf_path: str, reason: str) -> Optional[str]:
@@ -596,22 +607,22 @@ class SemanticSearcher(PaperSource):
     def _download_paper_pdf(
         self, paper_id: str, save_path: str
     ) -> Tuple[Optional[str], Optional[Paper], List[str]]:
-        paper = self.get_paper_details(paper_id)
-        if not paper:
-            return None, None, [f"Could not find paper details for {paper_id}"]
-
         os.makedirs(save_path, exist_ok=True)
         filename = f"semantic_{self._safe_paper_id(paper_id)}.pdf"
         pdf_path = os.path.join(save_path, filename)
 
         if os.path.exists(pdf_path):
             if self._pdf_file_is_valid(pdf_path):
-                return pdf_path, paper, []
+                return pdf_path, None, []
             remove_error = self._remove_pdf_file(pdf_path, "cache validation failed")
             if remove_error:
-                return None, paper, [
+                return None, None, [
                     f"Could not remove invalid cached PDF: {remove_error}"
                 ]
+
+        paper = self.get_paper_details(paper_id)
+        if not paper:
+            return None, None, [f"Could not find paper details for {paper_id}"]
 
         candidates = self._candidate_pdf_urls(paper)
         if not candidates:
@@ -724,8 +735,15 @@ class SemanticSearcher(PaperSource):
             elif tag_name in {"sec", "body"}:
                 self._collect_body_text(child, parts)
 
+    @staticmethod
+    def _parse_article_xml(xml_content: bytes) -> ET.Element:
+        if re.search(br"<!\s*(?:doctype|entity)\b", xml_content, flags=re.IGNORECASE):
+            raise ValueError("Unsafe XML declaration in Europe PMC full text")
+
+        return ET.fromstring(xml_content, parser=ET.XMLParser())
+
     def _extract_text_from_article_xml(self, xml_content: bytes) -> str:
-        root = ET.fromstring(xml_content)
+        root = self._parse_article_xml(xml_content)
         parts: List[str] = []
 
         title = self._find_first_element(root, "article-title")

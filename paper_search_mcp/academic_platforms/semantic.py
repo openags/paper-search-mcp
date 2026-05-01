@@ -479,14 +479,21 @@ class SemanticSearcher(PaperSource):
         response = self.session.get(
             pdf_url,
             headers=self._download_headers(),
+            stream=True,
             timeout=60,
             allow_redirects=True,
         )
         response.raise_for_status()
 
         content_type = response.headers.get("Content-Type", "")
-        if not self._looks_like_pdf(response.content, content_type):
-            first_bytes = response.content[:16]
+        chunks = response.iter_content(chunk_size=8192)
+        first_chunk = b""
+        for chunk in chunks:
+            if chunk:
+                first_chunk = chunk
+                break
+        if not self._looks_like_pdf(first_chunk, content_type):
+            first_bytes = first_chunk[:16]
             raise ValueError(
                 "URL did not return a PDF "
                 f"(content-type={content_type or 'unknown'}, "
@@ -494,7 +501,15 @@ class SemanticSearcher(PaperSource):
             )
 
         with open(pdf_path, "wb") as file:
-            file.write(response.content)
+            file.write(first_chunk)
+            for chunk in chunks:
+                if chunk:
+                    file.write(chunk)
+
+    @staticmethod
+    def _safe_paper_id(paper_id: str) -> str:
+        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", paper_id).strip("._")
+        return safe_id or "paper"
 
     def _download_paper_pdf(
         self, paper_id: str, save_path: str
@@ -504,7 +519,7 @@ class SemanticSearcher(PaperSource):
             return None, None, [f"Could not find paper details for {paper_id}"]
 
         os.makedirs(save_path, exist_ok=True)
-        filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
+        filename = f"semantic_{self._safe_paper_id(paper_id)}.pdf"
         pdf_path = os.path.join(save_path, filename)
 
         if os.path.exists(pdf_path):
@@ -565,7 +580,7 @@ class SemanticSearcher(PaperSource):
             return self._format_download_error(paper_id, errors)
         except Exception as e:
             logger.error(f"PDF download error: {e}")
-            return f"Error downloading PDF: {e}"
+            return self._format_download_error(paper_id, [str(e)])
 
     def _extract_pdf_text(self, pdf_path: str) -> str:
         reader = PdfReader(pdf_path)

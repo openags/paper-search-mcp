@@ -40,6 +40,7 @@ class TestSemanticSearcher(unittest.TestCase):
         response.content = content
         response.headers = {"Content-Type": content_type}
         response.url = url
+        response.iter_content.return_value = iter([content])
         if error is not None:
             response.raise_for_status.side_effect = error
         else:
@@ -60,6 +61,21 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
             self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
+
+    def test_download_pdf_sanitizes_prefixed_identifier_for_filename(self):
+        paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
+        response = self._mock_response(b"%PDF-1.4 test content")
+
+        with tempfile.TemporaryDirectory(prefix="semantic_safe_filename_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(self.searcher.session, "get", return_value=response):
+                    result = self.searcher.download_pdf(
+                        "DOI:10.18653/v1/N18-3011", test_dir
+                    )
+
+            expected_path = Path(test_dir) / "semantic_DOI_10.18653_v1_N18-3011.pdf"
+            self.assertEqual(result, str(expected_path))
+            self.assertTrue(expected_path.exists())
 
     def test_download_pdf_uses_pmcid_fallback_when_direct_url_is_forbidden(self):
         direct_url = "https://academic.oup.com/article.pdf"

@@ -1,22 +1,26 @@
 import unittest
 import os
+import shutil
 import requests
 import tempfile
+import time
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
 
 
+@lru_cache(maxsize=1)
 def check_semantic_accessible():
     """Check if Semantic Scholar is accessible"""
     try:
-        response = requests.get(
+        with requests.get(
             "https://api.semanticscholar.org/graph/v1/paper/"
             "5bbfdf2e62f0508c65ba6de9c72fe2066fd98138",
             timeout=5,
-        )
-        return response.status_code == 200
+        ) as response:
+            return response.status_code == 200
     except requests.RequestException:
         return False
 
@@ -394,7 +398,9 @@ class TestSemanticSearcher(unittest.TestCase):
             extra={},
         )
 
-        with tempfile.TemporaryDirectory(prefix="semantic_cache_remove_error_") as test_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="semantic_cache_remove_error_"
+        ) as test_dir:
             cached_path = Path(test_dir) / "semantic_paper_123.pdf"
             cached_path.write_bytes(b"%PDF corrupt cached content")
 
@@ -481,8 +487,7 @@ class TestSemanticSearcher(unittest.TestCase):
             """,
             content_type="application/xml",
             url=(
-                "https://www.ebi.ac.uk/europepmc/webservices/rest/"
-                "PMC123456/fullTextXML"
+                "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123456/fullTextXML"
             ),
         )
 
@@ -527,6 +532,22 @@ class TestSemanticSearcher(unittest.TestCase):
         self.assertIsNotNone(paper)
         self.assertIsNone(paper.published_date)
 
+    def test_semantic_accessibility_probe_is_memoized(self):
+        check_semantic_accessible.cache_clear()
+        response = MagicMock()
+        response.status_code = 200
+        response.__enter__.return_value = response
+
+        try:
+            with patch.object(requests, "get", return_value=response) as mocked_get:
+                self.assertTrue(check_semantic_accessible())
+                self.assertTrue(check_semantic_accessible())
+
+            mocked_get.assert_called_once()
+            response.__exit__.assert_called_once()
+        finally:
+            check_semantic_accessible.cache_clear()
+
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_basic(self):
         """Test basic search functionality"""
@@ -559,9 +580,6 @@ class TestSemanticSearcher(unittest.TestCase):
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_download_pdf_functionality(self):
         """Test PDF download method with actual download"""
-        import tempfile
-        import shutil
-
         # Create a temporary directory for testing
         test_dir = tempfile.mkdtemp(prefix="semantic_test_")
 
@@ -612,9 +630,6 @@ class TestSemanticSearcher(unittest.TestCase):
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_read_paper_functionality(self):
         """Test read paper method with text extraction functionality"""
-        import tempfile
-        import shutil
-
         # Create a temporary directory for testing
         test_dir = tempfile.mkdtemp(prefix="semantic_read_test_")
 
@@ -682,7 +697,9 @@ class TestSemanticSearcher(unittest.TestCase):
         paper_details = self.searcher.get_paper_details(paper_id)
 
         if not paper_details:
-            self.skipTest("Semantic Scholar details endpoint is rate-limited or unavailable")
+            self.skipTest(
+                "Semantic Scholar details endpoint is rate-limited or unavailable"
+            )
 
         # Test basic attributes
         self.assertTrue(paper_details.title)
@@ -758,24 +775,18 @@ class TestSemanticSearcher(unittest.TestCase):
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_performance_comparison(self):
         """Test performance difference between detailed and compact search"""
-        import time
-
         query = "encryption"
         max_results = 3
 
         # Test detailed search time
         print("\nTesting detailed search performance...")
         start_time = time.time()
-        compact_papers = self.searcher.search(
-            query, max_results=max_results
-        )
+        compact_papers = self.searcher.search(query, max_results=max_results)
         compact_time = time.time() - start_time
 
         print(
             f"Compact search took {compact_time:.2f} seconds for {len(compact_papers)} papers"
         )
-
-
 
 
 if __name__ == "__main__":

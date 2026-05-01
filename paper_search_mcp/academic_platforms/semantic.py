@@ -168,7 +168,8 @@ class SemanticSearcher(PaperSource):
         api_key = get_env("SEMANTIC_SCHOLAR_API_KEY", "")
         if not api_key or api_key.strip() == "":
             logger.warning(
-                "No SEMANTIC_SCHOLAR_API_KEY set or it's empty. Using unauthenticated access with lower rate limits."
+                "No SEMANTIC_SCHOLAR_API_KEY set or it's empty. "
+                "Using unauthenticated access with lower rate limits."
             )
             return None
         return api_key.strip()
@@ -212,13 +213,18 @@ class SemanticSearcher(PaperSource):
                             else retry_delay * (2**attempt)
                         )
                         logger.warning(
-                            f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}"
+                            "Rate limited (429). Waiting %s seconds before retry %s/%s",
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests."
+                            "Rate limited (429) after %s attempts. "
+                            "Please wait before making more requests.",
+                            max_retries,
                         )
                         return {
                             "error": "rate_limited",
@@ -250,13 +256,18 @@ class SemanticSearcher(PaperSource):
                             else retry_delay * (2**attempt)
                         )
                         logger.warning(
-                            f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}"
+                            "Rate limited (429). Waiting %s seconds before retry %s/%s",
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests."
+                            "Rate limited (429) after %s attempts. "
+                            "Please wait before making more requests.",
+                            max_retries,
                         )
                         return {
                             "error": "rate_limited",
@@ -517,10 +528,10 @@ class SemanticSearcher(PaperSource):
                 if chunk:
                     initial_chunks.append(chunk)
                     initial_content += chunk
-                    if (
+                    header_scan_complete = (
                         len(initial_content) >= self.PDF_HEADER_SCAN_BYTES
-                        or self._looks_like_pdf(initial_content)
-                    ):
+                    )
+                    if header_scan_complete or self._looks_like_pdf(initial_content):
                         break
 
             if not self._looks_like_pdf(initial_content):
@@ -618,9 +629,11 @@ class SemanticSearcher(PaperSource):
                 return pdf_path, None, []
             remove_error = self._remove_pdf_file(pdf_path, "cache validation failed")
             if remove_error:
-                return None, None, [
-                    f"Could not remove invalid cached PDF: {remove_error}"
-                ]
+                return (
+                    None,
+                    None,
+                    [f"Could not remove invalid cached PDF: {remove_error}"],
+                )
 
         paper = self.get_paper_details(paper_id)
         if not paper:
@@ -686,9 +699,7 @@ class SemanticSearcher(PaperSource):
                     text += f"\n--- Page {page_num + 1} ---\n"
                     text += page_text + "\n"
             except Exception as e:
-                logger.warning(
-                    f"Failed to extract text from page {page_num + 1}: {e}"
-                )
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
                 continue
 
         return text.strip()
@@ -742,9 +753,7 @@ class SemanticSearcher(PaperSource):
         try:
             return DefusedElementTree.fromstring(xml_content)
         except DefusedXmlException as exc:
-            raise ValueError(
-                "Unsafe XML declaration in Europe PMC full text"
-            ) from exc
+            raise ValueError("Unsafe XML declaration in Europe PMC full text") from exc
 
     def _extract_text_from_article_xml(self, xml_content: bytes) -> str:
         root = self._parse_article_xml(xml_content)
@@ -775,9 +784,7 @@ class SemanticSearcher(PaperSource):
 
         return "\n\n".join(deduped_parts)
 
-    def _read_europe_pmc_full_text(
-        self, paper: Optional[Paper]
-    ) -> Tuple[str, str]:
+    def _read_europe_pmc_full_text(self, paper: Optional[Paper]) -> Tuple[str, str]:
         if not paper:
             return "", ""
 
@@ -853,8 +860,8 @@ class SemanticSearcher(PaperSource):
             except Exception as exc:
                 logger.warning("PDF text extraction failed for %s: %s", pdf_path, exc)
                 remove_error = self._remove_pdf_file(pdf_path, "text extraction failed")
-                cached_pdf_removed = (
-                    remove_error is None and not os.path.exists(pdf_path)
+                cached_pdf_removed = remove_error is None and not os.path.exists(
+                    pdf_path
                 )
                 full_text, full_text_source = self._read_europe_pmc_full_text(paper)
                 if full_text:

@@ -845,6 +845,9 @@ class SemanticSearcher(PaperSource):
                     )
                 return self._format_download_error(paper_id, errors)
 
+            if paper is None:
+                paper = self.get_paper_details(paper_id)
+
             try:
                 text = self._extract_pdf_text(pdf_path)
             except Exception as exc:

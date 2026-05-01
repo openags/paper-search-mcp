@@ -332,6 +332,32 @@ class TestSemanticSearcher(unittest.TestCase):
 
             self.assertEqual(result, str(cached_path))
 
+    def test_read_paper_fetches_metadata_for_valid_cached_pdf(self):
+        paper = SimpleNamespace(
+            title="Cached article",
+            authors=["Ada Lovelace"],
+            published_date=None,
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_cached_read_") as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"%PDF-1.7 cached content")
+
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher,
+                    "_extract_pdf_text",
+                    return_value="Cached PDF text",
+                ):
+                    result = self.searcher.read_paper("paper/123", test_dir)
+
+            self.assertIn("Title: Cached article", result)
+            self.assertIn("Authors: Ada Lovelace", result)
+            self.assertIn("Cached PDF text", result)
+
     def test_read_paper_removes_cached_pdf_when_extraction_fails(self):
         paper = SimpleNamespace(
             pdf_url="https://example.com/paper.pdf",
@@ -377,6 +403,10 @@ class TestSemanticSearcher(unittest.TestCase):
             cached_path = Path(test_dir) / "semantic_paper_123.pdf"
             cached_path.write_bytes(b"%PDF corrupt cached content")
 
+            def full_text_fallback(fallback_paper):
+                self.assertIs(fallback_paper, paper)
+                return "Recovered full text", "https://example.com/xml"
+
             with patch.object(self.searcher, "get_paper_details", return_value=paper):
                 with patch.object(
                     self.searcher,
@@ -386,7 +416,7 @@ class TestSemanticSearcher(unittest.TestCase):
                     with patch.object(
                         self.searcher,
                         "_read_europe_pmc_full_text",
-                        return_value=("Recovered full text", "https://example.com/xml"),
+                        side_effect=full_text_fallback,
                     ):
                         result = self.searcher.read_paper("paper/123", test_dir)
 

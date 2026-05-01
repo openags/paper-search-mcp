@@ -387,6 +387,40 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertNotIn("PDF downloaded to", result)
             self.assertFalse(cached_path.exists())
 
+    def test_read_paper_reports_cache_removal_error_after_extraction_failure(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_cache_remove_error_") as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"%PDF corrupt cached content")
+
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher,
+                    "_extract_pdf_text",
+                    side_effect=ValueError("broken pdf"),
+                ):
+                    with patch.object(
+                        self.searcher,
+                        "_remove_pdf_file",
+                        return_value="permission denied",
+                    ):
+                        with patch.object(
+                            self.searcher,
+                            "_read_europe_pmc_full_text",
+                            return_value=("", ""),
+                        ):
+                            result = self.searcher.read_paper("paper/123", test_dir)
+
+            self.assertIn("text extraction failed", result)
+            self.assertIn("cached PDF could not be removed", result)
+            self.assertIn("permission denied", result)
+            self.assertIn("broken pdf", result)
+
     def test_read_paper_omits_removed_pdf_path_when_full_text_fallback_succeeds(self):
         paper = SimpleNamespace(
             title="Fallback article",

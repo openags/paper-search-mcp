@@ -874,7 +874,8 @@ class SemanticSearcher(PaperSource):
                     )
                 return (
                     f"PDF downloaded to {pdf_path}, but text extraction failed "
-                    f"and the cached PDF could not be removed: {exc}"
+                    f"and the cached PDF could not be removed "
+                    f"({remove_error}): {exc}"
                 )
 
             if not text:

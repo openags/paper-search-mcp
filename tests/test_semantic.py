@@ -41,6 +41,7 @@ class TestSemanticSearcher(unittest.TestCase):
         response.headers = {"Content-Type": content_type}
         response.url = url
         response.iter_content.return_value = iter([content])
+        response.close.return_value = None
         if error is not None:
             response.raise_for_status.side_effect = error
         else:
@@ -163,6 +164,32 @@ class TestSemanticSearcher(unittest.TestCase):
             expected_path = Path(test_dir) / "semantic_paper_123.pdf"
             self.assertTrue(result.startswith("Error downloading PDF for paper/123"))
             self.assertFalse(expected_path.exists())
+            html_response.close.assert_called_once()
+
+    def test_download_pdf_closes_streamed_response_after_success(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+        pdf_response = self._mock_response(
+            b"%PDF-1.7 streamed content",
+            content_type="application/pdf",
+            url="https://example.com/paper.pdf",
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_stream_close_") as test_dir:
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher.session,
+                    "get",
+                    return_value=pdf_response,
+                ):
+                    result = self.searcher.download_pdf("paper/123", test_dir)
+
+            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            self.assertEqual(result, str(expected_path))
+            pdf_response.close.assert_called_once()
 
     def test_download_pdf_replaces_invalid_cached_file(self):
         paper = SimpleNamespace(
@@ -190,6 +217,33 @@ class TestSemanticSearcher(unittest.TestCase):
 
             self.assertEqual(result, str(cached_path))
             self.assertEqual(cached_path.read_bytes(), b"%PDF-1.7 replacement content")
+
+    def test_read_paper_removes_cached_pdf_when_extraction_fails(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.com/paper.pdf",
+            url="https://www.semanticscholar.org/paper/test",
+            extra={},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="semantic_corrupt_cache_") as test_dir:
+            cached_path = Path(test_dir) / "semantic_paper_123.pdf"
+            cached_path.write_bytes(b"%PDF corrupt cached content")
+
+            with patch.object(self.searcher, "get_paper_details", return_value=paper):
+                with patch.object(
+                    self.searcher,
+                    "_extract_pdf_text",
+                    side_effect=ValueError("broken pdf"),
+                ):
+                    with patch.object(
+                        self.searcher,
+                        "_read_europe_pmc_full_text",
+                        return_value=("", ""),
+                    ):
+                        result = self.searcher.read_paper("paper/123", test_dir)
+
+            self.assertIn("text extraction failed", result)
+            self.assertFalse(cached_path.exists())
 
     def test_parse_paper_handles_missing_publication_date(self):
         item = {

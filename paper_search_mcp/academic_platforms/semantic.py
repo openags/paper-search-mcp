@@ -476,35 +476,40 @@ class SemanticSearcher(PaperSource):
         return candidates
 
     def _download_pdf_url(self, pdf_url: str, pdf_path: str) -> None:
-        response = self.session.get(
-            pdf_url,
-            headers=self._download_headers(),
-            stream=True,
-            timeout=60,
-            allow_redirects=True,
-        )
-        response.raise_for_status()
-
-        content_type = response.headers.get("Content-Type", "")
-        chunks = response.iter_content(chunk_size=8192)
-        first_chunk = b""
-        for chunk in chunks:
-            if chunk:
-                first_chunk = chunk
-                break
-        if not self._looks_like_pdf(first_chunk, content_type):
-            first_bytes = first_chunk[:16]
-            raise ValueError(
-                "URL did not return a PDF "
-                f"(content-type={content_type or 'unknown'}, "
-                f"final_url={response.url}, first_bytes={first_bytes!r})"
+        response = None
+        try:
+            response = self.session.get(
+                pdf_url,
+                headers=self._download_headers(),
+                stream=True,
+                timeout=60,
+                allow_redirects=True,
             )
+            response.raise_for_status()
 
-        with open(pdf_path, "wb") as file:
-            file.write(first_chunk)
+            content_type = response.headers.get("Content-Type", "")
+            chunks = response.iter_content(chunk_size=8192)
+            first_chunk = b""
             for chunk in chunks:
                 if chunk:
-                    file.write(chunk)
+                    first_chunk = chunk
+                    break
+            if not self._looks_like_pdf(first_chunk, content_type):
+                first_bytes = first_chunk[:16]
+                raise ValueError(
+                    "URL did not return a PDF "
+                    f"(content-type={content_type or 'unknown'}, "
+                    f"final_url={response.url}, first_bytes={first_bytes!r})"
+                )
+
+            with open(pdf_path, "wb") as file:
+                file.write(first_chunk)
+                for chunk in chunks:
+                    if chunk:
+                        file.write(chunk)
+        finally:
+            if response is not None:
+                response.close()
 
     @staticmethod
     def _safe_paper_id(paper_id: str) -> str:
@@ -738,6 +743,14 @@ class SemanticSearcher(PaperSource):
                 text = self._extract_pdf_text(pdf_path)
             except Exception as exc:
                 logger.warning("PDF text extraction failed for %s: %s", pdf_path, exc)
+                try:
+                    os.remove(pdf_path)
+                except OSError as remove_exc:
+                    logger.warning(
+                        "Could not remove PDF after extraction failure for %s: %s",
+                        pdf_path,
+                        remove_exc,
+                    )
                 full_text, full_text_source = self._read_europe_pmc_full_text(paper)
                 if full_text:
                     return (

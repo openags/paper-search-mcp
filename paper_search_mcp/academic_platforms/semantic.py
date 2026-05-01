@@ -6,6 +6,8 @@ import requests
 import time
 import random
 import tempfile
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
@@ -737,10 +739,12 @@ class SemanticSearcher(PaperSource):
 
     @staticmethod
     def _parse_article_xml(xml_content: bytes) -> ET.Element:
-        if re.search(br"<!\s*(?:doctype|entity)\b", xml_content, flags=re.IGNORECASE):
-            raise ValueError("Unsafe XML declaration in Europe PMC full text")
-
-        return ET.fromstring(xml_content, parser=ET.XMLParser())
+        try:
+            return DefusedElementTree.fromstring(xml_content)
+        except DefusedXmlException as exc:
+            raise ValueError(
+                "Unsafe XML declaration in Europe PMC full text"
+            ) from exc
 
     def _extract_text_from_article_xml(self, xml_content: bytes) -> str:
         root = self._parse_article_xml(xml_content)

@@ -2,7 +2,6 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 import os
 import requests
-from bs4 import BeautifulSoup
 import time
 import random
 import tempfile

@@ -77,6 +77,15 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
     return [paper.to_dict() for paper in papers]
 
 
+async def _with_source_timeout(source: str, coro: Any, timeout: float) -> Any:
+    if timeout <= 0:
+        return await coro
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"{source} timed out after {timeout:g}s") from exc
+
+
 ALL_SOURCES = [
     "arxiv",
     "pubmed",
@@ -244,6 +253,7 @@ async def search_papers(
     max_results_per_source: int = 5,
     sources: str = "all",
     year: Optional[str] = None,
+    source_timeout: float = 30,
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -321,7 +331,11 @@ async def search_papers(
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
-    source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
+    timed_tasks = [
+        _with_source_timeout(source_name, task_map[source_name], source_timeout)
+        for source_name in source_names
+    ]
+    source_outputs = await asyncio.gather(*timed_tasks, return_exceptions=True)
 
     source_results: Dict[str, int] = {}
     errors: Dict[str, str] = {}

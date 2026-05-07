@@ -128,6 +128,12 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
     return [p.to_dict() for p in papers]
 
 
+async def _with_timeout(coro: Any, timeout: float) -> Any:
+    if timeout <= 0:
+        return await coro
+    return await asyncio.wait_for(coro, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -145,7 +151,10 @@ async def cmd_search(args: argparse.Namespace) -> int:
         extra = {}
         if src == "semantic" and args.year:
             extra["year"] = args.year
-        tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
+        tasks[src] = _with_timeout(
+            _async_search(searcher, args.query, args.max_results, **extra),
+            args.source_timeout,
+        )
 
     names = list(tasks.keys())
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -197,6 +206,27 @@ async def cmd_download(args: argparse.Namespace) -> int:
         return 1
 
 
+async def cmd_download_doi(args: argparse.Namespace) -> int:
+    from .server import download_with_fallback
+
+    try:
+        result = await download_with_fallback(
+            source=args.source,
+            paper_id=args.doi,
+            doi=args.doi,
+            title=args.title or "",
+            save_path=args.save_path,
+            use_scihub=not args.no_scihub,
+            scihub_base_url=args.scihub_base_url,
+        )
+        status = "ok" if isinstance(result, str) and not result.lower().startswith("download failed") else "error"
+        print(json.dumps({"status": status, "path": result if status == "ok" else "", "message": "" if status == "ok" else result}))
+        return 0 if status == "ok" else 1
+    except Exception as e:
+        print(json.dumps({"status": "error", "message": str(e)}))
+        return 1
+
+
 async def cmd_read(args: argparse.Namespace) -> int:
     _init_searchers()
     source = args.source.strip().lower()
@@ -240,12 +270,23 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Comma-separated sources or 'all' (default: all)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
+    p_search.add_argument("--source-timeout", type=float, default=30,
+                          help="Seconds before an individual source search times out (0 disables)")
 
     # download
     p_dl = sub.add_parser("download", help="Download a paper PDF")
     p_dl.add_argument("source", help="Source platform (e.g. arxiv, semantic)")
     p_dl.add_argument("paper_id", help="Paper identifier")
     p_dl.add_argument("-o", "--save-path", default="./downloads", help="Save directory (default: ./downloads)")
+
+    # download-doi
+    p_dl_doi = sub.add_parser("download-doi", help="Download a DOI using source-native, OA, repository, and optional Sci-Hub fallback")
+    p_dl_doi.add_argument("doi", help="DOI to download")
+    p_dl_doi.add_argument("-o", "--save-path", default="./downloads", help="Save directory (default: ./downloads)")
+    p_dl_doi.add_argument("--source", default="crossref", help="Primary source to try before fallbacks (default: crossref)")
+    p_dl_doi.add_argument("--title", default="", help="Optional title for repository/Sci-Hub fallback")
+    p_dl_doi.add_argument("--no-scihub", action="store_true", help="Disable Sci-Hub fallback")
+    p_dl_doi.add_argument("--scihub-base-url", default="https://sci-hub.se", help="Preferred Sci-Hub mirror")
 
     # read
     p_read = sub.add_parser("read", help="Download and extract text from a paper")
@@ -266,6 +307,7 @@ def main() -> None:
     dispatch = {
         "search": cmd_search,
         "download": cmd_download,
+        "download-doi": cmd_download_doi,
         "read": cmd_read,
         "sources": cmd_sources,
     }

@@ -4,6 +4,7 @@ from unittest.mock import patch, AsyncMock
 from types import SimpleNamespace
 
 from paper_search_mcp import server
+from paper_search_mcp import cli
 
 
 class TestDownloadWithFallback(unittest.TestCase):
@@ -68,6 +69,28 @@ class TestDownloadWithFallback(unittest.TestCase):
         self.assertEqual(result, "/tmp/repo.pdf")
         self.assertEqual(error, "")
         self.assertEqual(download.call_args.args[2], "openaire_12345")
+
+    def test_search_source_timeout_is_reported(self):
+        async def slow_result():
+            await asyncio.sleep(1)
+            return []
+
+        with self.assertRaises(asyncio.TimeoutError):
+            asyncio.run(cli._with_timeout(slow_result(), 0.01))
+
+    def test_download_doi_cli_uses_fallback(self):
+        args = SimpleNamespace(
+            doi="10.1000/test",
+            source="crossref",
+            title="",
+            save_path="/tmp",
+            no_scihub=True,
+            scihub_base_url="https://sci-hub.se",
+        )
+        with patch("paper_search_mcp.server.download_with_fallback", new=AsyncMock(return_value="/tmp/paper.pdf")):
+            result = asyncio.run(cli.cmd_download_doi(args))
+
+        self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":

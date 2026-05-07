@@ -115,6 +115,60 @@ class TestDownloadWithFallback(unittest.TestCase):
 
         self.assertEqual(result, 0)
 
+    def test_metadata_dois_merges_parallel_source_results(self):
+        crossref_paper = SimpleNamespace(
+            to_dict=lambda: {
+                "doi": "10.1000/test",
+                "title": "Crossref Title",
+                "authors": "Ada Lovelace",
+                "abstract": "",
+                "published_date": "2024-01-01T00:00:00",
+                "url": "https://doi.org/10.1000/test",
+                "pdf_url": "",
+                "citations": 0,
+                "categories": "",
+                "keywords": "",
+                "source": "crossref",
+            }
+        )
+        openalex_paper = SimpleNamespace(
+            to_dict=lambda: {
+                "doi": "10.1000/test",
+                "title": "OpenAlex Title",
+                "authors": "Ada Lovelace; Grace Hopper",
+                "abstract": "Useful abstract",
+                "published_date": "",
+                "url": "https://openalex.org/W1",
+                "pdf_url": "https://example.org/paper.pdf",
+                "citations": 42,
+                "categories": "Ecology",
+                "keywords": "",
+                "source": "openalex",
+            }
+        )
+
+        crossref = SimpleNamespace(get_paper_by_doi=lambda doi: crossref_paper)
+        openalex = SimpleNamespace(get_paper_by_doi=lambda doi: openalex_paper)
+        unpaywall = SimpleNamespace(resolver=SimpleNamespace(get_paper_by_doi=lambda doi: None))
+
+        def fake_get_searcher(source):
+            return {"crossref": crossref, "openalex": openalex, "unpaywall": unpaywall}[source]
+
+        args = SimpleNamespace(
+            dois=["10.1000/test"],
+            input=None,
+            output=None,
+            sources="metadata",
+            include_semantic=False,
+            source_timeout=2,
+        )
+
+        with patch.object(cli, "_get_searcher", side_effect=fake_get_searcher), \
+             patch.object(cli, "_available_sources", return_value=["crossref", "openalex", "unpaywall"]):
+            result = asyncio.run(cli.cmd_metadata_dois(args))
+
+        self.assertEqual(result, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -245,6 +245,8 @@ Useful CLI examples:
 paper-search search "gender imbalance neuroscience references" -n 3
 paper-search search "gender imbalance neuroscience references" -s fastest -n 3
 paper-search search "gender imbalance neuroscience references" --exhaustive -s all -n 3
+paper-search metadata-dois 10.1038/s41593-020-0658-y 10.1111/ecog.03049 -o metadata.json
+paper-search metadata-dois --input dois.txt --output metadata.json
 paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
 paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads --no-scihub
 paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads
@@ -261,6 +263,11 @@ rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or
 Use `download-doi` for DOI retrieval. `unpaywall` is automatically added to
 generic `search` only when the query contains a DOI, because Unpaywall is a DOI
 lookup service rather than a broad topic search engine.
+
+Use `metadata-dois` after external/native discovery to enrich candidate papers
+in parallel. It accepts DOI arguments or a text file, queries Crossref,
+OpenAlex, and Unpaywall by default, and includes Semantic Scholar automatically
+when `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured.
 
 Use `download-doi` when you already have a DOI and want the tool to try the
 source-native path, Unpaywall, repository fallbacks, and optional Sci-Hub

@@ -8,7 +8,8 @@ import asyncio
 import json
 import re
 import sys
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from .config import get_env
 from .academic_platforms.arxiv import ArxivSearcher
@@ -111,6 +112,8 @@ FAST_SOURCES = [
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 
+METADATA_SOURCES = ["crossref", "openalex", "unpaywall"]
+
 
 def _fast_sources() -> list[str]:
     sources = list(FAST_SOURCES)
@@ -164,6 +167,87 @@ def _dedupe(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _extract_dois(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    dois: list[str] = []
+    for value in values:
+        for match in DOI_RE.findall(value or ""):
+            doi = match.rstrip(".,;)]}").lower()
+            if doi and doi not in seen:
+                seen.add(doi)
+                dois.append(doi)
+    return dois
+
+
+def _paper_has_content(paper: Dict[str, Any], field: str) -> bool:
+    value = paper.get(field)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _merge_metadata_records(doi: str, records: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    source_priority = ["crossref", "openalex", "semantic", "unpaywall"]
+    merged: Dict[str, Any] = {
+        "doi": doi,
+        "title": "",
+        "authors": "",
+        "abstract": "",
+        "published_date": "",
+        "url": f"https://doi.org/{doi}",
+        "pdf_url": "",
+        "citations": 0,
+        "categories": "",
+        "keywords": "",
+        "sources": sorted(records.keys()),
+        "records": records,
+    }
+
+    for field in ["title", "authors", "abstract", "published_date", "url", "pdf_url", "categories", "keywords"]:
+        for source in source_priority:
+            paper = records.get(source)
+            if paper and _paper_has_content(paper, field):
+                merged[field] = paper[field]
+                break
+
+    citations = []
+    for paper in records.values():
+        try:
+            citations.append(int(paper.get("citations") or 0))
+        except (TypeError, ValueError):
+            pass
+    if citations:
+        merged["citations"] = max(citations)
+
+    oa_sources = []
+    for source, paper in records.items():
+        if _paper_has_content(paper, "pdf_url"):
+            oa_sources.append(source)
+    merged["oa_pdf_sources"] = sorted(oa_sources)
+    return merged
+
+
+def _lookup_doi_with_source(source: str, doi: str) -> Optional[Dict[str, Any]]:
+    searcher = _get_searcher(source)
+    paper = None
+
+    if source == "crossref":
+        paper = searcher.get_paper_by_doi(doi)
+    elif source == "openalex":
+        paper = searcher.get_paper_by_doi(doi)
+    elif source == "unpaywall":
+        paper = searcher.resolver.get_paper_by_doi(doi)
+    elif source == "semantic":
+        paper = searcher.get_paper_details(f"DOI:{doi}")
+    else:
+        results = searcher.search(doi, max_results=1)
+        paper = results[0] if results else None
+
+    return paper.to_dict() if paper else None
+
+
 # ---------------------------------------------------------------------------
 # Async helpers
 # ---------------------------------------------------------------------------
@@ -183,6 +267,10 @@ async def _with_timeout(coro: Any, timeout: float, label: str = "operation") -> 
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise TimeoutError(f"{label} timed out after {timeout:g}s") from exc
+
+
+async def _lookup_doi_source_async(source: str, doi: str) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(_lookup_doi_with_source, source, doi)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +346,73 @@ async def cmd_download(args: argparse.Namespace) -> int:
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
         return 1
+
+
+async def cmd_metadata_dois(args: argparse.Namespace) -> int:
+    input_values = list(args.dois or [])
+    if args.input:
+        input_path = Path(args.input)
+        input_values.extend(input_path.read_text().splitlines())
+
+    dois = _extract_dois(input_values)
+    if not dois:
+        print(json.dumps({"error": "No DOI values found", "metadata": []}, indent=2))
+        return 1
+
+    sources = _parse_sources(args.sources)
+    if args.sources == "metadata":
+        sources = [s for s in METADATA_SOURCES if s in _available_sources()]
+    if args.include_semantic or get_env("SEMANTIC_SCHOLAR_API_KEY", ""):
+        if "semantic" in _available_sources() and "semantic" not in sources:
+            sources.append("semantic")
+    if not sources:
+        print(json.dumps({"error": "No valid sources selected", "available": sorted(_available_sources())}, indent=2))
+        return 1
+
+    doi_outputs: list[Dict[str, Any]] = []
+    for doi in dois:
+        tasks = {
+            source: _with_timeout(
+                _lookup_doi_source_async(source, doi),
+                args.source_timeout,
+                f"{source}:{doi}",
+            )
+            for source in sources
+        }
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+        records: Dict[str, Dict[str, Any]] = {}
+        errors: Dict[str, str] = {}
+        for source, result in zip(tasks.keys(), results):
+            if isinstance(result, Exception):
+                errors[source] = str(result)
+            elif result:
+                records[source] = result
+
+        doi_outputs.append(
+            {
+                "doi": doi,
+                "sources_used": list(tasks.keys()),
+                "source_results": {source: source in records for source in tasks.keys()},
+                "errors": errors,
+                "metadata": _merge_metadata_records(doi, records) if records else None,
+            }
+        )
+
+    output = {
+        "dois": dois,
+        "sources_used": sources,
+        "total": len(doi_outputs),
+        "results": doi_outputs,
+    }
+
+    text = json.dumps(output, indent=2, default=str)
+    if args.output:
+        Path(args.output).write_text(text + "\n")
+        print(json.dumps({"status": "ok", "path": args.output, "total": len(doi_outputs)}, indent=2))
+    else:
+        print(text)
+    return 0
 
 
 async def cmd_download_doi(args: argparse.Namespace) -> int:
@@ -342,6 +497,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_dl_doi.add_argument("--no-scihub", action="store_true", help="Disable Sci-Hub fallback")
     p_dl_doi.add_argument("--scihub-base-url", default="", help="Preferred Sci-Hub mirror")
 
+    # metadata-dois
+    p_meta = sub.add_parser("metadata-dois", help="Fetch and merge metadata for one or more DOIs")
+    p_meta.add_argument("dois", nargs="*", help="DOIs or text containing DOIs")
+    p_meta.add_argument("-i", "--input", help="Text file containing DOI values")
+    p_meta.add_argument("-o", "--output", help="Write JSON output to this file")
+    p_meta.add_argument("-s", "--sources", default="metadata",
+                        help="Comma-separated sources or 'metadata' (default: metadata = crossref,openalex,unpaywall)")
+    p_meta.add_argument("--include-semantic", action="store_true",
+                        help="Include Semantic Scholar even without SEMANTIC_SCHOLAR_API_KEY")
+    p_meta.add_argument("--source-timeout", type=float, default=12,
+                        help="Seconds before an individual source lookup times out (0 disables)")
+
     # read
     p_read = sub.add_parser("read", help="Download and extract text from a paper")
     p_read.add_argument("source", help="Source platform (e.g. arxiv, semantic)")
@@ -361,6 +528,7 @@ def main() -> None:
     dispatch = {
         "search": cmd_search,
         "download": cmd_download,
+        "metadata-dois": cmd_metadata_dois,
         "download-doi": cmd_download_doi,
         "read": cmd_read,
         "sources": cmd_sources,

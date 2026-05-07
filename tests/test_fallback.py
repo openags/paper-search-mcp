@@ -78,6 +78,29 @@ class TestDownloadWithFallback(unittest.TestCase):
         with self.assertRaises(asyncio.TimeoutError):
             asyncio.run(cli._with_timeout(slow_result(), 0.01))
 
+    def test_parse_sources_defaults_to_fast_set(self):
+        cli.SEARCHERS.clear()
+        selected = cli._parse_sources("fast")
+        self.assertEqual(selected, [s for s in cli._fast_sources() if s in cli._available_sources()])
+        self.assertEqual(cli.SEARCHERS, {})
+
+        fastest = cli._parse_sources("fastest")
+        self.assertEqual(fastest, [s for s in cli.FASTEST_SOURCES if s in cli._available_sources()])
+        self.assertLess(len(fastest), len(selected))
+
+        selected_from_all = cli._parse_sources("all")
+        self.assertEqual(selected_from_all, selected)
+
+        exhaustive = cli._parse_sources("all", exhaustive=True)
+        self.assertIn("google_scholar", exhaustive)
+        self.assertGreater(len(exhaustive), len(selected))
+
+    def test_fast_sources_include_semantic_when_key_is_configured(self):
+        with patch.dict("os.environ", {"PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "test-key"}):
+            selected = cli._parse_sources("fast")
+
+        self.assertIn("semantic", selected)
+
     def test_download_doi_cli_uses_fallback(self):
         args = SimpleNamespace(
             doi="10.1000/test",

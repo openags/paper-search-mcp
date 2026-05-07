@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 from typing import Any, Dict, List
 
@@ -39,44 +40,58 @@ from .academic_platforms.ssrn import SSRNSearcher
 SEARCHERS: Dict[str, Any] = {}
 
 
-def _init_searchers() -> None:
-    """Lazily initialize searcher instances."""
-    if SEARCHERS:
-        return
+def _available_sources() -> list[str]:
+    sources = list(ALL_SOURCES)
+    if get_env("IEEE_API_KEY", ""):
+        sources.append("ieee")
+    if get_env("ACM_API_KEY", ""):
+        sources.append("acm")
+    return sources
 
-    SEARCHERS["arxiv"] = ArxivSearcher()
-    SEARCHERS["pubmed"] = PubMedSearcher()
-    SEARCHERS["biorxiv"] = BioRxivSearcher()
-    SEARCHERS["medrxiv"] = MedRxivSearcher()
-    SEARCHERS["google_scholar"] = GoogleScholarSearcher()
-    SEARCHERS["iacr"] = IACRSearcher()
-    SEARCHERS["semantic"] = SemanticSearcher()
-    SEARCHERS["crossref"] = CrossRefSearcher()
-    SEARCHERS["openalex"] = OpenAlexSearcher()
-    SEARCHERS["pmc"] = PMCSearcher()
-    SEARCHERS["core"] = CORESearcher()
-    SEARCHERS["europepmc"] = EuropePMCSearcher()
-    SEARCHERS["dblp"] = DBLPSearcher()
-    SEARCHERS["openaire"] = OpenAiresearcher()
-    SEARCHERS["citeseerx"] = CiteSeerXSearcher()
-    SEARCHERS["doaj"] = DOAJSearcher()
-    SEARCHERS["base"] = BASESearcher()
-    unpaywall_resolver = UnpaywallResolver()
-    SEARCHERS["unpaywall"] = UnpaywallSearcher(resolver=unpaywall_resolver)
-    SEARCHERS["zenodo"] = ZenodoSearcher()
-    SEARCHERS["hal"] = HALSearcher()
-    SEARCHERS["ssrn"] = SSRNSearcher()
 
-    # Optional paid connectors
-    ieee_key = get_env("IEEE_API_KEY", "")
-    if ieee_key:
+def _get_searcher(source: str) -> Any:
+    """Initialize only the searcher requested by the current command."""
+    if source in SEARCHERS:
+        return SEARCHERS[source]
+
+    factories = {
+        "arxiv": ArxivSearcher,
+        "pubmed": PubMedSearcher,
+        "biorxiv": BioRxivSearcher,
+        "medrxiv": MedRxivSearcher,
+        "google_scholar": GoogleScholarSearcher,
+        "iacr": IACRSearcher,
+        "semantic": SemanticSearcher,
+        "crossref": CrossRefSearcher,
+        "openalex": OpenAlexSearcher,
+        "pmc": PMCSearcher,
+        "core": CORESearcher,
+        "europepmc": EuropePMCSearcher,
+        "dblp": DBLPSearcher,
+        "openaire": OpenAiresearcher,
+        "citeseerx": CiteSeerXSearcher,
+        "doaj": DOAJSearcher,
+        "base": BASESearcher,
+        "zenodo": ZenodoSearcher,
+        "hal": HALSearcher,
+        "ssrn": SSRNSearcher,
+    }
+
+    if source == "unpaywall":
+        searcher = UnpaywallSearcher(resolver=UnpaywallResolver())
+    elif source == "ieee" and get_env("IEEE_API_KEY", ""):
         from .academic_platforms.ieee import IEEESearcher
-        SEARCHERS["ieee"] = IEEESearcher()
-
-    acm_key = get_env("ACM_API_KEY", "")
-    if acm_key:
+        searcher = IEEESearcher()
+    elif source == "acm" and get_env("ACM_API_KEY", ""):
         from .academic_platforms.acm import ACMSearcher
-        SEARCHERS["acm"] = ACMSearcher()
+        searcher = ACMSearcher()
+    elif source in factories:
+        searcher = factories[source]()
+    else:
+        raise KeyError(source)
+
+    SEARCHERS[source] = searcher
+    return searcher
 
 
 ALL_SOURCES = [
@@ -86,12 +101,45 @@ ALL_SOURCES = [
     "ssrn", "unpaywall",
 ]
 
+FASTEST_SOURCES = [
+    "openalex", "crossref",
+]
 
-def _parse_sources(sources: str) -> List[str]:
-    if not sources or sources.strip().lower() == "all":
-        return [s for s in ALL_SOURCES if s in SEARCHERS]
+FAST_SOURCES = [
+    "openalex", "crossref", "arxiv", "pubmed", "europepmc",
+]
+
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+
+
+def _fast_sources() -> list[str]:
+    sources = list(FAST_SOURCES)
+    if get_env("SEMANTIC_SCHOLAR_API_KEY", ""):
+        sources.insert(2, "semantic")
+    return sources
+
+
+def _parse_sources(sources: str, exhaustive: bool = False) -> List[str]:
+    if not sources:
+        source_names = ALL_SOURCES if exhaustive else _fast_sources()
+        available = set(_available_sources())
+        return [s for s in source_names if s in available]
+
+    sources = sources.strip().lower()
+    if sources == "all":
+        source_names = ALL_SOURCES if exhaustive else _fast_sources()
+        available = set(_available_sources())
+        return [s for s in source_names if s in available]
+    if sources == "fast":
+        available = set(_available_sources())
+        return [s for s in _fast_sources() if s in available]
+    if sources == "fastest":
+        available = set(_available_sources())
+        return [s for s in FASTEST_SOURCES if s in available]
+
     normalized = [p.strip().lower() for p in sources.split(",") if p.strip()]
-    return [s for s in normalized if s in SEARCHERS]
+    available = set(_available_sources())
+    return [s for s in normalized if s in available]
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -142,15 +190,16 @@ async def _with_timeout(coro: Any, timeout: float, label: str = "operation") -> 
 # ---------------------------------------------------------------------------
 
 async def cmd_search(args: argparse.Namespace) -> int:
-    _init_searchers()
-    selected = _parse_sources(args.sources)
+    selected = _parse_sources(args.sources, args.exhaustive)
+    if DOI_RE.search(args.query) and "unpaywall" not in selected and "unpaywall" in _available_sources():
+        selected.append("unpaywall")
     if not selected:
-        print(json.dumps({"error": "No valid sources selected", "available": sorted(SEARCHERS.keys())}))
+        print(json.dumps({"error": "No valid sources selected", "available": sorted(_available_sources())}))
         return 1
 
     tasks = {}
     for src in selected:
-        searcher = SEARCHERS[src]
+        searcher = _get_searcher(src)
         extra = {}
         if src == "semantic" and args.year:
             extra["year"] = args.year
@@ -183,6 +232,8 @@ async def cmd_search(args: argparse.Namespace) -> int:
     output = {
         "query": args.query,
         "sources_used": names,
+        "search_mode": "exhaustive" if args.exhaustive else "fast",
+        "source_preset": args.sources,
         "source_results": source_counts,
         "errors": errors,
         "total": len(deduped),
@@ -193,14 +244,13 @@ async def cmd_search(args: argparse.Namespace) -> int:
 
 
 async def cmd_download(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
 
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
         return 1
 
-    searcher = SEARCHERS[source]
+    searcher = _get_searcher(source)
     try:
         result = await asyncio.to_thread(searcher.download_pdf, args.paper_id, args.save_path)
         print(json.dumps({"status": "ok", "path": result}))
@@ -232,14 +282,13 @@ async def cmd_download_doi(args: argparse.Namespace) -> int:
 
 
 async def cmd_read(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
 
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
         return 1
 
-    searcher = SEARCHERS[source]
+    searcher = _get_searcher(source)
     try:
         text = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path)
         print(text)
@@ -250,8 +299,7 @@ async def cmd_read(args: argparse.Namespace) -> int:
 
 
 async def cmd_sources(args: argparse.Namespace) -> int:
-    _init_searchers()
-    print(json.dumps({"sources": sorted(SEARCHERS.keys())}, indent=2))
+    print(json.dumps({"sources": sorted(_available_sources())}, indent=2))
     return 0
 
 
@@ -270,12 +318,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_search = sub.add_parser("search", help="Search for papers across academic platforms")
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("-n", "--max-results", type=int, default=5, help="Max results per source (default: 5)")
-    p_search.add_argument("-s", "--sources", default="all",
-                          help="Comma-separated sources or 'all' (default: all)")
+    p_search.add_argument("-s", "--sources", default="fast",
+                          help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: fast)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
-    p_search.add_argument("--source-timeout", type=float, default=30,
+    p_search.add_argument("--source-timeout", type=float, default=12,
                           help="Seconds before an individual source search times out (0 disables)")
+    p_search.add_argument("--exhaustive", action="store_true",
+                          help="Use the old broad source set when sources are omitted or set to 'all'")
 
     # download
     p_dl = sub.add_parser("download", help="Download a paper PDF")

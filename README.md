@@ -55,7 +55,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
-- **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
+- **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → Unpaywall DOI resolution → OpenAIRE/CORE/Europe PMC/PMC discovery → optional Sci-Hub.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
@@ -125,6 +125,11 @@ All keys are **optional** unless noted. Configure them in `.env` (preferred) or 
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
 | `PAPER_SEARCH_MCP_ACM_API_KEY` | ACM DL | **Required to activate** | See [libraries.acm.org/digital-library/acm-open](https://libraries.acm.org/digital-library/acm-open) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRRORS` | Sci-Hub | Optional | Comma-separated preferred mirrors for optional Sci-Hub fallback |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_CACHE_TTL` | Sci-Hub | Optional | Mirror cache TTL in seconds (default: 21600) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_TIMEOUT` | Sci-Hub | Optional | Seconds per mirror health probe (default: 4) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_DISCOVERY_TIMEOUT` | Sci-Hub | Optional | Seconds for mirror-list discovery (default: 5) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_WORKERS` | Sci-Hub | Optional | Parallel mirror health probes (default: 8) |
 
 All variables follow the `PAPER_SEARCH_MCP_<NAME>` prefix scheme. Legacy names without the prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
@@ -232,6 +237,19 @@ Create a `.env` file in the repo root for optional API keys (see [Environment Va
 - "Download the PDF for arxiv paper 2106.12345"
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
+
+Useful CLI examples:
+
+```bash
+paper-search search "gender imbalance neuroscience references" -s openalex,crossref,unpaywall -n 3 --source-timeout 15
+paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
+paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads --no-scihub
+paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads
+```
+
+Use `download-doi` when you already have a DOI and want the tool to try the
+source-native path, Unpaywall, repository fallbacks, and optional Sci-Hub
+fallback without manually choosing a source-specific downloader.
 
 ---
 
@@ -485,6 +503,11 @@ PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN=
 PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL=
 PAPER_SEARCH_MCP_IEEE_API_KEY=
 PAPER_SEARCH_MCP_ACM_API_KEY=
+PAPER_SEARCH_MCP_SCIHUB_MIRRORS=
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_CACHE_TTL=21600
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_TIMEOUT=4
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_DISCOVERY_TIMEOUT=5
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_WORKERS=8
 ```
 
 To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`

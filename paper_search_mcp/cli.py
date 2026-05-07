@@ -7,6 +7,8 @@ import argparse
 import asyncio
 import json
 import math
+import multiprocessing as mp
+import queue
 import re
 import sys
 from datetime import datetime, timezone
@@ -109,7 +111,7 @@ FASTEST_SOURCES = [
 ]
 
 FAST_SOURCES = [
-    "openalex", "crossref", "pubmed", "europepmc",
+    "openalex", "crossref", "arxiv", "pubmed", "europepmc",
 ]
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
@@ -361,12 +363,53 @@ def _lookup_doi_with_source(source: str, doi: str) -> Optional[Dict[str, Any]]:
 # Async helpers
 # ---------------------------------------------------------------------------
 
-async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -> List[Dict]:
-    if kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
-    else:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
-    return [p.to_dict() for p in papers]
+def _search_source_worker(source: str, query_text: str, max_results: int, kwargs: Dict[str, Any], out_queue: Any) -> None:
+    try:
+        searcher = _get_searcher(source)
+        if kwargs:
+            papers = searcher.search(query_text, max_results=max_results, **kwargs)
+        else:
+            papers = searcher.search(query_text, max_results=max_results)
+        out_queue.put({"ok": True, "papers": [p.to_dict() for p in papers]})
+    except BaseException as exc:
+        out_queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+def _run_search_source_process(source: str, query_text: str, max_results: int, timeout: float, **kwargs) -> List[Dict]:
+    method = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
+    ctx = mp.get_context(method)
+    out_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_search_source_worker,
+        args=(source, query_text, max_results, kwargs, out_queue),
+        daemon=True,
+    )
+    proc.start()
+    proc.join(None if timeout <= 0 else timeout)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(1)
+        if proc.is_alive() and hasattr(proc, "kill"):
+            proc.kill()
+            proc.join(1)
+        raise TimeoutError(f"{source} timed out after {timeout:g}s")
+
+    try:
+        payload = out_queue.get_nowait()
+    except queue.Empty:
+        if proc.exitcode == 0:
+            return []
+        raise RuntimeError(f"{source} exited with code {proc.exitcode}")
+    finally:
+        out_queue.close()
+
+    if not payload.get("ok"):
+        raise RuntimeError(str(payload.get("error") or f"{source} failed"))
+    return payload.get("papers") or []
+
+
+async def _async_search_source(source: str, query: str, max_results: int, timeout: float, **kwargs) -> List[Dict]:
+    return await asyncio.to_thread(_run_search_source_process, source, query, max_results, timeout, **kwargs)
 
 
 async def _with_timeout(coro: Any, timeout: float, label: str = "operation") -> Any:
@@ -396,15 +439,10 @@ async def cmd_search(args: argparse.Namespace) -> int:
 
     tasks = {}
     for src in selected:
-        searcher = _get_searcher(src)
         extra = {}
         if src == "semantic" and args.year:
             extra["year"] = args.year
-        tasks[src] = _with_timeout(
-            _async_search(searcher, args.query, args.max_results, **extra),
-            args.source_timeout,
-            src,
-        )
+        tasks[src] = _async_search_source(src, args.query, args.max_results, args.source_timeout, **extra)
 
     names = list(tasks.keys())
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)

@@ -12,7 +12,7 @@ def check_sci_hub_accessible():
     """Check if Sci-Hub is accessible"""
     try:
         # Test with a simple request to see if sci-hub responds
-        response = requests.get("https://sci-hub.se", timeout=10)
+        response = requests.get("https://sci-hub.al", timeout=10)
         return response.status_code == 200
     except:
         return False
@@ -37,7 +37,7 @@ class TestSciHubFetcher(unittest.TestCase):
 
     def test_init(self):
         """Test initialization of SciHubFetcher"""
-        self.assertEqual(self.fetcher.base_url, "https://sci-hub.se")
+        self.assertEqual(self.fetcher.base_url, "")
         self.assertTrue(os.path.exists(self.test_dir))
         self.assertIsNotNone(self.fetcher.session)
 
@@ -149,8 +149,7 @@ class TestSciHubFetcher(unittest.TestCase):
     def test_candidate_mirrors_use_cache_before_hardcoded(self):
         self.fetcher._save_cached_mirrors(["https://sci-hub.al"])
         mirrors = self.fetcher.get_candidate_mirrors()
-        self.assertEqual(mirrors[0], "https://sci-hub.se")
-        self.assertEqual(mirrors[1], "https://sci-hub.al")
+        self.assertEqual(mirrors[0], "https://sci-hub.al")
 
     def test_download_tries_next_mirror_when_default_fails(self):
         self.fetcher.get_candidate_mirrors = Mock(return_value=[

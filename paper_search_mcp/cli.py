@@ -290,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_dl_doi.add_argument("--source", default="crossref", help="Primary source to try before fallbacks (default: crossref)")
     p_dl_doi.add_argument("--title", default="", help="Optional title for repository/Sci-Hub fallback")
     p_dl_doi.add_argument("--no-scihub", action="store_true", help="Disable Sci-Hub fallback")
-    p_dl_doi.add_argument("--scihub-base-url", default="https://sci-hub.se", help="Preferred Sci-Hub mirror")
+    p_dl_doi.add_argument("--scihub-base-url", default="", help="Preferred Sci-Hub mirror")
 
     # read
     p_read = sub.add_parser("read", help="Download and extract text from a paper")

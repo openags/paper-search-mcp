@@ -18,12 +18,13 @@ from ..config import get_env
 from ..utils import is_pdf_content
 
 
+DEFAULT_SCIHUB_MIRROR = "https://sci-hub.al"
+
 HARDCODED_MIRRORS = [
-    "https://sci-hub.se",
+    DEFAULT_SCIHUB_MIRROR,
     "https://sci-hub.st",
     "https://sci-hub.ru",
     "https://sci-hub.wf",
-    "https://sci-hub.al",
     "https://sci-hub.mk",
     "https://sci-hub.ee",
     "https://sci-hub.shop",
@@ -33,9 +34,9 @@ HARDCODED_MIRRORS = [
 class SciHubFetcher:
     """Simple Sci-Hub PDF downloader."""
 
-    def __init__(self, base_url: str = "https://sci-hub.se", output_dir: str = "./downloads"):
+    def __init__(self, base_url: Optional[str] = None, output_dir: str = "./downloads"):
         """Initialize with Sci-Hub URL and output directory."""
-        self.base_url = base_url.rstrip("/")
+        self.base_url = self._normalize_mirror(base_url) if base_url else ""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
@@ -206,19 +207,19 @@ class SciHubFetcher:
             for mirror in get_env("SCIHUB_MIRRORS", "").split(",")
             if mirror.strip()
         ]
-        candidates = configured or [self.base_url]
+        preferred = configured + ([self.base_url] if self.base_url else [])
 
         if not force_refresh:
             cached = self._load_cached_mirrors()
             if cached:
-                return self._dedupe(candidates + cached + HARDCODED_MIRRORS)
+                return self._dedupe(cached + preferred + HARDCODED_MIRRORS)
 
         discovered = self._discover_mirrors()
-        healthy = self._health_check(self._dedupe(candidates + discovered + HARDCODED_MIRRORS))
+        healthy = self._health_check(self._dedupe(discovered + preferred + HARDCODED_MIRRORS))
         if healthy:
             self._save_cached_mirrors(healthy)
             return healthy
-        return self._dedupe(candidates + HARDCODED_MIRRORS)
+        return self._dedupe(preferred + HARDCODED_MIRRORS)
 
     def _discover_mirrors(self) -> list[str]:
         """Fetch current Sci-Hub mirror candidates from public mirror lists."""

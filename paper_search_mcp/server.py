@@ -26,6 +26,7 @@ from .academic_platforms.citeseerx import CiteSeerXSearcher
 from .academic_platforms.doaj import DOAJSearcher
 from .academic_platforms.base_search import BASESearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
+from .utils import is_pdf_content
 from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
@@ -184,9 +185,8 @@ async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = 
         if response.status_code >= 400 or not response.content:
             return None
 
-        content_type = (response.headers.get("content-type") or "").lower()
-        is_pdf = "pdf" in content_type or response.content.startswith(b"%PDF") or pdf_url.lower().endswith(".pdf")
-        if not is_pdf:
+        content_type = response.headers.get("content-type") or ""
+        if not is_pdf_content(response.content, content_type=content_type, url=pdf_url):
             logger.warning("Resolved URL is not a PDF candidate: %s (content-type=%s)", pdf_url, content_type)
             return None
 
@@ -230,7 +230,7 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
                 if not pdf_url:
                     continue
 
-                paper_id = (getattr(paper, "paper_id", "") or query).strip()
+                paper_id = str(getattr(paper, "paper_id", "") or query).strip()
                 downloaded = await _download_from_url(pdf_url, save_path, f"{repo_name}_{paper_id}")
                 if downloaded:
                     return downloaded, ""

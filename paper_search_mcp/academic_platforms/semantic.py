@@ -7,6 +7,7 @@ import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
+from ..utils import is_pdf_content
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
@@ -380,6 +381,9 @@ class SemanticSearcher(PaperSource):
             pdf_url = paper.pdf_url
             pdf_response = requests.get(pdf_url, timeout=30)
             pdf_response.raise_for_status()
+            content_type = pdf_response.headers.get("content-type", "")
+            if not is_pdf_content(pdf_response.content, content_type=content_type, url=pdf_url):
+                return f"Error: Downloaded content is not a valid PDF for paper {paper_id}"
 
             # Create download directory if it doesn't exist
             os.makedirs(save_path, exist_ok=True)
@@ -425,6 +429,9 @@ class SemanticSearcher(PaperSource):
 
                 pdf_response = requests.get(paper.pdf_url, timeout=30)
                 pdf_response.raise_for_status()
+                content_type = pdf_response.headers.get("content-type", "")
+                if not is_pdf_content(pdf_response.content, content_type=content_type, url=paper.pdf_url):
+                    return f"Error: Downloaded content is not a valid PDF for paper {paper_id}"
 
                 with open(pdf_path, "wb") as f:
                     f.write(pdf_response.content)

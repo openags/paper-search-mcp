@@ -1,6 +1,7 @@
 import unittest
 import asyncio
 from unittest.mock import patch, AsyncMock
+from types import SimpleNamespace
 
 from paper_search_mcp import server
 
@@ -51,6 +52,21 @@ class TestDownloadWithFallback(unittest.TestCase):
                 )
             )
             self.assertIn("OA fallback chain", result)
+
+    def test_repository_fallback_handles_numeric_paper_id(self):
+        paper = SimpleNamespace(paper_id=12345, pdf_url="https://example.org/paper.pdf")
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
+
+        with patch.object(server, "openaire_searcher", searcher), \
+             patch.object(server, "core_searcher", SimpleNamespace(search=lambda *args, **kwargs: [])), \
+             patch.object(server, "europepmc_searcher", SimpleNamespace(search=lambda *args, **kwargs: [])), \
+             patch.object(server, "pmc_searcher", SimpleNamespace(search=lambda *args, **kwargs: [])), \
+             patch("paper_search_mcp.server._download_from_url", new=AsyncMock(return_value="/tmp/repo.pdf")) as download:
+            result, error = asyncio.run(server._try_repository_fallback("10.1000/test", "title", "/tmp"))
+
+        self.assertEqual(result, "/tmp/repo.pdf")
+        self.assertEqual(error, "")
+        self.assertEqual(download.call_args.args[2], "openaire_12345")
 
 
 if __name__ == "__main__":

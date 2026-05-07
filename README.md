@@ -242,9 +242,10 @@ The skill uses a CLI (`paper-search`) that wraps the same library as the MCP ser
 Useful CLI examples:
 
 ```bash
-paper-search search "gender imbalance neuroscience references" -n 3
-paper-search search "gender imbalance neuroscience references" -s fastest -n 3
-paper-search search "gender imbalance neuroscience references" --exhaustive -s all -n 3
+paper-search search "gender imbalance neuroscience references"
+paper-search search "gender imbalance neuroscience references" -s fastest
+paper-search search "gender imbalance neuroscience references" --include-abstracts
+paper-search search "gender imbalance neuroscience references" --exhaustive -s all
 paper-search metadata-dois 10.1038/s41593-020-0658-y 10.1111/ecog.03049 -o metadata.json
 paper-search metadata-dois --input dois.txt --output metadata.json
 paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
@@ -260,6 +261,9 @@ and Unpaywall.
 The default per-source search timeout is 5 seconds; arXiv normally responds far
 faster than that, and late network hangs are cut off without dropping arXiv from
 the default search set.
+Search returns up to 10 results per source by default and omits abstracts to
+keep agent context compact. Add `--include-abstracts` when you want to inspect
+abstracts directly, or use `metadata-dois` after deduplicating candidate DOIs.
 If `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured, Semantic Scholar
 is added back to the fast set because authenticated access avoids the anonymous
 rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or

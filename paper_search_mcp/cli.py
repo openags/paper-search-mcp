@@ -171,6 +171,16 @@ def _dedupe(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _strip_search_record(paper: Dict[str, Any], include_abstracts: bool) -> Dict[str, Any]:
+    if include_abstracts:
+        return paper
+    compact = dict(paper)
+    compact.pop("abstract", None)
+    compact.pop("references", None)
+    compact.pop("extra", None)
+    return compact
+
+
 def _extract_dois(values: list[str]) -> list[str]:
     seen: set[str] = set()
     dois: list[str] = []
@@ -462,7 +472,7 @@ async def cmd_search(args: argparse.Namespace) -> int:
                     p["source"] = name
                 merged.append(p)
 
-    deduped = _dedupe(merged)
+    deduped = [_strip_search_record(p, args.include_abstracts) for p in _dedupe(merged)]
 
     output = {
         "query": args.query,
@@ -619,13 +629,15 @@ def build_parser() -> argparse.ArgumentParser:
     # search
     p_search = sub.add_parser("search", help="Search for papers across academic platforms")
     p_search.add_argument("query", help="Search query")
-    p_search.add_argument("-n", "--max-results", type=int, default=5, help="Max results per source (default: 5)")
+    p_search.add_argument("-n", "--max-results", type=int, default=10, help="Max results per source (default: 10)")
     p_search.add_argument("-s", "--sources", default="fast",
                           help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: fast)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
     p_search.add_argument("--source-timeout", type=float, default=5,
                           help="Seconds before an individual source search times out (0 disables)")
+    p_search.add_argument("--include-abstracts", action="store_true",
+                          help="Include abstracts in search output. Omitted by default to keep agent context compact.")
     p_search.add_argument("--exhaustive", action="store_true",
                           help="Use the old broad source set when sources are omitted or set to 'all'")
 

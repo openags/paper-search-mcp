@@ -220,6 +220,7 @@ def _score_recency(year: Optional[int]) -> int:
 
 def _score_metadata_record(merged: Dict[str, Any]) -> Dict[str, Any]:
     sources = merged.get("sources") or []
+    oa_pdf_sources = sorted(merged.get("oa_pdf_sources") or [])
     citations = max(0, int(merged.get("citations") or 0))
     title = str(merged.get("title") or "")
     abstract = str(merged.get("abstract") or "")
@@ -230,7 +231,7 @@ def _score_metadata_record(merged: Dict[str, Any]) -> Dict[str, Any]:
     source_coverage = min(100, len(sources) * 34)
     recency = _score_recency(_coerce_year(merged.get("published_date")))
     citation_signal = min(100, round(math.log10(citations + 1) / math.log10(1001) * 100)) if citations else 0
-    availability = 100 if _paper_has_content(merged, "pdf_url") or merged.get("oa_pdf_sources") else (45 if _paper_has_content(merged, "url") else 0)
+    availability = 100 if _paper_has_content(merged, "pdf_url") or oa_pdf_sources else (45 if _paper_has_content(merged, "url") else 0)
 
     metadata_confidence = 0
     metadata_confidence += 20 if _paper_has_content(merged, "title") else 0
@@ -276,7 +277,10 @@ def _score_metadata_record(merged: Dict[str, Any]) -> Dict[str, Any]:
     elif citations > 0:
         reasons.append(f"Citation signal available ({citations} citations)")
     if availability == 100:
-        reasons.append("Open access PDF available")
+        if oa_pdf_sources:
+            reasons.append(f"Open access PDF found via {', '.join(oa_pdf_sources)}")
+        else:
+            reasons.append("Open access PDF available")
     elif availability > 0:
         reasons.append("Landing page available")
     if len(sources) >= 2:

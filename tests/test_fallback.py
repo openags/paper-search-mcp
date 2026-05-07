@@ -224,6 +224,51 @@ class TestDownloadWithFallback(unittest.TestCase):
             self.assertGreaterEqual(score, 0)
             self.assertLessEqual(score, 100)
 
+    def test_metadata_dois_scores_pdf_availability_from_unpaywall(self):
+        base_record = {
+            "doi": "10.1000/unpaywall-only",
+            "title": "Ecological model evaluation",
+            "authors": "Ada Lovelace",
+            "abstract": "A paper about model evaluation.",
+            "published_date": "2024-01-01",
+            "url": "https://doi.org/10.1000/unpaywall-only",
+            "pdf_url": "",
+            "citations": 12,
+            "categories": "Ecology",
+            "keywords": "models",
+        }
+        crossref_record = dict(base_record, source="crossref")
+        openalex_record = dict(base_record, source="openalex")
+        unpaywall_record = dict(base_record, source="unpaywall", pdf_url="https://example.org/oa.pdf")
+
+        crossref = SimpleNamespace(get_paper_by_doi=lambda doi: SimpleNamespace(to_dict=lambda: crossref_record))
+        openalex = SimpleNamespace(get_paper_by_doi=lambda doi: SimpleNamespace(to_dict=lambda: openalex_record))
+        unpaywall = SimpleNamespace(resolver=SimpleNamespace(get_paper_by_doi=lambda doi: SimpleNamespace(to_dict=lambda: unpaywall_record)))
+
+        def fake_get_searcher(source):
+            return {"crossref": crossref, "openalex": openalex, "unpaywall": unpaywall}[source]
+
+        args = SimpleNamespace(
+            dois=["10.1000/unpaywall-only"],
+            input=None,
+            output=None,
+            sources="metadata",
+            include_semantic=False,
+            source_timeout=2,
+        )
+
+        stdout = io.StringIO()
+        with patch.object(cli, "_get_searcher", side_effect=fake_get_searcher), \
+             patch.object(cli, "_available_sources", return_value=["crossref", "openalex", "unpaywall"]), \
+             redirect_stdout(stdout):
+            result = asyncio.run(cli.cmd_metadata_dois(args))
+
+        self.assertEqual(result, 0)
+        metadata = json.loads(stdout.getvalue())["results"][0]["metadata"]
+        self.assertEqual(metadata["rank_components"]["availability"], 100)
+        self.assertEqual(metadata["oa_pdf_sources"], ["unpaywall"])
+        self.assertTrue(any("unpaywall" in reason.lower() for reason in metadata["rank_reasons"]))
+
 
 if __name__ == "__main__":
     unittest.main()

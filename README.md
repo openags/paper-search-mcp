@@ -271,6 +271,9 @@ when `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured. Each merged
 metadata record includes deterministic prioritization fields such as
 `rank_score`, `rank_components`, `rank_reasons`, and `source_coverage` so
 agents can triage which papers to inspect first without calling an LLM.
+PDF availability in the ranking is based on all fast metadata sources checked
+for that DOI, exposed as `oa_pdf_sources`; mirror probing is reserved for
+`download-doi` so ranking stays fast and parallelizable.
 
 Use `download-doi` when you already have a DOI and want the tool to try the
 source-native path, Unpaywall, repository fallbacks, and optional Sci-Hub

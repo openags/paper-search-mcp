@@ -153,6 +153,81 @@ class OpenAlexSearcher(PaperSource):
 
         return papers
 
+    def get_paper_by_doi(self, doi: str) -> Optional[Paper]:
+        """Fetch one OpenAlex work by DOI."""
+        normalized_doi = (doi or "").strip().replace("https://doi.org/", "")
+        if not normalized_doi:
+            return None
+
+        try:
+            params = {
+                "filter": f"doi:{normalized_doi}",
+                "per_page": 1,
+            }
+            response = self.session.get(self.BASE_URL, params=params, timeout=30)
+            if response.status_code != 200:
+                logger.error(
+                    "OpenAlex DOI lookup failed with status %s for DOI %s",
+                    response.status_code,
+                    normalized_doi,
+                )
+                return None
+
+            results = response.json().get("results", [])
+            if not results:
+                return None
+
+            paper_id = results[0].get("id", "").replace("https://openalex.org/", "")
+            title = results[0].get("title")
+            if not title:
+                return None
+
+            item = results[0]
+            authors = [
+                author.get("author", {}).get("display_name", "")
+                for author in item.get("authorships", [])
+                if author.get("author", {}).get("display_name")
+            ]
+            abstract = self._reconstruct_abstract(item.get("abstract_inverted_index"))
+            doi_value = (item.get("doi") or "").replace("https://doi.org/", "")
+            primary_location = item.get("primary_location") or {}
+            url = primary_location.get("landing_page_url") or item.get("id", "")
+            pdf_url = primary_location.get("pdf_url") or ""
+            open_access = item.get("open_access", {})
+            if not pdf_url and open_access.get("is_oa"):
+                pdf_url = open_access.get("oa_url", "")
+
+            published_date = None
+            pub_date_str = item.get("publication_date")
+            if pub_date_str:
+                try:
+                    published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+                except ValueError:
+                    pass
+
+            concepts = [
+                concept.get("display_name")
+                for concept in item.get("concepts", [])
+                if concept.get("display_name")
+            ]
+
+            return Paper(
+                paper_id=paper_id,
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                url=url,
+                pdf_url=pdf_url or "",
+                published_date=published_date,
+                source="openalex",
+                categories=concepts[:5],
+                doi=doi_value or normalized_doi,
+                citations=item.get("cited_by_count", 0),
+            )
+        except Exception as e:
+            logger.error("OpenAlex DOI lookup error for %s: %s", normalized_doi, e)
+            return None
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         OpenAlex does not host PDFs natively, it only links to open access versions.

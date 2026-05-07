@@ -18,7 +18,7 @@ Replace `<REPO_PATH>` with the absolute path to your clone of this repository.
 
 ### Search
 ```bash
-uv run --directory <REPO_PATH> paper-search search "<query>" -n <max_per_source> -s <sources> -y <year>
+uv run --directory <REPO_PATH> paper-search search "<query>" -n <max_per_source> -s <sources> -y <year> --source-timeout 30
 ```
 - `-n`: results per source (default: 5)
 - `-s`: comma-separated sources or "all" (default: all)
@@ -30,6 +30,16 @@ For speed, prefer targeted sources (`-s arxiv,semantic,crossref`) over "all" unl
 ```bash
 uv run --directory <REPO_PATH> paper-search download <source> <paper_id> [-o ./downloads]
 ```
+
+If the user provides a DOI and wants the PDF, prefer the DOI fallback command:
+
+```bash
+uv run --directory <REPO_PATH> paper-search download-doi <doi> [-o ./downloads] [--no-scihub]
+```
+
+This tries source-native download, Unpaywall, repository fallbacks, and optional
+Sci-Hub fallback without requiring the agent to choose a source-specific
+downloader.
 
 ### Read (extract text)
 ```bash
@@ -56,4 +66,5 @@ Optional (env vars): ieee (`IEEE_API_KEY`), acm (`ACM_API_KEY`)
 1. Search with targeted sources to find papers
 2. Present results as a table: title, authors, year, source, DOI/URL
 3. If the user wants full text, use `read <source> <paper_id>`
-4. If the user wants the PDF, use `download <source> <paper_id>` and report the saved path
+4. If the user gives a DOI and wants the PDF, use `download-doi <doi>` and report the saved path
+5. If a source-specific identifier is better, use `download <source> <paper_id>` and report the saved path

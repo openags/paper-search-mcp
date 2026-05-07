@@ -7,6 +7,7 @@ import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
+from ..utils import is_pdf_content
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
@@ -160,8 +161,8 @@ class SemanticSearcher(PaperSource):
         """
         Make a request to the Semantic Scholar API with optional API key.
         """
-        max_retries = 3
         api_key = self.get_api_key()
+        max_retries = 3 if api_key else 1
         retry_delay = 5 if api_key is None else 2
         has_retried_without_key = False
 
@@ -187,6 +188,16 @@ class SemanticSearcher(PaperSource):
 
                 # 检查是否是429错误（限流）
                 if response.status_code == 429:
+                    if api_key is None:
+                        logger.warning(
+                            "Semantic Scholar anonymous access is rate-limited (429). "
+                            "Skipping retries; set SEMANTIC_SCHOLAR_API_KEY for higher limits."
+                        )
+                        return {
+                            "error": "rate_limited",
+                            "status_code": 429,
+                            "message": "Too many requests. Set SEMANTIC_SCHOLAR_API_KEY for higher limits.",
+                        }
                     if attempt < max_retries - 1:
                         retry_after = response.headers.get("Retry-After")
                         wait_time = (
@@ -225,6 +236,16 @@ class SemanticSearcher(PaperSource):
                     has_retried_without_key = True
                     continue
                 if e.response.status_code == 429:
+                    if api_key is None:
+                        logger.warning(
+                            "Semantic Scholar anonymous access is rate-limited (429). "
+                            "Skipping retries; set SEMANTIC_SCHOLAR_API_KEY for higher limits."
+                        )
+                        return {
+                            "error": "rate_limited",
+                            "status_code": 429,
+                            "message": "Too many requests. Set SEMANTIC_SCHOLAR_API_KEY for higher limits.",
+                        }
                     if attempt < max_retries - 1:
                         retry_after = e.response.headers.get("Retry-After")
                         wait_time = (
@@ -380,6 +401,9 @@ class SemanticSearcher(PaperSource):
             pdf_url = paper.pdf_url
             pdf_response = requests.get(pdf_url, timeout=30)
             pdf_response.raise_for_status()
+            content_type = pdf_response.headers.get("content-type", "")
+            if not is_pdf_content(pdf_response.content, content_type=content_type, url=pdf_url):
+                return f"Error: Downloaded content is not a valid PDF for paper {paper_id}"
 
             # Create download directory if it doesn't exist
             os.makedirs(save_path, exist_ok=True)
@@ -425,6 +449,9 @@ class SemanticSearcher(PaperSource):
 
                 pdf_response = requests.get(paper.pdf_url, timeout=30)
                 pdf_response.raise_for_status()
+                content_type = pdf_response.headers.get("content-type", "")
+                if not is_pdf_content(pdf_response.content, content_type=content_type, url=paper.pdf_url):
+                    return f"Error: Downloaded content is not a valid PDF for paper {paper_id}"
 
                 with open(pdf_path, "wb") as f:
                     f.write(pdf_response.content)

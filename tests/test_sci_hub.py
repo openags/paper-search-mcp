@@ -4,6 +4,7 @@ import tempfile
 import shutil
 import os
 import requests
+from unittest.mock import Mock, patch
 from paper_search_mcp.academic_platforms.sci_hub import SciHubFetcher
 
 
@@ -11,7 +12,7 @@ def check_sci_hub_accessible():
     """Check if Sci-Hub is accessible"""
     try:
         # Test with a simple request to see if sci-hub responds
-        response = requests.get("https://sci-hub.se", timeout=10)
+        response = requests.get("https://sci-hub.al", timeout=10)
         return response.status_code == 200
     except:
         return False
@@ -36,7 +37,7 @@ class TestSciHubFetcher(unittest.TestCase):
 
     def test_init(self):
         """Test initialization of SciHubFetcher"""
-        self.assertEqual(self.fetcher.base_url, "https://sci-hub.se")
+        self.assertEqual(self.fetcher.base_url, "")
         self.assertTrue(os.path.exists(self.test_dir))
         self.assertIsNotNone(self.fetcher.session)
 
@@ -127,6 +128,49 @@ class TestSciHubFetcher(unittest.TestCase):
         pdf_url = "https://example.com/paper.pdf"
         result = self.fetcher._get_direct_url(pdf_url)
         self.assertEqual(result, pdf_url)
+
+    def test_discover_mirrors_from_now_sh_html(self):
+        response = Mock()
+        response.text = """
+        <html>
+          <a href="https://sci-hub.al">mirror</a>
+          <p>sci-hub.st sci-hub.ru</p>
+        </html>
+        """
+        response.raise_for_status.return_value = None
+
+        with patch.object(self.fetcher.session, "get", return_value=response):
+            mirrors = self.fetcher._discover_mirrors()
+
+        self.assertIn("https://sci-hub.al", mirrors)
+        self.assertIn("https://sci-hub.st", mirrors)
+        self.assertIn("https://sci-hub.ru", mirrors)
+
+    def test_candidate_mirrors_use_cache_before_hardcoded(self):
+        self.fetcher._save_cached_mirrors(["https://sci-hub.al"])
+        mirrors = self.fetcher.get_candidate_mirrors()
+        self.assertEqual(mirrors[0], "https://sci-hub.al")
+
+    def test_download_tries_next_mirror_when_default_fails(self):
+        self.fetcher.get_candidate_mirrors = Mock(return_value=[
+            "https://sci-hub.se",
+            "https://sci-hub.al",
+        ])
+
+        with patch.object(self.fetcher, "_get_direct_url", side_effect=[None, "https://example.org/paper.pdf"]) as direct_url, \
+             patch.object(self.fetcher.session, "get") as get:
+            response = Mock()
+            response.status_code = 200
+            response.content = b"%PDF-1.4 fake"
+            response.headers = {"Content-Type": "application/pdf"}
+            response.url = "https://example.org/paper.pdf"
+            get.return_value = response
+
+            result = self.fetcher.download_pdf("10.1000/test")
+
+        self.assertIsNotNone(result)
+        self.assertTrue(os.path.exists(result))
+        self.assertEqual(direct_url.call_count, 2)
 
     @unittest.skipUnless(check_sci_hub_accessible(), "Sci-Hub not accessible")
     def test_get_direct_url_doi(self):

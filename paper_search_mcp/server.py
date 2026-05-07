@@ -26,6 +26,7 @@ from .academic_platforms.citeseerx import CiteSeerXSearcher
 from .academic_platforms.doaj import DOAJSearcher
 from .academic_platforms.base_search import BASESearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
+from .utils import is_pdf_content
 from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
@@ -74,6 +75,15 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
     else:
         papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
     return [paper.to_dict() for paper in papers]
+
+
+async def _with_source_timeout(source: str, coro: Any, timeout: float) -> Any:
+    if timeout <= 0:
+        return await coro
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"{source} timed out after {timeout:g}s") from exc
 
 
 ALL_SOURCES = [
@@ -184,9 +194,8 @@ async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = 
         if response.status_code >= 400 or not response.content:
             return None
 
-        content_type = (response.headers.get("content-type") or "").lower()
-        is_pdf = "pdf" in content_type or response.content.startswith(b"%PDF") or pdf_url.lower().endswith(".pdf")
-        if not is_pdf:
+        content_type = response.headers.get("content-type") or ""
+        if not is_pdf_content(response.content, content_type=content_type, url=pdf_url):
             logger.warning("Resolved URL is not a PDF candidate: %s (content-type=%s)", pdf_url, content_type)
             return None
 
@@ -230,7 +239,7 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
                 if not pdf_url:
                     continue
 
-                paper_id = (getattr(paper, "paper_id", "") or query).strip()
+                paper_id = str(getattr(paper, "paper_id", "") or query).strip()
                 downloaded = await _download_from_url(pdf_url, save_path, f"{repo_name}_{paper_id}")
                 if downloaded:
                     return downloaded, ""
@@ -244,6 +253,7 @@ async def search_papers(
     max_results_per_source: int = 5,
     sources: str = "all",
     year: Optional[str] = None,
+    source_timeout: float = 30,
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -321,7 +331,11 @@ async def search_papers(
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
-    source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
+    timed_tasks = [
+        _with_source_timeout(source_name, task_map[source_name], source_timeout)
+        for source_name in source_names
+    ]
+    source_outputs = await asyncio.gather(*timed_tasks, return_exceptions=True)
 
     source_results: Dict[str, int] = {}
     errors: Dict[str, str] = {}
@@ -734,7 +748,7 @@ async def download_crossref(paper_id: str, save_path: str = "./downloads") -> st
 async def download_scihub(
     identifier: str,
     save_path: str = "./downloads",
-    base_url: str = "https://sci-hub.se",
+    base_url: str = "",
 ) -> str:
     """Download paper PDF via Sci-Hub (optional fallback connector).
 
@@ -760,7 +774,7 @@ async def download_with_fallback(
     title: str = "",
     save_path: str = "./downloads",
     use_scihub: bool = True,
-    scihub_base_url: str = "https://sci-hub.se",
+    scihub_base_url: str = "",
 ) -> str:
     """Try source-native download, OA repositories, Unpaywall, then optional Sci-Hub.
 
@@ -814,12 +828,6 @@ async def download_with_fallback(
     if primary_error:
         attempt_errors.append(f"primary: {primary_error}")
 
-    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
-    if repository_result:
-        return repository_result
-    if repository_error:
-        attempt_errors.append(f"repositories: {repository_error}")
-
     normalized_doi = (doi or "").strip()
     if normalized_doi:
         unpaywall_url = await asyncio.to_thread(unpaywall_resolver.resolve_best_pdf_url, normalized_doi)
@@ -832,6 +840,12 @@ async def download_with_fallback(
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:
         attempt_errors.append("unpaywall: DOI not provided")
+
+    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
+    if repository_result:
+        return repository_result
+    if repository_error:
+        attempt_errors.append(f"repositories: {repository_error}")
 
     if not use_scihub:
         return "Download failed after OA fallback chain. Details: " + " | ".join(attempt_errors)

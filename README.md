@@ -51,11 +51,12 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - **Layer 1 (Unified Tooling)**: High-level `search_papers` for multi-source concurrent search & deduplication, and `download_with_fallback` relying on publisher open access links with sequential fallbacks.
   - **Layer 2 (Platform Connectors)**: Modular connectors for specific academic platforms (arXiv, PubMed, bioRxiv, Semantic Scholar, etc.) equipped with intelligent DOI extraction via regex text analysis or API fields.
 - **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
+- **Fast Search Defaults**: CLI search defaults to a curated fast set (OpenAlex, Crossref, arXiv, PubMed, Europe PMC). Slow or rate-limited broad sources remain available via explicit source selection or `--exhaustive`.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
-- **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
+- **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → Unpaywall DOI resolution → OpenAIRE/CORE/Europe PMC/PMC discovery → optional Sci-Hub.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
@@ -125,6 +126,11 @@ All keys are **optional** unless noted. Configure them in `.env` (preferred) or 
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
 | `PAPER_SEARCH_MCP_ACM_API_KEY` | ACM DL | **Required to activate** | See [libraries.acm.org/digital-library/acm-open](https://libraries.acm.org/digital-library/acm-open) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRRORS` | Sci-Hub | Optional | Comma-separated preferred mirrors for optional Sci-Hub fallback |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_CACHE_TTL` | Sci-Hub | Optional | Mirror cache TTL in seconds (default: 21600) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_TIMEOUT` | Sci-Hub | Optional | Seconds per mirror health probe (default: 4) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_DISCOVERY_TIMEOUT` | Sci-Hub | Optional | Seconds for mirror-list discovery (default: 5) |
+| `PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_WORKERS` | Sci-Hub | Optional | Parallel mirror health probes (default: 8) |
 
 All variables follow the `PAPER_SEARCH_MCP_<NAME>` prefix scheme. Legacy names without the prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
@@ -186,6 +192,9 @@ Sci-Hub support can remain available as an optional connector for users who expl
 - Legal and policy risks vary by jurisdiction.
 - README and tool descriptions should clearly state that users are responsible for enabling and using it.
 - Open-access and publisher-permitted sources should be tried first whenever possible.
+- Mirror discovery from `sci-hub.now.sh` is inspired by the MIT-licensed
+  [`OpenByteDev/scihub-scraper-cli`](https://github.com/OpenByteDev/scihub-scraper-cli)
+  project.
 
 ---
 
@@ -229,6 +238,55 @@ Create a `.env` file in the repo root for optional API keys (see [Environment Va
 - "Download the PDF for arxiv paper 2106.12345"
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
+
+Useful CLI examples:
+
+```bash
+paper-search search "gender imbalance neuroscience references"
+paper-search search "gender imbalance neuroscience references" -s fastest
+paper-search search "gender imbalance neuroscience references" --include-abstracts
+paper-search search "gender imbalance neuroscience references" --exhaustive -s all
+paper-search metadata-dois 10.1038/s41593-020-0658-y 10.1111/ecog.03049 -o metadata.json
+paper-search metadata-dois --input dois.txt --output metadata.json
+paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
+paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads --no-scihub
+paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads
+```
+
+For broad topic search, the CLI defaults to `-s fast`, which keeps arXiv in
+the search set but isolates each source in a child process so slow network
+timeouts cannot stall the whole command. It avoids known slow/noisy topic-search
+paths such as anonymous Semantic Scholar retries, CORE, PMC, Google Scholar,
+and Unpaywall.
+The default per-source search timeout is 5 seconds; arXiv normally responds far
+faster than that, and late network hangs are cut off without dropping arXiv from
+the default search set.
+Search returns up to 10 results per source by default and omits abstracts to
+keep agent context compact. Add `--include-abstracts` when you want to inspect
+abstracts directly, or use `metadata-dois` after deduplicating candidate DOIs.
+If `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured, Semantic Scholar
+is added back to the fast set because authenticated access avoids the anonymous
+rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or
+`--exhaustive -s all` when coverage matters more than latency.
+
+Use `download-doi` for DOI retrieval. `unpaywall` is automatically added to
+generic `search` only when the query contains a DOI, because Unpaywall is a DOI
+lookup service rather than a broad topic search engine.
+
+Use `metadata-dois` after external/native discovery to enrich candidate papers
+in parallel. It accepts DOI arguments or a text file, queries Crossref,
+OpenAlex, and Unpaywall by default, and includes Semantic Scholar automatically
+when `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured. Each merged
+metadata record includes deterministic prioritization fields such as
+`rank_score`, `rank_components`, `rank_reasons`, and `source_coverage` so
+agents can triage which papers to inspect first without calling an LLM.
+PDF availability in the ranking is based on all fast metadata sources checked
+for that DOI, exposed as `oa_pdf_sources`; mirror probing is reserved for
+`download-doi` so ranking stays fast and parallelizable.
+
+Use `download-doi` when you already have a DOI and want the tool to try the
+source-native path, Unpaywall, repository fallbacks, and optional Sci-Hub
+fallback without manually choosing a source-specific downloader.
 
 ---
 
@@ -482,6 +540,11 @@ PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN=
 PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL=
 PAPER_SEARCH_MCP_IEEE_API_KEY=
 PAPER_SEARCH_MCP_ACM_API_KEY=
+PAPER_SEARCH_MCP_SCIHUB_MIRRORS=
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_CACHE_TTL=21600
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_TIMEOUT=4
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_DISCOVERY_TIMEOUT=5
+PAPER_SEARCH_MCP_SCIHUB_MIRROR_PROBE_WORKERS=8
 ```
 
 To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`

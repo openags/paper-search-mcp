@@ -192,7 +192,7 @@ class SciHubFetcher:
             return None
 
         except Exception as e:
-            logging.error(f"Error getting direct URL for {identifier}: {e}")
+            logging.debug("Error getting direct URL for %s via %s: %s", identifier, base_url or self.base_url, e)
             return None
 
     def get_candidate_mirrors(self, force_refresh: bool = False) -> list[str]:

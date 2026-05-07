@@ -252,13 +252,13 @@ paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads --no-scihub
 paper-search download-doi 10.1038/s41593-020-0658-y -o ./downloads
 ```
 
-For broad topic search, the CLI defaults to `-s fast`, which keeps arXiv in
-the search set but avoids known slow/noisy topic-search paths such as
-anonymous Semantic Scholar retries, CORE, PMC, Google Scholar, and Unpaywall.
+For broad topic search, the CLI defaults to `-s fast`, which avoids known
+slow/noisy topic-search paths such as arXiv network timeouts, anonymous
+Semantic Scholar retries, CORE, PMC, Google Scholar, and Unpaywall.
 If `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured, Semantic Scholar
 is added back to the fast set because authenticated access avoids the anonymous
 rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or
-`--exhaustive -s all` when coverage matters more than latency.
+`-s arxiv` / `--exhaustive -s all` when coverage matters more than latency.
 
 Use `download-doi` for DOI retrieval. `unpaywall` is automatically added to
 generic `search` only when the query contains a DOI, because Unpaywall is a DOI

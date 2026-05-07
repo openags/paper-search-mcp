@@ -814,12 +814,6 @@ async def download_with_fallback(
     if primary_error:
         attempt_errors.append(f"primary: {primary_error}")
 
-    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
-    if repository_result:
-        return repository_result
-    if repository_error:
-        attempt_errors.append(f"repositories: {repository_error}")
-
     normalized_doi = (doi or "").strip()
     if normalized_doi:
         unpaywall_url = await asyncio.to_thread(unpaywall_resolver.resolve_best_pdf_url, normalized_doi)
@@ -832,6 +826,12 @@ async def download_with_fallback(
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:
         attempt_errors.append("unpaywall: DOI not provided")
+
+    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
+    if repository_result:
+        return repository_result
+    if repository_error:
+        attempt_errors.append(f"repositories: {repository_error}")
 
     if not use_scihub:
         return "Download failed after OA fallback chain. Details: " + " | ".join(attempt_errors)

@@ -186,6 +186,9 @@ Sci-Hub support can remain available as an optional connector for users who expl
 - Legal and policy risks vary by jurisdiction.
 - README and tool descriptions should clearly state that users are responsible for enabling and using it.
 - Open-access and publisher-permitted sources should be tried first whenever possible.
+- Mirror discovery from `sci-hub.now.sh` is inspired by the MIT-licensed
+  [`OpenByteDev/scihub-scraper-cli`](https://github.com/OpenByteDev/scihub-scraper-cli)
+  project.
 
 ---
 

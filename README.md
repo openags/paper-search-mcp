@@ -267,7 +267,10 @@ lookup service rather than a broad topic search engine.
 Use `metadata-dois` after external/native discovery to enrich candidate papers
 in parallel. It accepts DOI arguments or a text file, queries Crossref,
 OpenAlex, and Unpaywall by default, and includes Semantic Scholar automatically
-when `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured.
+when `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured. Each merged
+metadata record includes deterministic prioritization fields such as
+`rank_score`, `rank_components`, `rank_reasons`, and `source_coverage` so
+agents can triage which papers to inspect first without calling an LLM.
 
 Use `download-doi` when you already have a DOI and want the tool to try the
 source-native path, Unpaywall, repository fallbacks, and optional Sci-Hub

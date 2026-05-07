@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -188,6 +190,108 @@ def _paper_has_content(paper: Dict[str, Any], field: str) -> bool:
     return bool(value)
 
 
+def _coerce_year(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if hasattr(value, "year"):
+        try:
+            return int(value.year)
+        except (TypeError, ValueError):
+            return None
+    text = str(value)
+    match = re.search(r"\b(19|20)\d{2}\b", text)
+    return int(match.group(0)) if match else None
+
+
+def _score_recency(year: Optional[int]) -> int:
+    if not year:
+        return 0
+    age = max(0, datetime.now(timezone.utc).year - year)
+    if age <= 2:
+        return 100
+    if age <= 5:
+        return 80
+    if age <= 10:
+        return 60
+    if age <= 20:
+        return 35
+    return 15
+
+
+def _score_metadata_record(merged: Dict[str, Any]) -> Dict[str, Any]:
+    sources = merged.get("sources") or []
+    citations = max(0, int(merged.get("citations") or 0))
+    title = str(merged.get("title") or "")
+    abstract = str(merged.get("abstract") or "")
+    categories = str(merged.get("categories") or "")
+    keywords = str(merged.get("keywords") or "")
+    combined_text = " ".join([title, abstract, categories, keywords]).lower()
+
+    source_coverage = min(100, len(sources) * 34)
+    recency = _score_recency(_coerce_year(merged.get("published_date")))
+    citation_signal = min(100, round(math.log10(citations + 1) / math.log10(1001) * 100)) if citations else 0
+    availability = 100 if _paper_has_content(merged, "pdf_url") or merged.get("oa_pdf_sources") else (45 if _paper_has_content(merged, "url") else 0)
+
+    metadata_confidence = 0
+    metadata_confidence += 20 if _paper_has_content(merged, "title") else 0
+    metadata_confidence += 15 if _paper_has_content(merged, "authors") else 0
+    metadata_confidence += 25 if _paper_has_content(merged, "abstract") else 0
+    metadata_confidence += 15 if _paper_has_content(merged, "published_date") else 0
+    metadata_confidence += 10 if _paper_has_content(merged, "doi") else 0
+    metadata_confidence += 15 if _paper_has_content(merged, "categories") or _paper_has_content(merged, "keywords") else 0
+    metadata_confidence = min(100, metadata_confidence + min(20, len(sources) * 5))
+
+    review_terms = ["systematic review", "meta-analysis", "metaanalysis", "review", "synthesis", "survey"]
+    literature_fit = 45 if title else 20
+    if abstract:
+        literature_fit += 15
+    if any(term in combined_text for term in review_terms):
+        literature_fit += 40
+    literature_fit = min(100, literature_fit)
+
+    components = {
+        "literature_fit": literature_fit,
+        "recency": recency,
+        "citation_signal": citation_signal,
+        "availability": availability,
+        "metadata_confidence": metadata_confidence,
+    }
+    rank_score = round(
+        components["literature_fit"] * 0.25
+        + components["recency"] * 0.20
+        + components["citation_signal"] * 0.20
+        + components["availability"] * 0.15
+        + components["metadata_confidence"] * 0.20
+    )
+
+    reasons: list[str] = []
+    if any(term in combined_text for term in review_terms):
+        reasons.append("Review/synthesis keywords detected")
+    if recency >= 80:
+        reasons.append("Recent publication year")
+    elif recency == 0:
+        reasons.append("Publication year unavailable")
+    if citations >= 100:
+        reasons.append(f"Strong citation signal ({citations} citations)")
+    elif citations > 0:
+        reasons.append(f"Citation signal available ({citations} citations)")
+    if availability == 100:
+        reasons.append("Open access PDF available")
+    elif availability > 0:
+        reasons.append("Landing page available")
+    if len(sources) >= 2:
+        reasons.append(f"Metadata confirmed by {len(sources)} sources")
+    if metadata_confidence >= 80:
+        reasons.append("Rich title/abstract metadata")
+
+    return {
+        "rank_score": max(0, min(100, rank_score)),
+        "rank_reasons": reasons[:6],
+        "rank_components": components,
+        "source_coverage": source_coverage,
+    }
+
+
 def _merge_metadata_records(doi: str, records: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     source_priority = ["crossref", "openalex", "semantic", "unpaywall"]
     merged: Dict[str, Any] = {
@@ -226,6 +330,7 @@ def _merge_metadata_records(doi: str, records: Dict[str, Dict[str, Any]]) -> Dic
         if _paper_has_content(paper, "pdf_url"):
             oa_sources.append(source)
     merged["oa_pdf_sources"] = sorted(oa_sources)
+    merged.update(_score_metadata_record(merged))
     return merged
 
 

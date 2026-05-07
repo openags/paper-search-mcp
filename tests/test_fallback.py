@@ -1,5 +1,8 @@
 import unittest
 import asyncio
+import io
+import json
+from contextlib import redirect_stdout
 from unittest.mock import patch, AsyncMock
 from types import SimpleNamespace
 
@@ -168,6 +171,58 @@ class TestDownloadWithFallback(unittest.TestCase):
             result = asyncio.run(cli.cmd_metadata_dois(args))
 
         self.assertEqual(result, 0)
+
+    def test_metadata_dois_adds_rank_fields_from_available_metadata(self):
+        review_record = {
+            "doi": "10.1000/review",
+            "title": "A systematic review of ecological forecasting",
+            "authors": "Ada Lovelace; Grace Hopper",
+            "abstract": "This review synthesizes ecological forecasting studies.",
+            "published_date": "2025-02-03",
+            "url": "https://doi.org/10.1000/review",
+            "pdf_url": "https://example.org/review.pdf",
+            "citations": 125,
+            "categories": "Ecology",
+            "keywords": "forecasting; systematic review",
+            "source": "openalex",
+        }
+        crossref_record = dict(review_record, source="crossref", pdf_url="", citations=80)
+
+        crossref = SimpleNamespace(get_paper_by_doi=lambda doi: SimpleNamespace(to_dict=lambda: crossref_record))
+        openalex = SimpleNamespace(get_paper_by_doi=lambda doi: SimpleNamespace(to_dict=lambda: review_record))
+        unpaywall = SimpleNamespace(resolver=SimpleNamespace(get_paper_by_doi=lambda doi: None))
+
+        def fake_get_searcher(source):
+            return {"crossref": crossref, "openalex": openalex, "unpaywall": unpaywall}[source]
+
+        args = SimpleNamespace(
+            dois=["10.1000/review"],
+            input=None,
+            output=None,
+            sources="metadata",
+            include_semantic=False,
+            source_timeout=2,
+        )
+
+        stdout = io.StringIO()
+        with patch.object(cli, "_get_searcher", side_effect=fake_get_searcher), \
+             patch.object(cli, "_available_sources", return_value=["crossref", "openalex", "unpaywall"]), \
+             redirect_stdout(stdout):
+            result = asyncio.run(cli.cmd_metadata_dois(args))
+
+        self.assertEqual(result, 0)
+        metadata = json.loads(stdout.getvalue())["results"][0]["metadata"]
+        self.assertGreaterEqual(metadata["rank_score"], 80)
+        self.assertIn("rank_reasons", metadata)
+        self.assertTrue(any("review" in reason.lower() for reason in metadata["rank_reasons"]))
+        self.assertTrue(any("open access" in reason.lower() or "pdf" in reason.lower() for reason in metadata["rank_reasons"]))
+        self.assertEqual(
+            sorted(metadata["rank_components"]),
+            ["availability", "citation_signal", "literature_fit", "metadata_confidence", "recency"],
+        )
+        for score in metadata["rank_components"].values():
+            self.assertGreaterEqual(score, 0)
+            self.assertLessEqual(score, 100)
 
 
 if __name__ == "__main__":

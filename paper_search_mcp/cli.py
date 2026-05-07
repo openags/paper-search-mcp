@@ -624,7 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: fast)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
-    p_search.add_argument("--source-timeout", type=float, default=12,
+    p_search.add_argument("--source-timeout", type=float, default=5,
                           help="Seconds before an individual source search times out (0 disables)")
     p_search.add_argument("--exhaustive", action="store_true",
                           help="Use the old broad source set when sources are omitted or set to 'all'")

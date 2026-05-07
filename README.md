@@ -257,6 +257,9 @@ the search set but isolates each source in a child process so slow network
 timeouts cannot stall the whole command. It avoids known slow/noisy topic-search
 paths such as anonymous Semantic Scholar retries, CORE, PMC, Google Scholar,
 and Unpaywall.
+The default per-source search timeout is 5 seconds; arXiv normally responds far
+faster than that, and late network hangs are cut off without dropping arXiv from
+the default search set.
 If `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured, Semantic Scholar
 is added back to the fast set because authenticated access avoids the anonymous
 rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or

@@ -128,10 +128,13 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
     return [p.to_dict() for p in papers]
 
 
-async def _with_timeout(coro: Any, timeout: float) -> Any:
+async def _with_timeout(coro: Any, timeout: float, label: str = "operation") -> Any:
     if timeout <= 0:
         return await coro
-    return await asyncio.wait_for(coro, timeout=timeout)
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"{label} timed out after {timeout:g}s") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +157,7 @@ async def cmd_search(args: argparse.Namespace) -> int:
         tasks[src] = _with_timeout(
             _async_search(searcher, args.query, args.max_results, **extra),
             args.source_timeout,
+            src,
         )
 
     names = list(tasks.keys())

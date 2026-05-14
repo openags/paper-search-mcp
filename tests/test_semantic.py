@@ -45,6 +45,25 @@ class TestSemanticSearcher(unittest.TestCase):
             self.assertTrue(expected_path.exists())
             self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
 
+    def test_parse_paper_handles_missing_publication_date(self):
+        item = {
+            "paperId": "paper-123",
+            "title": "Paper without a publication date",
+            "authors": [{"name": "Ada Lovelace"}],
+            "abstract": "",
+            "url": "https://www.semanticscholar.org/paper/paper-123",
+            "publicationDate": None,
+            "externalIds": {},
+            "fieldsOfStudy": None,
+            "openAccessPdf": None,
+            "citationCount": 0,
+        }
+
+        paper = self.searcher._parse_paper(item)
+
+        self.assertIsNotNone(paper)
+        self.assertIsNone(paper.published_date)
+
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_basic(self):
         """Test basic search functionality"""

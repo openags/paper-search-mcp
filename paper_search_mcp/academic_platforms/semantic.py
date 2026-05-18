@@ -123,6 +123,8 @@ class SemanticSearcher(PaperSource):
             categories = item.get("fieldsOfStudy", [])
             if not categories:
                 categories = []
+            elif not isinstance(categories, list):
+                categories = [categories] if categories else []
 
             return Paper(
                 paper_id=item["paperId"],

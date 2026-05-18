@@ -5,7 +5,7 @@ import requests
 import logging
 import json
 import xml.etree.ElementTree as ET
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from requests.exceptions import SSLError
 import urllib3
 
@@ -55,7 +55,8 @@ class CiteSeerXSearcher(PaperSource):
 
         # If the endpoint redirected to the Wayback Machine the original host
         # is no longer serving live API responses; treat this as unavailable.
-        if "web.archive.org" in resp.url:
+        host = (urlparse(resp.url).hostname or "").lower()
+        if host == "web.archive.org" or host.endswith(".web.archive.org"):
             raise requests.HTTPError(
                 f"CiteSeerX endpoint redirected to web archive ({resp.url}); "
                 "the live API is currently unavailable.",

@@ -15,7 +15,7 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin/paper-search-mcp /usr/local/bin/paper-search-mcp
 
-# Environment variables (override at runtime with -e)
+# Environment variables — set at runtime via docker-compose, not here
 ENV PAPER_SEARCH_MCP_UNPAYWALL_EMAIL=""
 ENV PAPER_SEARCH_MCP_CORE_API_KEY=""
 ENV PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY=""
@@ -25,5 +25,8 @@ ENV PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL=""
 ENV PAPER_SEARCH_MCP_IEEE_API_KEY=""
 ENV PAPER_SEARCH_MCP_ACM_API_KEY=""
 
-# Use the entry point script
-CMD ["paper-search-mcp"]
+# Expose the MCP server port
+EXPOSE 8089
+
+# Command to run the MCP server with SSE transport and Bearer auth
+CMD ["python", "-m", "paper_search_mcp.server"]

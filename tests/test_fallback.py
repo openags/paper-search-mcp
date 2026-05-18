@@ -53,5 +53,33 @@ class TestDownloadWithFallback(unittest.TestCase):
             self.assertIn("OA fallback chain", result)
 
 
+class TestRepositoryFallbackNumericPaperId(unittest.TestCase):
+    """Regression test for issue #57: _try_repository_fallback crashed when a
+    repository connector returned a Paper whose paper_id was a non-string
+    (int) value, because the code called .strip() on it directly."""
+
+    def test_numeric_paper_id_does_not_crash(self):
+        class FakePaper:
+            pdf_url = "https://example.org/oa.pdf"
+            paper_id = 12345  # int, not str — caused 'int' object has no attribute 'strip'
+
+        fake_searcher = type(
+            "S", (), {"search": staticmethod(lambda q, max_results=3: [FakePaper()])}
+        )
+
+        # Patch one of the repository searchers to return our FakePaper.
+        with patch.object(server, "openaire_searcher", fake_searcher), \
+             patch("paper_search_mcp.server._download_from_url", new=AsyncMock(return_value="/tmp/ok.pdf")):
+            result, err = asyncio.run(
+                server._try_repository_fallback(
+                    doi="10.1000/test",
+                    title="some title",
+                    save_path="/tmp",
+                )
+            )
+            self.assertEqual(result, "/tmp/ok.pdf")
+            self.assertEqual(err, "")
+
+
 if __name__ == "__main__":
     unittest.main()

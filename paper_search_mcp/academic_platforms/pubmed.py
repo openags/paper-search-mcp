@@ -1,39 +1,75 @@
 # paper_search_mcp/sources/pubmed.py
 from typing import List
+import logging
 import requests
 from xml.etree import ElementTree as ET
 from datetime import datetime
+from urllib.parse import quote, quote_plus
 from ..paper import Paper
 from ..utils import extract_doi
+from ..config import get_env
 from .base import PaperSource
 import os
+
+logger = logging.getLogger(__name__)
 
 class PubMedSearcher(PaperSource):
     """Searcher for PubMed papers"""
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
+    def _ncbi_metadata_params(self) -> dict:
+        params = {'tool': 'paper-search-mcp'}
+        api_key = get_env("NCBI_API_KEY", "").strip()
+        email = get_env("NCBI_EMAIL", "").strip()
+        if api_key:
+            params['api_key'] = api_key
+        if email:
+            params['email'] = email
+        return params
+
+    def _sanitize_error(self, error: Exception) -> str:
+        message = str(error)
+        api_key = get_env("NCBI_API_KEY", "").strip()
+        email = get_env("NCBI_EMAIL", "").strip()
+        if api_key:
+            message = message.replace(api_key, "<redacted>")
+        if email:
+            message = message.replace(email, "<redacted>")
+            message = message.replace(quote(email), "<redacted>")
+            message = message.replace(quote_plus(email), "<redacted>")
+        return message
+
     def search(self, query: str, max_results: int = 10, sort: str = 'relevance') -> List[Paper]:
-        search_params = {
-            'db': 'pubmed',
-            'term': query,
-            'retmax': max_results,
-            'retmode': 'xml',
-            'sort': sort,
-        }
-        search_response = requests.get(self.SEARCH_URL, params=search_params)
-        search_root = ET.fromstring(search_response.content)
-        ids = [id.text for id in search_root.findall('.//Id') if id.text]
-        if not ids:
-            return []
-        
-        fetch_params = {
-            'db': 'pubmed',
-            'id': ','.join(ids),
-            'retmode': 'xml'
-        }
-        fetch_response = requests.get(self.FETCH_URL, params=fetch_params)
-        fetch_root = ET.fromstring(fetch_response.content)
+        try:
+            search_params = {
+                'db': 'pubmed',
+                'term': query,
+                'retmax': max_results,
+                'retmode': 'xml',
+                'sort': sort,
+            }
+            search_params.update(self._ncbi_metadata_params())
+            search_response = requests.get(self.SEARCH_URL, params=search_params, timeout=30)
+            search_response.raise_for_status()
+            search_root = ET.fromstring(search_response.content)
+            ids = [id.text for id in search_root.findall('.//Id') if id.text]
+            if not ids:
+                return []
+
+            fetch_params = {
+                'db': 'pubmed',
+                'id': ','.join(ids),
+                'retmode': 'xml'
+            }
+            fetch_params.update(self._ncbi_metadata_params())
+            fetch_response = requests.get(self.FETCH_URL, params=fetch_params, timeout=30)
+            fetch_response.raise_for_status()
+            fetch_root = ET.fromstring(fetch_response.content)
+        except Exception as exc:
+            safe_reason = self._sanitize_error(exc)
+            logger.warning("PubMed NCBI request failed, falling back to Europe PMC MED records: %s", safe_reason)
+            return self._fallback_to_europepmc(query, max_results=max_results, reason=safe_reason)
         
         papers = []
         for article in fetch_root.findall('.//PubmedArticle'):
@@ -91,6 +127,44 @@ class PubMedSearcher(PaperSource):
             except Exception:
                 continue
         return papers
+
+    def _fallback_to_europepmc(self, query: str, max_results: int, reason: str) -> List[Paper]:
+        """Use Europe PMC MED records as a PubMed-indexed fallback when NCBI is unavailable."""
+        try:
+            from .europepmc import EuropePMCSearcher
+
+            fallback = EuropePMCSearcher()
+            papers = fallback.search(query, max_results=max_results, source='MED')
+            converted: List[Paper] = []
+            for paper in papers:
+                pmid = paper.paper_id.replace('PMID:', '', 1) if paper.paper_id.startswith('PMID:') else paper.paper_id
+                if not pmid:
+                    continue
+                extra = dict(paper.extra or {})
+                extra['retrieved_via'] = 'europepmc'
+                extra['fallback_reason'] = 'ncbi_request_failed'
+                extra['ncbi_error'] = reason[:180]
+                converted.append(Paper(
+                    paper_id=pmid,
+                    title=paper.title,
+                    authors=paper.authors,
+                    abstract=paper.abstract,
+                    doi=paper.doi,
+                    published_date=paper.published_date,
+                    pdf_url=paper.pdf_url,
+                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                    source='pubmed',
+                    updated_date=paper.updated_date,
+                    categories=paper.categories,
+                    keywords=paper.keywords,
+                    citations=paper.citations,
+                    references=paper.references,
+                    extra=extra,
+                ))
+            return converted
+        except Exception as exc:
+            logger.error("Europe PMC PubMed fallback failed: %s", exc)
+            return []
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """Attempt to download a paper's PDF from PubMed.

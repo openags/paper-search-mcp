@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from ..paper import Paper
 from ..utils import extract_doi
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 from pypdf import PdfReader
 
@@ -317,8 +318,13 @@ class PMCSearcher(PaperSource):
                 raise ValueError(f"PMC article {paper_id} does not have an open access PDF")
 
             # Generate filename
-            filename = f"{paper_id}.pdf"
-            filepath = save_dir / filename
+            paper = next(iter(self.search(paper_id, max_results=1)), None)
+            filepath = paper_output_path_for_paper(
+                str(save_dir),
+                paper or {},
+                identifier=paper_id,
+                extension=".pdf",
+            )
 
             # Save PDF
             with open(filepath, 'wb') as f:
@@ -348,7 +354,8 @@ class PMCSearcher(PaperSource):
             str: Extracted text content of the paper
         """
         try:
-            # Download PDF first
+            # Download PDF first. The filename is metadata-based, so use the
+            # path returned by the downloader.
             pdf_path = self.download_pdf(paper_id, save_path)
 
             # Extract text from PDF

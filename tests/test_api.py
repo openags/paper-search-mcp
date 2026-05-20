@@ -1,10 +1,10 @@
-# tests/test_server.py
+# tests/test_api.py
 import unittest
 import asyncio
 import os
 from paper_search_mcp import api
 
-class TestPaperSearchServer(unittest.TestCase):
+class TestPaperSearchApi(unittest.TestCase):
     def test_all_sources_include_new_platforms(self):
         self.assertIn("dblp", api.ALL_SOURCES)
         self.assertIn("openaire", api.ALL_SOURCES)

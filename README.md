@@ -197,30 +197,26 @@ Choose the method that best fits your workflow. All methods support the same [op
 
 ### Claude Code (Skill) — recommended for Claude Code users
 
-Install as a Claude Code skill instead of an MCP server. This gives Claude automatic access to paper search when you mention finding papers, academic literature, etc. — no MCP configuration needed.
+Install as a Claude Code skill instead of an MCP server. This gives Claude automatic access to paper search when you mention finding papers, academic literature, etc. — no MCP configuration or local repository clone needed.
 
 **Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
 
-**Step 1 — Clone the repo:**
-
-```bash
-git clone https://github.com/openags/paper-search-mcp.git ~/paper-search-mcp
-```
-
-**Step 2 — Install the skill:**
+**Step 1 — Install the skill:**
 
 ```bash
 mkdir -p ~/.claude/skills/paper-search
-cp ~/paper-search-mcp/claude-code/SKILL.md ~/.claude/skills/paper-search/SKILL.md
+curl -L https://raw.githubusercontent.com/openags/paper-search-mcp/main/claude-code/SKILL.md \
+  -o ~/.claude/skills/paper-search/SKILL.md
 ```
 
-**Step 3 — Update the repo path in the skill:**
+**Step 2 (optional) — Configure API keys:**
 
-Edit `~/.claude/skills/paper-search/SKILL.md` and replace every `<REPO_PATH>` with the absolute path to your clone (e.g. `/Users/yourname/paper-search-mcp`).
+```bash
+mkdir -p ~/.config/paper-search-mcp
+$EDITOR ~/.config/paper-search-mcp/.env
+```
 
-**Step 4 (optional) — Configure API keys:**
-
-Create a `.env` file in the repo root for optional API keys (see [Environment Variables](#environment-variables-env-file)).
+See [Environment Variables](#environment-variables-env-file) for supported keys.
 
 **That's it.** Next time you start Claude Code, just ask it to find papers — the skill activates automatically. For example:
 
@@ -467,11 +463,11 @@ uv pip install -e ".[dev]"
 
 ### Environment Variables (`.env` file)
 
-Instead of putting keys directly in the JSON config you can store them in a `.env` file in the project root (auto-loaded on startup):
+Instead of putting keys directly in MCP JSON config or shell profiles, store them in the user config file:
 
 ```bash
-cp .env.example .env   # if running from source
-# or create ~/.paper-search-mcp.env for global use
+mkdir -p ~/.config/paper-search-mcp
+$EDITOR ~/.config/paper-search-mcp/.env
 ```
 
 ```dotenv
@@ -484,7 +480,12 @@ PAPER_SEARCH_MCP_IEEE_API_KEY=
 PAPER_SEARCH_MCP_ACM_API_KEY=
 ```
 
-To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
+Load order:
+
+1. Existing environment variables
+2. `PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
+3. `~/.config/paper-search-mcp/.env`
+4. `./.env` in the current working directory for local development
 
 > Legacy variable names without the `PAPER_SEARCH_MCP_` prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 

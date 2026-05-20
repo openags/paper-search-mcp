@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -56,6 +57,28 @@ class TestConfigEnv(unittest.TestCase):
             ):
                 config.load_env_file(force=True)
                 self.assertEqual(config.get_env("UNPAYWALL_EMAIL", ""), "test@example.com")
+
+    def test_loads_user_config_env_before_cwd_env(self):
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as home_dir, tempfile.TemporaryDirectory() as cwd:
+            config_dir = Path(home_dir) / ".config" / "paper-search-mcp"
+            config_dir.mkdir(parents=True)
+            (config_dir / ".env").write_text(
+                "PAPER_SEARCH_MCP_CORE_API_KEY=user-config-value\n",
+                encoding="utf-8",
+            )
+            Path(cwd, ".env").write_text(
+                "PAPER_SEARCH_MCP_CORE_API_KEY=cwd-value\n",
+                encoding="utf-8",
+            )
+
+            try:
+                os.chdir(cwd)
+                with patch.dict(os.environ, {"HOME": home_dir}, clear=True):
+                    config.load_env_file(force=True)
+                    self.assertEqual(config.get_env("CORE_API_KEY", ""), "user-config-value")
+            finally:
+                os.chdir(original_cwd)
 
 
 if __name__ == "__main__":

@@ -327,7 +327,7 @@ pip install paper-search-mcp
   "mcpServers": {
     "paper-search-mcp": {
       "command": "python",
-      "args": ["-m", "paper_search_mcp.server"],
+      "args": ["-m", "paper_search_mcp.mcp"],
       "env": {
         "PAPER_SEARCH_MCP_UNPAYWALL_EMAIL": "your@email.com",
         "PAPER_SEARCH_MCP_CORE_API_KEY": "",
@@ -419,7 +419,7 @@ git clone https://github.com/openags/paper-search-mcp.git
 cd paper-search-mcp
 
 # 3. Verify it runs (uv auto-resolves dependencies, no manual install needed)
-uv run -m paper_search_mcp.server
+uv run -m paper_search_mcp.mcp
 ```
 
 **Claude Desktop config** (replace the directory path with your actual clone location):
@@ -432,7 +432,7 @@ uv run -m paper_search_mcp.server
       "args": [
         "run",
         "--directory", "/path/to/paper-search-mcp",
-        "-m", "paper_search_mcp.server"
+        "-m", "paper_search_mcp.mcp"
       ],
       "env": {
         "PAPER_SEARCH_MCP_UNPAYWALL_EMAIL": "your@email.com",
@@ -451,7 +451,7 @@ uv run -m paper_search_mcp.server
 For example, if you cloned to `/Users/mac/Pengsong/paper-search-mcp`:
 
 ```json
-"args": ["run", "--directory", "/Users/mac/Pengsong/paper-search-mcp", "-m", "paper_search_mcp.server"]
+"args": ["run", "--directory", "/Users/mac/Pengsong/paper-search-mcp", "-m", "paper_search_mcp.mcp"]
 ```
 
 > `uv run` automatically installs dependencies into an isolated environment on first run — no `pip install` or `venv` needed.

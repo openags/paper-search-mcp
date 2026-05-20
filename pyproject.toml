@@ -47,7 +47,7 @@ Repository = "https://github.com/openags/paper-search-mcp"
 Issues = "https://github.com/openags/paper-search-mcp/issues"
 
 [project.scripts]
-paper-search-mcp = "paper_search_mcp.server:main"
+paper-search-mcp = "paper_search_mcp.mcp:main"
 paper-search = "paper_search_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]

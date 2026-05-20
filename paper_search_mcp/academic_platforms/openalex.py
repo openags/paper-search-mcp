@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 from datetime import datetime
 import requests
 import logging
@@ -40,13 +40,14 @@ class OpenAlexSearcher(PaperSource):
             logger.warning(f"Error reconstructing OpenAlex abstract: {e}")
             return ""
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    def search(self, query: str, max_results: int = 10, **kwargs: Any) -> List[Paper]:
         """
         Search OpenAlex works. Uses the 'search' filter.
 
         Args:
             query: Search query string
             max_results: Maximum results to return (natively max 200 per page)
+            **kwargs: Additional OpenAlex parameters like `filter`.
 
         Returns:
             List[Paper]: List of found papers with metadata.
@@ -58,6 +59,8 @@ class OpenAlexSearcher(PaperSource):
                 "search": query,
                 "per_page": min(max_results, 200),
             }
+            if "filter" in kwargs:
+                params["filter"] = kwargs["filter"]
 
             response = self.session.get(self.BASE_URL, params=params, timeout=30)
             

@@ -45,9 +45,9 @@ class TestACMDisabledByDefault(unittest.TestCase):
     def test_not_in_all_sources_without_key(self):
         """acm must NOT appear in ALL_SOURCES when the key is absent."""
         import importlib
-        import paper_search_mcp.server as srv_module
-        importlib.reload(srv_module)
-        self.assertNotIn("acm", srv_module.ALL_SOURCES)
+        import paper_search_mcp.api as api_module
+        importlib.reload(api_module)
+        self.assertNotIn("acm", api_module.ALL_SOURCES)
 
 
 class TestACMIsConfiguredWithKey(unittest.TestCase):

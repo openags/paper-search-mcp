@@ -47,9 +47,9 @@ class TestIEEEDisabledByDefault(unittest.TestCase):
         """ieee must NOT appear in ALL_SOURCES when the key is absent."""
         # Reload server module with key absent to get a clean ALL_SOURCES
         import importlib
-        import paper_search_mcp.server as srv_module
-        importlib.reload(srv_module)
-        self.assertNotIn("ieee", srv_module.ALL_SOURCES)
+        import paper_search_mcp.api as api_module
+        importlib.reload(api_module)
+        self.assertNotIn("ieee", api_module.ALL_SOURCES)
 
 
 class TestIEEEIsConfiguredWithKey(unittest.TestCase):

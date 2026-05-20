@@ -5,7 +5,7 @@ import inspect
 import json
 from typing import Any, get_args, get_origin
 
-from . import api
+from .api import TOOLS
 
 
 def _argument_type(annotation: Any) -> Any:
@@ -47,7 +47,7 @@ def _add_tool_command(subparsers: Any, func: Any) -> None:
 
 def add_tool_commands(tool_parser: argparse.ArgumentParser) -> None:
     tool_subparsers = tool_parser.add_subparsers(dest="tool_name", required=True)
-    for tool in api.TOOLS:
+    for tool in TOOLS:
         _add_tool_command(tool_subparsers, tool)
 
 

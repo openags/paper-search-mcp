@@ -1,4 +1,4 @@
-# paper_search_mcp/server.py
+# paper_search_mcp/api.py
 from typing import List, Dict, Optional, Any
 import asyncio
 import os

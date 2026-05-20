@@ -106,6 +106,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | Sci-Hub (optional) | ⚠️ fallback-only | ✅ | ❌ | Optional; unstable mirrors; user responsibility |
 | **IEEE Xplore** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_IEEE_API_KEY` to activate |
 | **ACM DL** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_ACM_API_KEY` to activate |
+| **Web of Science** 🔑 | ✅ | ❌ | ❌ | Requires `PAPER_SEARCH_MCP_WOS_API_KEY` to activate |
 
 > ✅ = reliable in live tests.  ⚠️ = works but subject to upstream instability or access restrictions.  ❌ = not supported.  🔑 = key required.  🚧 = skeleton only.
 
@@ -125,6 +126,7 @@ All keys are **optional** unless noted. Configure them in `.env` (preferred) or 
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
 | `PAPER_SEARCH_MCP_ACM_API_KEY` | ACM DL | **Required to activate** | See [libraries.acm.org/digital-library/acm-open](https://libraries.acm.org/digital-library/acm-open) |
+| `PAPER_SEARCH_MCP_WOS_API_KEY` | Web of Science | **Required to activate** | Clarivate API key at [developer.clarivate.com](https://developer.clarivate.com/) |
 
 All variables follow the `PAPER_SEARCH_MCP_<NAME>` prefix scheme. Legacy names without the prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
@@ -155,15 +157,17 @@ They are **disabled by default** — no API calls are made unless you explicitly
 |---|---|---|
 | IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
 | ACM Digital Library | `PAPER_SEARCH_MCP_ACM_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
+| Web of Science | `PAPER_SEARCH_MCP_WOS_API_KEY` | metadata search available; download/read are not supported directly |
 
 **How to enable:**
 
 ```bash
 export PAPER_SEARCH_MCP_IEEE_API_KEY=<your_ieee_key>       # free key at https://developer.ieee.org/
 export PAPER_SEARCH_MCP_ACM_API_KEY=<your_acm_key>         # see https://libraries.acm.org/digital-library
+export PAPER_SEARCH_MCP_WOS_API_KEY=<your_wos_key>         # see https://developer.clarivate.com/
 ```
 
-Once a key is set, the corresponding source is automatically added to `ALL_SOURCES` and its MCP tools (`search_ieee` / `search_acm`, `download_ieee` / `download_acm`, `read_ieee_paper` / `read_acm_paper`) are registered at server startup.
+Once a key is set, the corresponding source is automatically added to `ALL_SOURCES` and its MCP tools (`search_ieee` / `search_acm` / `search_wos`, `download_ieee` / `download_acm` / `download_wos`, `read_ieee_paper` / `read_acm_paper` / `read_wos_paper`) are registered at server startup.
 
 Without a key the connectors log a startup warning only — the rest of the server is unaffected.
 

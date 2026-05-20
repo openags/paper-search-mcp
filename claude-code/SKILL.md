@@ -41,6 +41,24 @@ uv run --directory <REPO_PATH> paper-search read <source> <paper_id> [-o ./downl
 uv run --directory <REPO_PATH> paper-search sources
 ```
 
+### Tool
+
+The `tool` subcommand exposes API functions. Use it when you need source-specific functions or parameters that the regular top-level CLI does not expose. Positional API arguments stay positional, and optional arguments become kebab-case flags.
+
+```bash
+# List all shared API functions exposed through the tool subcommand
+uv run --directory <REPO_PATH> paper-search tool -h
+
+# Inspect the arguments for one specific shared API function
+uv run --directory <REPO_PATH> paper-search tool search_crossref -h
+
+# Crossref-specific filters and sorting
+uv run --directory <REPO_PATH> paper-search tool search_crossref "transformer attention" --filter from-pub-date:2024-01-01,has-full-text:true --sort published --order desc --max-results 2
+
+# Direct DOI lookup
+uv run --directory <REPO_PATH> paper-search tool get_crossref_paper_by_doi 10.1038/nature12373
+```
+
 ## Output
 
 `search` and `download` return JSON. `read` returns plain text. Config warnings go to stderr and can be ignored.

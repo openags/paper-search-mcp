@@ -11,8 +11,17 @@ from pypdf import PdfReader
 import os
 
 class ArxivSearcher(PaperSource):
-    """Searcher for arXiv papers"""
+    """Searcher for arXiv papers.
+
+    arXiv TOU requires no more than 1 request per 3 seconds with a single
+    concurrent connection (https://info.arxiv.org/help/api/tou.html). We
+    enforce this with an instance-level last-call timestamp; bulk runs from
+    saturate.py serialize correctly because they reuse the same searcher.
+    Cross-process pacing is the user's responsibility (don't run two saturates
+    in parallel).
+    """
     BASE_URL = "http://export.arxiv.org/api/query"
+    MIN_INTERVAL_SEC = 3.0  # arXiv TOU minimum
 
     def __init__(self):
         self.session = requests.Session()
@@ -20,6 +29,15 @@ class ArxivSearcher(PaperSource):
             'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
+        self._last_call_at = 0.0  # monotonic seconds; 0 = never
+
+    def _pace(self):
+        """Sleep just long enough to respect the arXiv TOU rate-limit."""
+        now = time.monotonic()
+        elapsed = now - self._last_call_at
+        if self._last_call_at > 0 and elapsed < self.MIN_INTERVAL_SEC:
+            time.sleep(self.MIN_INTERVAL_SEC - elapsed)
+        self._last_call_at = time.monotonic()
 
     def search(self, query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Paper]:
         params = {
@@ -30,12 +48,20 @@ class ArxivSearcher(PaperSource):
         }
         response = None
         for attempt in range(3):
+            self._pace()
             try:
                 response = self.session.get(self.BASE_URL, params=params, timeout=30)
             except requests.RequestException:
                 time.sleep((attempt + 1) * 1.5)
                 continue
             if response.status_code == 200:
+                # arxiv.org rate-limits with HTTP 200 + body 'Rate exceeded.'
+                # rather than a proper 429, so a status check alone misses it.
+                # Treat the soft-rate-limit response as a retryable error.
+                body_head = (response.text or "")[:64].strip().lower()
+                if body_head.startswith("rate exceeded") or body_head == "rate exceeded.":
+                    time.sleep((attempt + 1) * 5.0)  # arxiv asks for slower cadence
+                    continue
                 break
             if response.status_code in (429, 500, 502, 503, 504):
                 time.sleep((attempt + 1) * 1.5)
@@ -43,6 +69,10 @@ class ArxivSearcher(PaperSource):
             break
 
         if response is None or response.status_code != 200:
+            return []
+        # Final safety: if we ended on a soft-rate-limit body, treat as failure.
+        body_head = (response.text or "")[:64].strip().lower()
+        if body_head.startswith("rate exceeded"):
             return []
 
         feed = feedparser.parse(response.content)

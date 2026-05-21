@@ -116,7 +116,18 @@ class DBLPSearcher(PaperSource):
             logger.error(f"dblp API request error: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 logger.error(f"Response status: {e.response.status_code}")
-            return self._search_html_fallback(query=query, max_results=max_results)
+            fallback = self._search_html_fallback(query=query, max_results=max_results)
+            if not fallback:
+                # Both API and HTML fallback failed at the network level.
+                # Re-raise so the upstream harness can surface this in its
+                # per-source `errors` dict; otherwise dblp shows up as a
+                # silent zero, indistinguishable from "0 actual hits". This
+                # matters when a network-level block (e.g. corp proxy or
+                # geo-fenced IP) makes dblp permanently unreachable.
+                raise requests.RequestException(
+                    f"dblp API + HTML fallback both unreachable: {e}"
+                ) from e
+            return fallback
         except ET.ParseError as e:
             logger.error(f"Failed to parse dblp XML response: {e}")
             return self._search_html_fallback(query=query, max_results=max_results)

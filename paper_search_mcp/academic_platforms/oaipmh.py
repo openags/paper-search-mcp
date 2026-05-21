@@ -118,13 +118,18 @@ class OAIPMHSearcher(PaperSource):
                 # Parse XML response
                 root = ET.fromstring(response.content)
 
-                # Check for OAI-PMH errors
-                error_elem = root.find(f'.//{{{OAI_NS}}}error')
+                # Check for OAI-PMH errors. BASE (and some other repositories)
+                # return a non-namespaced <error> element at the root with a
+                # 200 status — e.g. when the source-IP is denied. Without this
+                # second check the adapter silently returns 0 papers.
+                error_elem = (root.find(f'.//{{{OAI_NS}}}error')
+                              or root.find('error')
+                              or (root if root.tag.lower().endswith('error') else None))
                 if error_elem is not None:
                     error_code = error_elem.get('code', 'unknown')
                     error_msg = error_elem.text or f"OAI-PMH error: {error_code}"
-                    logger.warning(f"OAI-PMH error: {error_code} - {error_msg}")
-                    break
+                    logger.warning(f"OAI-PMH error from {self.base_url}: {error_code} - {error_msg}")
+                    raise RuntimeError(f"OAI-PMH endpoint refused request: {error_msg}")
 
                 # Process records
                 records = root.findall(f'.//{{{OAI_NS}}}record')

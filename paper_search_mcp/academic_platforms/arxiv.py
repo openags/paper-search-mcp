@@ -70,10 +70,17 @@ class ArxivSearcher(PaperSource):
 
         if response is None or response.status_code != 200:
             return []
-        # Final safety: if we ended on a soft-rate-limit body, treat as failure.
+        # Final safety: if we ended on a soft-rate-limit body, raise so the
+        # upstream harness records it in source_results.errors. Returning []
+        # silently is indistinguishable from "0 actual hits" — and bulk
+        # consumers (lit-review skill) need to tell those apart to know
+        # whether to retry-with-backoff or accept the result. This is the
+        # `Rate exceeded.` HTTP-200 body documented in PR #81.
         body_head = (response.text or "")[:64].strip().lower()
         if body_head.startswith("rate exceeded"):
-            return []
+            raise requests.RequestException(
+                "arxiv rate-limited: 'Rate exceeded.' body persisted across 3 retries"
+            )
 
         feed = feedparser.parse(response.content)
         papers = []

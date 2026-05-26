@@ -142,6 +142,7 @@ class CrossRefSearcher(PaperSource):
                 categories=categories,
                 keywords=keywords,
                 citations=citations,
+                venue=container_title,
                 extra={
                     'publisher': publisher,
                     'container_title': container_title,

@@ -23,6 +23,7 @@ class Paper:
     keywords: Optional[List[str]] = None           # Keywords
     citations: int = 0                             # Citation count
     references: Optional[List[str]] = None         # List of reference IDs/DOIs
+    venue: str = ''                                # Publication venue (journal/conference)
     extra: Optional[Dict] = None                   # Source-specific extra metadata
 
     def __post_init__(self):
@@ -55,5 +56,6 @@ class Paper:
             'keywords': '; '.join(self.keywords) if self.keywords else '',
             'citations': self.citations,
             'references': '; '.join(self.references) if self.references else '',
+            'venue': self.venue,
             'extra': str(self.extra) if self.extra else ''
         }

@@ -132,6 +132,31 @@ class OpenAlexSearcher(PaperSource):
                     if concept.get("display_name")
                 ]
 
+                # Venue. OpenAlex moved from `host_venue` to
+                # `primary_location.source` over time; check both.
+                # Skip arxiv-as-venue: when a paper is deposited on arxiv
+                # OpenAlex returns `display_name="arXiv (Cornell University)"`
+                # and `type="repository"`, which is true but misleading —
+                # the paper may have been published at SIGGRAPH/CVPR/etc.
+                # We'd rather show empty than show "arXiv" for a venue.
+                # Downstream Crossref enrichment will backfill the actual
+                # publication venue when it's in Crossref's index.
+                def _venue_or_empty(loc_or_host):
+                    if not loc_or_host:
+                        return ""
+                    src = loc_or_host.get("source") if "source" in loc_or_host else loc_or_host
+                    if not src:
+                        return ""
+                    name = src.get("display_name") or ""
+                    if (src.get("type") == "repository"
+                            or name.lower().startswith("arxiv")):
+                        return ""
+                    return name
+
+                venue = _venue_or_empty(item.get("primary_location"))
+                if not venue:
+                    venue = _venue_or_empty(item.get("host_venue"))
+
                 papers.append(
                     Paper(
                         paper_id=paper_id,
@@ -145,6 +170,7 @@ class OpenAlexSearcher(PaperSource):
                         categories=concepts[:5],  # Keep top 5 concepts to reduce size
                         doi=doi,
                         citations=item.get("cited_by_count", 0),
+                        venue=venue,
                     )
                 )
 

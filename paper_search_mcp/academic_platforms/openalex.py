@@ -132,6 +132,16 @@ class OpenAlexSearcher(PaperSource):
                     if concept.get("display_name")
                 ]
 
+                # Venue. OpenAlex moved from `host_venue` to
+                # `primary_location.source` over time; check both.
+                venue = ""
+                primary_loc = item.get("primary_location") or {}
+                source_obj = primary_loc.get("source") or {}
+                venue = source_obj.get("display_name") or ""
+                if not venue:
+                    host_venue = item.get("host_venue") or {}
+                    venue = host_venue.get("display_name") or ""
+
                 papers.append(
                     Paper(
                         paper_id=paper_id,
@@ -145,6 +155,7 @@ class OpenAlexSearcher(PaperSource):
                         categories=concepts[:5],  # Keep top 5 concepts to reduce size
                         doi=doi,
                         citations=item.get("cited_by_count", 0),
+                        venue=venue,
                     )
                 )
 

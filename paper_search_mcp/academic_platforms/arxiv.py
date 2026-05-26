@@ -97,6 +97,20 @@ class ArxivSearcher(PaperSource):
                     if link.get('title') == 'doi':
                         doi = doi or extract_doi(link.href)
 
+                # Venue: arxiv records aren't published anywhere by definition,
+                # but `arxiv:journal_ref` is set when the author has flagged
+                # the paper as published in a venue. Falls back to the arxiv
+                # primary category (e.g. "cs.CV") so the venue field is at
+                # least informative for downstream venue diagnostics that
+                # know to special-case "arxiv" via SOURCE_FALLBACK_VENUES.
+                venue = entry.get('arxiv_journal_ref', '') or ''
+                if not venue:
+                    primary_cat = entry.get('arxiv_primary_category', {})
+                    if isinstance(primary_cat, dict):
+                        cat = primary_cat.get('term', '')
+                        if cat:
+                            venue = f"arXiv ({cat})"
+
                 papers.append(Paper(
                     paper_id=entry.id.split('/')[-1],
                     title=entry.title,
@@ -109,7 +123,8 @@ class ArxivSearcher(PaperSource):
                     source='arxiv',
                     categories=[tag.term for tag in entry.tags],
                     keywords=[],
-                    doi=doi
+                    doi=doi,
+                    venue=venue,
                 ))
             except Exception as e:
                 print(f"Error parsing arXiv entry: {e}")

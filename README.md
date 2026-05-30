@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 - [Overview](#overview)
 - [Project Principles](#project-principles)
+- [MCP Authorization Compatibility](#mcp-authorization-compatibility)
 - [Features](#features)
 - [Source Strategy](#source-strategy)
 - [Sci-Hub Notice](#sci-hub-notice)
@@ -42,6 +43,22 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Optional API Keys**: API keys are supported only when they improve stability, rate limits, or metadata quality. The MCP should still be usable without them whenever possible.
 - **LLM-Friendly Retrieval**: Search results should be standardized, deduplicated, and as complete as possible for downstream LLM workflows.
 - **Source Transparency**: Different sources have different strengths. The MCP should make those tradeoffs explicit instead of pretending every source supports full-text retrieval.
+
+---
+
+## MCP Authorization Compatibility
+
+Current status: `paper-search-mcp` is implemented as a local MCP server over `stdio` (`mcp.run(transport="stdio")`) and does **not** currently implement OAuth 2.1 protected-resource behavior in this repository.
+
+- **Protected Resource Metadata (RFC 9728)**: Not implemented.
+- **OAuth access token validation** (audience/expiry/scopes): Not implemented.
+- **`resource` parameter support (RFC 8707)**: Not implemented by this server.
+- **`Authorization: Bearer <token>` handling**: Not implemented by this server.
+- **401/403 protected-resource responses**: Not implemented by this server.
+
+If you need MCP protected-resource mode today, run `paper-search-mcp` behind an external MCP/HTTP gateway or reverse proxy that enforces OAuth and forwards only authorized requests.
+
+This project currently focuses on paper-source integrations and retrieval quality; protected-resource OAuth support is not part of the current implementation.
 
 ---
 

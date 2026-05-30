@@ -1,14 +1,22 @@
-from typing import List
+from typing import List, Optional, Tuple
 import requests
 import os
+import re
 from datetime import datetime, timedelta
 from ..paper import Paper
+from ..utils import extract_doi
 from .base import PaperSource
 from pypdf import PdfReader
 
 class BioRxivSearcher(PaperSource):
     """Searcher for bioRxiv papers"""
     BASE_URL = "https://api.biorxiv.org/details/biorxiv"
+    # Supports "YYYY-MM-DD/YYYY-MM-DD", "YYYY-MM-DD:YYYY-MM-DD",
+    # "YYYY-MM-DD..YYYY-MM-DD", and "YYYY-MM-DD to YYYY-MM-DD".
+    DATE_RANGE_PATTERN = re.compile(
+        r"^\s*(\d{4}-\d{2}-\d{2})\s*(?:/|:|\.\.|to)\s*(\d{4}-\d{2}-\d{2})\s*$",
+        re.IGNORECASE
+    )
 
     def __init__(self):
         self.session = requests.Session()
@@ -16,70 +24,87 @@ class BioRxivSearcher(PaperSource):
         self.timeout = 30
         self.max_retries = 3
 
-    def search(self, query: str, max_results: int = 10, days: int = 30) -> List[Paper]:
-        """
-        Search for papers on bioRxiv by category within the last N days.
+    def _resolve_query_mode(self, query: str, days: int) -> Tuple[str, str, str, Optional[str]]:
+        """Resolve query into (mode, start_or_doi, end_or_na, category)."""
+        normalized_query = (query or "").strip()
+        doi = extract_doi(normalized_query)
+        if doi:
+            return "doi", doi, "na", None
 
-        Args:
-            query: Category name to search for (e.g., "cell biology").
-            max_results: Maximum number of papers to return.
-            days: Number of days to look back for papers.
+        date_match = self.DATE_RANGE_PATTERN.match(normalized_query)
+        if date_match:
+            return "interval", date_match.group(1), date_match.group(2), None
 
-        Returns:
-            List of Paper objects matching the category within the specified date range.
-        """
-        # Calculate date range: last N days
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-        
-        # Format category: lowercase and replace spaces with underscores
-        category = query.lower().replace(' ', '_')
-        
+        category = normalized_query.lower().replace(' ', '_') if normalized_query else None
+        return "interval", start_date, end_date, category
+
+    def _request_json(self, url: str) -> Optional[dict]:
+        tries = 0
+        while tries < self.max_retries:
+            try:
+                response = self.session.get(url, timeout=self.timeout)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                tries += 1
+                if tries == self.max_retries:
+                    print(f"Failed to connect to bioRxiv API after {self.max_retries} attempts: {e}")
+                    return None
+                print(f"Attempt {tries} failed, retrying...")
+        return None
+
+    def _parse_papers(self, collection: list) -> List[Paper]:
         papers = []
+        for item in collection:
+            try:
+                date = datetime.strptime(item['date'], '%Y-%m-%d')
+                papers.append(Paper(
+                    paper_id=item['doi'],
+                    title=item['title'],
+                    authors=item['authors'].split('; '),
+                    abstract=item['abstract'],
+                    url=f"https://www.biorxiv.org/content/{item['doi']}v{item.get('version', '1')}",
+                    pdf_url=f"https://www.biorxiv.org/content/{item['doi']}v{item.get('version', '1')}.full.pdf",
+                    published_date=date,
+                    updated_date=date,
+                    source="biorxiv",
+                    categories=[item['category']],
+                    keywords=[],
+                    doi=item['doi']
+                ))
+            except Exception as e:
+                print(f"Error parsing bioRxiv entry: {e}")
+        return papers
+
+    def search(self, query: str, max_results: int = 10, days: int = 30) -> List[Paper]:
+        mode, start, end, category = self._resolve_query_mode(query, days)
+        papers: List[Paper] = []
+
+        if mode == "doi":
+            data = self._request_json(f"{self.BASE_URL}/{start}/{end}/json")
+            if data:
+                papers.extend(self._parse_papers(data.get('collection', [])))
+            return papers[:max_results]
+
         cursor = 0
         while len(papers) < max_results:
-            url = f"{self.BASE_URL}/{start_date}/{end_date}/{cursor}"
+            url = f"{self.BASE_URL}/{start}/{end}/{cursor}/json"
             if category:
                 url += f"?category={category}"
-            tries = 0
-            while tries < self.max_retries:
-                try:
-                    response = self.session.get(url, timeout=self.timeout)
-                    response.raise_for_status()
-                    data = response.json()
-                    collection = data.get('collection', [])
-                    for item in collection:
-                        try:
-                            date = datetime.strptime(item['date'], '%Y-%m-%d')
-                            papers.append(Paper(
-                                paper_id=item['doi'],
-                                title=item['title'],
-                                authors=item['authors'].split('; '),
-                                abstract=item['abstract'],
-                                url=f"https://www.biorxiv.org/content/{item['doi']}v{item.get('version', '1')}",
-                                pdf_url=f"https://www.biorxiv.org/content/{item['doi']}v{item.get('version', '1')}.full.pdf",
-                                published_date=date,
-                                updated_date=date,
-                                source="biorxiv",
-                                categories=[item['category']],
-                                keywords=[],
-                                doi=item['doi']
-                            ))
-                        except Exception as e:
-                            print(f"Error parsing bioRxiv entry: {e}")
-                    if len(collection) < 100:
-                        break  # No more results
-                    cursor += 100
-                    break  # Exit retry loop on success
-                except requests.exceptions.RequestException as e:
-                    tries += 1
-                    if tries == self.max_retries:
-                        print(f"Failed to connect to bioRxiv API after {self.max_retries} attempts: {e}")
-                        break
-                    print(f"Attempt {tries} failed, retrying...")
-            else:
-                continue
-            break
+            data = self._request_json(url)
+            if not data:
+                break
+
+            collection = data.get('collection', [])
+            if not collection:
+                break
+
+            papers.extend(self._parse_papers(collection))
+            if len(collection) < 100:
+                break
+            cursor += 100
 
         return papers[:max_results]
 

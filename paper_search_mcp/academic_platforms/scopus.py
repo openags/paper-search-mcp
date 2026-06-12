@@ -45,6 +45,19 @@ class ScopusSearcher(PaperSource):
             }
         )
 
+    @staticmethod
+    def _normalize_date_range(date: str) -> str:
+        """Convert open-ended ranges ('2020-', '-2020') to the closed form
+        the Scopus API requires; open forms silently return an empty result
+        set instead of an error."""
+        date = date.strip()
+        if date.endswith("-"):
+            return f"{date[:-1]}-{datetime.now().year + 1}"
+        if date.startswith("-"):
+            # Scopus coverage starts in 1788
+            return f"1788-{date[1:]}"
+        return date
+
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse date from Scopus format (e.g., '2025-06-02')"""
         try:
@@ -473,7 +486,7 @@ class ScopusSearcher(PaperSource):
             
             # Add date range filter if provided
             if date:
-                params["date"] = date
+                params["date"] = self._normalize_date_range(date)
 
             # Make request
             response = self.request_api(params)

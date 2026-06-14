@@ -15,6 +15,10 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin/paper-search-mcp /usr/local/bin/paper-search-mcp
 
+# Railway injects PORT at runtime; default here is for local Docker runs.
+ENV PORT=8000
+EXPOSE 8000
+
 # Environment variables (override at runtime with -e)
 ENV PAPER_SEARCH_MCP_UNPAYWALL_EMAIL=""
 ENV PAPER_SEARCH_MCP_CORE_API_KEY=""

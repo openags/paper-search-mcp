@@ -35,7 +35,10 @@ from .utils import extract_doi
 from .paper import Paper
 
 # Initialize MCP server
-mcp = FastMCP("paper_search_server")
+# stateless_http=True: each POST is self-contained (no session handshake).
+# Required so HTTP clients (e.g. Bookworm's MCPClient) can call tools directly
+# without implementing the MCP session negotiation protocol.
+mcp = FastMCP("paper_search_server", stateless_http=True)
 logger = logging.getLogger(__name__)
 
 # Instances of searchers
@@ -1377,7 +1380,9 @@ if acm_searcher is not None:
 
 
 def main():
-    mcp.run(transport="stdio")
+    # Railway injects PORT automatically; fall back to 8000 for local runs.
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

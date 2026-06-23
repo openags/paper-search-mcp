@@ -11,10 +11,14 @@ Usage:
 
 Env vars (all optional except API_KEY when transport=http):
     MCP_TRANSPORT    http|stdio (default http)
-    HOST             bind host (default 127.0.0.1; use 0.0.0.0 in containers)
+    HOST             bind host (default 0.0.0.0; safe behind a reverse proxy)
     PORT             bind port (default 8000)
     API_KEY          required for http (checked as Bearer token or x-api-key)
     ALLOWED_ORIGINS  CORS origins, comma-separated (default *)
+    ALLOWED_HOSTS    CSV of public Host values to allow through TrustedHostMiddleware
+                     (DNS-rebinding protection). Empty = protection disabled, which is
+                     the right default behind a reverse proxy with API-key auth.
+                     Example: ALLOWED_HOSTS=mcp.example.com
     LOG_LEVEL        DEBUG|INFO|WARNING|ERROR (default INFO)
 """
 from __future__ import annotations
@@ -42,6 +46,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 
 # Reuse the FastMCP instance that already has every tool registered via @mcp.tool().
+from mcp.server.transport_security import TransportSecuritySettings
+
 from .server import mcp
 
 logger = logging.getLogger(__name__)
@@ -91,7 +97,12 @@ def _on_auth_error(conn: HTTPConnection, exc: AuthenticationError) -> Response:
     )
 
 
-def build_http_app(host: str, port: int, allowed_origins: list[str]) -> Starlette:
+def build_http_app(
+    host: str,
+    port: int,
+    allowed_origins: list[str],
+    allowed_hosts: list[str] | None = None,
+) -> Starlette:
     """Build the root ASGI app: CORS (outermost) + public /health + authed /mcp."""
     api_key = os.environ.get("API_KEY")
     if not api_key:
@@ -100,6 +111,22 @@ def build_http_app(host: str, port: int, allowed_origins: list[str]) -> Starlett
     # host/port are owned by FastMCP settings and consumed when building the app.
     mcp.settings.host = host
     mcp.settings.port = port
+
+    # TrustedHostMiddleware (DNS-rebinding protection). FastMCP auto-enables it
+    # with a localhost-only allowlist when bound to 127.0.0.1/localhost/::1, which
+    # rejects any public Host header with HTTP 421. For a deployment behind a
+    # reverse proxy we either disable it (we rely on the API key + the proxy) or,
+    # if ALLOWED_HOSTS is provided, allow exactly those hosts.
+    if allowed_hosts:
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=[],
+        )
+    else:
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        )
 
     # 1) FastMCP inner Starlette app (mounts /mcp). Calling this also lazily
     #    creates mcp.session_manager, which we MUST start in the parent lifespan
@@ -153,10 +180,13 @@ def main() -> None:
         choices=["http", "stdio"],
         default=os.environ.get("MCP_TRANSPORT", "http"),
     )
-    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--log-level", default=os.environ.get("LOG_LEVEL", "INFO"))
     parser.add_argument("--origins", default=os.environ.get("ALLOWED_ORIGINS", "*"))
+    parser.add_argument(
+        "--allowed-hosts", default=os.environ.get("ALLOWED_HOSTS", "")
+    )
     args = parser.parse_args()
 
     configure_logging(args.log_level)
@@ -170,9 +200,19 @@ def main() -> None:
         sys.exit(1)
 
     origins = [o.strip() for o in args.origins.split(",") if o.strip()]
-    app = build_http_app(args.host, args.port, origins)
+    hosts = [h.strip() for h in args.allowed_hosts.split(",") if h.strip()] or None
+    app = build_http_app(args.host, args.port, origins, allowed_hosts=hosts)
     logger.info("Starting paper-search MCP (http) on %s:%s", args.host, args.port)
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
+    # proxy_headers + forwarded_allow_ips so uvicorn honors X-Forwarded-Proto/Host
+    # sent by the reverse proxy (Traefik/EasyPanel, nginx, ALB, ...).
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level.lower(),
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":

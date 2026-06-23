@@ -1,0 +1,55 @@
+# VCS
+.git
+.gitignore
+.github/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Virtualenvs and lockfiles not needed inside the image
+.venv/
+venv/
+env/
+uv.lock
+Pipfile*
+poetry.lock
+
+# Tests, docs, and tooling not shipped in the image
+tests/
+docs/
+claude-code/
+
+# Local env / secrets (never bake into image)
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local downloads
+downloads/
+test_downloads/
+
+# Misc project files not needed to build the wheel
+smithery.yaml
+Dockerfile
+.dockerignore
+*.md
+!README.md

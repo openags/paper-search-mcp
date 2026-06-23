@@ -1,3 +1,4 @@
+import logging
 from typing import List
 import requests
 import os
@@ -5,6 +6,8 @@ from datetime import datetime, timedelta
 from ..paper import Paper
 from .base import PaperSource
 from pypdf import PdfReader
+
+logger = logging.getLogger(__name__)
 
 class MedRxivSearcher(PaperSource):
     """Searcher for medRxiv papers"""
@@ -67,7 +70,7 @@ class MedRxivSearcher(PaperSource):
                                 doi=item['doi']
                             ))
                         except Exception as e:
-                            print(f"Error parsing medRxiv entry: {e}")
+                            logger.error("Error parsing medRxiv entry: %s", e)
                     if len(collection) < 100:
                         break  # No more results
                     cursor += 100
@@ -75,9 +78,9 @@ class MedRxivSearcher(PaperSource):
                 except requests.exceptions.RequestException as e:
                     tries += 1
                     if tries == self.max_retries:
-                        print(f"Failed to connect to medRxiv API after {self.max_retries} attempts: {e}")
+                        logger.error("Failed to connect to medRxiv API after %s attempts: %s", self.max_retries, e)
                         break
-                    print(f"Attempt {tries} failed, retrying...")
+                    logger.warning("Attempt %s failed, retrying...", tries)
             else:
                 continue
             break
@@ -117,7 +120,7 @@ class MedRxivSearcher(PaperSource):
                 tries += 1
                 if tries == self.max_retries:
                     raise Exception(f"Failed to download PDF after {self.max_retries} attempts: {e}")
-                print(f"Attempt {tries} failed, retrying...")
+                logger.warning("Attempt %s failed, retrying...", tries)
     
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """
@@ -141,5 +144,5 @@ class MedRxivSearcher(PaperSource):
                 text += page.extract_text() + "\n"
             return text.strip()
         except Exception as e:
-            print(f"Error reading PDF for paper {paper_id}: {e}")
+            logger.error("Error reading PDF for paper %s: %s", paper_id, e)
             return ""

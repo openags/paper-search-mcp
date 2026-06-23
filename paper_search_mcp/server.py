@@ -102,28 +102,10 @@ ALL_SOURCES = [
 
 
 # ---------------------------------------------------------------------------
-# Optional paid-platform connectors (disabled by default)
-# Set PAPER_SEARCH_MCP_IEEE_API_KEY / PAPER_SEARCH_MCP_ACM_API_KEY to activate
-# (legacy IEEE_API_KEY / ACM_API_KEY are also supported).
+# IEEE Xplore / ACM Digital Library: skeletons exist under academic_platforms/
+# (ieee.py, acm.py) but raise NotImplementedError and are intentionally NOT
+# registered as MCP tools until their search/download logic is implemented.
 # ---------------------------------------------------------------------------
-_ieee_api_key = get_env("IEEE_API_KEY", "")
-_acm_api_key = get_env("ACM_API_KEY", "")
-
-if _ieee_api_key:
-    from .academic_platforms.ieee import IEEESearcher
-    ieee_searcher = IEEESearcher()
-    ALL_SOURCES.append("ieee")
-    logger.info("IEEE Xplore enabled via configured environment key.")
-else:
-    ieee_searcher = None
-
-if _acm_api_key:
-    from .academic_platforms.acm import ACMSearcher
-    acm_searcher = ACMSearcher()
-    ALL_SOURCES.append("acm")
-    logger.info("ACM Digital Library enabled via configured environment key.")
-else:
-    acm_searcher = None
 
 
 def _parse_sources(sources: str) -> List[str]:
@@ -314,12 +296,6 @@ async def search_papers(
             task_map[source] = search_ssrn(query, max_results_per_source)
         elif source == "unpaywall":
             task_map[source] = search_unpaywall(query, max_results_per_source)
-        elif source == "ieee":
-            if ieee_searcher is not None:
-                task_map[source] = async_search(ieee_searcher, query, max_results_per_source)
-        elif source == "acm":
-            if acm_searcher is not None:
-                task_map[source] = async_search(acm_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
@@ -534,7 +510,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str
     try:
         return arxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.error("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -564,7 +540,7 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
     try:
         return biorxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.error("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -581,7 +557,7 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
     try:
         return medrxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.error("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -598,7 +574,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
     try:
         return iacr_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.error("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -662,7 +638,7 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
     try:
         return semantic_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.error("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -1294,90 +1270,10 @@ async def download_openalex(paper_id: str, save_path: str = "./downloads") -> st
     return await asyncio.to_thread(openalex_searcher.download_pdf, paper_id, save_path)
 
 
-# ---------------------------------------------------------------------------
-# Optional IEEE Xplore tools — registered only when API key is set
-# ---------------------------------------------------------------------------
-if ieee_searcher is not None:
-    @mcp.tool()
-    async def search_ieee(query: str, max_results: int = 10) -> List[Dict]:
-        """Search IEEE Xplore for papers.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
-
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results (default: 10).
-        Returns:
-            List of paper dicts from IEEE Xplore.
-        """
-        return await async_search(ieee_searcher, query, max_results)
-
-    @mcp.tool()
-    async def download_ieee(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from IEEE Xplore.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY) and institutional access.
-
-        Args:
-            paper_id: IEEE Xplore paper identifier.
-            save_path: Directory to save the PDF (default: './downloads').
-        Returns:
-            str: Path to saved PDF or error message.
-        """
-        return await asyncio.to_thread(ieee_searcher.download_pdf, paper_id, save_path)
-
-    @mcp.tool()
-    async def read_ieee_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an IEEE Xplore paper.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
-
-        Args:
-            paper_id: IEEE Xplore paper identifier.
-            save_path: Directory where the PDF is/will be saved (default: './downloads').
-        Returns:
-            str: Extracted text content.
-        """
-        return ieee_searcher.read_paper(paper_id, save_path)
-
-
-# ---------------------------------------------------------------------------
-# Optional ACM Digital Library tools — registered only when API key is set
-# ---------------------------------------------------------------------------
-if acm_searcher is not None:
-    @mcp.tool()
-    async def search_acm(query: str, max_results: int = 10) -> List[Dict]:
-        """Search ACM Digital Library for papers.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
-
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results (default: 10).
-        Returns:
-            List of paper dicts from ACM DL.
-        """
-        return await async_search(acm_searcher, query, max_results)
-
-    @mcp.tool()
-    async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from ACM Digital Library.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY) and institutional access.
-
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory to save the PDF (default: './downloads').
-        Returns:
-            str: Path to saved PDF or error message.
-        """
-        return await asyncio.to_thread(acm_searcher.download_pdf, paper_id, save_path)
-
-    @mcp.tool()
-    async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an ACM Digital Library paper.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
-
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory where the PDF is/will be saved (default: './downloads').
-        Returns:
-            str: Extracted text content.
-        """
-        return acm_searcher.read_paper(paper_id, save_path)
-
-
 def main():
-    mcp.run(transport="stdio")
+    # Delegate to the dual-transport runner (http with API-key auth, or stdio).
+    from .http_runner import main as _run
+    _run()
 
 
 if __name__ == "__main__":

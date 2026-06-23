@@ -367,7 +367,7 @@ class IACRSearcher(PaperSource):
             try:
                 keyword_elements = soup.select("a.badge.bg-secondary.keyword")
                 keywords = [elem.get_text(strip=True) for elem in keyword_elements]
-            except:
+            except Exception:
                 keywords = []
 
             # Find history entries

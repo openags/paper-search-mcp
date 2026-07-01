@@ -7,6 +7,7 @@ import re
 import hashlib
 import logging
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -84,12 +85,18 @@ class SciHubFetcher:
             # Search on Sci-Hub
             search_url = f"{self.base_url}/{identifier}"
             response = self.session.get(search_url, verify=False, timeout=20)
-            
+
             if response.status_code != 200:
                 return None
 
+            # Sci-Hub frequently redirects to a separate content host
+            # (e.g. sci-hub.ru -> sci-net.xyz). Resolve relative URLs against
+            # the response's effective origin, not the original base_url.
+            parsed = urlparse(response.url)
+            effective_base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else self.base_url
+
             soup = BeautifulSoup(response.content, 'html.parser')
-            
+
             # Check for article not found
             if "article not found" in response.text.lower():
                 logging.warning("Article not found on Sci-Hub")
@@ -107,7 +114,7 @@ class SciHubFetcher:
                         logging.debug(f"Returning PDF URL: {pdf_url}")
                         return pdf_url
                     elif src.startswith('/'):
-                        pdf_url = self.base_url + src
+                        pdf_url = effective_base + src
                         logging.debug(f"Returning PDF URL: {pdf_url}")
                         return pdf_url
                     else:
@@ -122,7 +129,7 @@ class SciHubFetcher:
                     if src.startswith('//'):
                         return 'https:' + src
                     elif src.startswith('/'):
-                        return self.base_url + src
+                        return effective_base + src
                     else:
                         return src
 
@@ -137,7 +144,7 @@ class SciHubFetcher:
                         if url.startswith('//'):
                             return 'https:' + url
                         elif url.startswith('/'):
-                            return self.base_url + url
+                            return effective_base + url
                         else:
                             return url
 
@@ -148,7 +155,7 @@ class SciHubFetcher:
                     if href.startswith('//'):
                         return 'https:' + href
                     elif href.startswith('/'):
-                        return self.base_url + href
+                        return effective_base + href
                     elif href.startswith('http'):
                         return href
 

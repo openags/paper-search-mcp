@@ -31,14 +31,20 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "requests",
-    "feedparser",
-    "fastmcp",
-    "pypdf",
-    "mcp[cli]>=1.6.0",
+    "requests>=2.31",
+    "feedparser>=6.0",
+    "pypdf>=4.0",
+    "mcp[cli]>=1.26",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
     "httpx[socks]>=0.28.1",
+    "starlette>=0.37",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
 ]
 
 [project.urls]

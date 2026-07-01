@@ -11,6 +11,8 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
+from ..config import get_env
+
 
 class SciHubFetcher:
     """Simple Sci-Hub PDF downloader."""
@@ -30,6 +32,10 @@ class SciHubFetcher:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
+
+        self.insecure_skip_verify = get_env("INSECURE_SKIP_VERIFY", "0").strip().lower() in ("1", "true", "yes", "on")
+        if self.insecure_skip_verify:
+            logging.warning("Sci-Hub fetcher running with PAPER_SEARCH_MCP_INSECURE_SKIP_VERIFY=1 (TLS verification disabled).")
 
     def download_pdf(self, identifier: str) -> Optional[str]:
         """Download a PDF from Sci-Hub using a DOI, PMID, or URL.
@@ -51,7 +57,7 @@ class SciHubFetcher:
                 return None
 
             # Download the PDF
-            response = self.session.get(pdf_url, verify=False, timeout=30)
+            response = self.session.get(pdf_url, verify=self.insecure_skip_verify, timeout=30)
             
             if response.status_code != 200:
                 logging.error(f"Failed to download PDF, status {response.status_code}")
@@ -83,7 +89,7 @@ class SciHubFetcher:
 
             # Search on Sci-Hub
             search_url = f"{self.base_url}/{identifier}"
-            response = self.session.get(search_url, verify=False, timeout=20)
+            response = self.session.get(search_url, verify=self.insecure_skip_verify, timeout=20)
             
             if response.status_code != 200:
                 return None

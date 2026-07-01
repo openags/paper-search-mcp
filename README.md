@@ -113,7 +113,7 @@ This matrix reflects **verified live-integration results** from functional and e
 
 ## Credential & API Key Requirements
 
-All keys are **optional** unless noted. Configure them in `.env` (preferred) or as shell exports.
+All keys are **optional** unless noted. Configure them in `~/.config/paper-search-mcp/.env` (preferred) or as shell exports.
 
 | Environment Variable | Provider | Required? | How to obtain |
 |---|---|---|---|
@@ -144,7 +144,7 @@ Some search failures are caused by external provider instability, not by bugs in
 | BASE | Search returns 0 results | OAI-PMH endpoint requires institutional IP registration | Register at [base-search.net](https://www.base-search.net/about/en/) for API access; connector returns empty gracefully otherwise |
 | SSRN | HTTP 403 | Bot-detection (Cloudflare) | No workaround; connector tries two endpoints and returns a clear message on failure |
 | PMC / Europe PMC | PDF download ProxyError | Local proxy blocking direct HTTPS PDF download | Disable proxy or use `download_with_fallback` instead |
-| Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `.env` |
+| Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `~/.config/paper-search-mcp/.env` |
 
 ## Optional Paid Platform Connectors (Phase 3)
 
@@ -201,26 +201,23 @@ Install as a Claude Code skill instead of an MCP server. This gives Claude autom
 
 **Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
 
-**Step 1 — Clone the repo:**
+**Step 1 — Install the CLI:**
 
 ```bash
-git clone https://github.com/openags/paper-search-mcp.git ~/paper-search-mcp
+uv tool install paper-search-mcp
 ```
 
 **Step 2 — Install the skill:**
 
 ```bash
 mkdir -p ~/.claude/skills/paper-search
-cp ~/paper-search-mcp/claude-code/SKILL.md ~/.claude/skills/paper-search/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/openags/paper-search-mcp/main/claude-code/SKILL.md \
+  -o ~/.claude/skills/paper-search/SKILL.md
 ```
 
-**Step 3 — Update the repo path in the skill:**
+**Step 3 (optional) — Configure API keys:**
 
-Edit `~/.claude/skills/paper-search/SKILL.md` and replace every `<REPO_PATH>` with the absolute path to your clone (e.g. `/Users/yourname/paper-search-mcp`).
-
-**Step 4 (optional) — Configure API keys:**
-
-Create a `.env` file in the repo root for optional API keys (see [Environment Variables](#environment-variables-env-file)).
+Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment Variables](#environment-variables-env-file)).
 
 **That's it.** Next time you start Claude Code, just ask it to find papers — the skill activates automatically. For example:
 
@@ -467,11 +464,13 @@ uv pip install -e ".[dev]"
 
 ### Environment Variables (`.env` file)
 
-Instead of putting keys directly in the JSON config you can store them in a `.env` file in the project root (auto-loaded on startup):
+Instead of putting keys directly in the JSON config you can store them in the user config file (auto-loaded on startup):
 
 ```bash
-cp .env.example .env   # if running from source
-# or create ~/.paper-search-mcp.env for global use
+mkdir -p ~/.config/paper-search-mcp
+curl -fsSL https://raw.githubusercontent.com/openags/paper-search-mcp/main/.env.example \
+  -o ~/.config/paper-search-mcp/.env
+$EDITOR ~/.config/paper-search-mcp/.env
 ```
 
 ```dotenv

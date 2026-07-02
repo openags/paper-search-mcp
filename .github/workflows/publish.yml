@@ -24,10 +24,20 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]" 2>/dev/null || uv pip install --system -e .
+        run: uv pip install --system -e ".[dev]"
 
-      - name: Run tests
-        run: python -m pytest tests/ -x -q --tb=short 2>/dev/null || echo "No test suite configured"
+      - name: Compile source
+        run: python -m compileall -q paper_search_mcp tests
+
+      - name: Run deterministic tests
+        run: python -m pytest tests/test_package_entrypoints.py tests/test_config_env.py tests/test_unpaywall.py tests/test_unpaywall_source.py -q --tb=short
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify wheel entry points
+        run: |
+          python -c "import pathlib, zipfile; wheel = next(pathlib.Path('dist').glob('paper_search_mcp-*.whl')); z = zipfile.ZipFile(wheel); entry = next(name for name in z.namelist() if name.endswith('.dist-info/entry_points.txt')); data = z.read(entry).decode(); assert 'paper-search-mcp = paper_search_mcp.server:main' in data; assert 'paper-search = paper_search_mcp.cli:main' in data; print(data)"
 
   publish:
     needs: test
@@ -49,6 +59,10 @@ jobs:
 
       - name: Build package
         run: uv build
+
+      - name: Verify wheel entry points
+        run: |
+          python -c "import pathlib, zipfile; wheel = next(pathlib.Path('dist').glob('paper_search_mcp-*.whl')); z = zipfile.ZipFile(wheel); entry = next(name for name in z.namelist() if name.endswith('.dist-info/entry_points.txt')); data = z.read(entry).decode(); assert 'paper-search-mcp = paper_search_mcp.server:main' in data; assert 'paper-search = paper_search_mcp.cli:main' in data; print(data)"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

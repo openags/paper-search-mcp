@@ -41,6 +41,11 @@ dependencies = [
     "httpx[socks]>=0.28.1",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/openags/paper-search-mcp"
 Repository = "https://github.com/openags/paper-search-mcp"

@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -43,9 +44,10 @@ class TestConfigEnv(unittest.TestCase):
             self.assertEqual(config.get_env("CORE_API_KEY", "default"), "")
 
     def test_loads_from_custom_env_file(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=True) as tmp:
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".env", delete=False)
+        try:
             tmp.write("PAPER_SEARCH_MCP_UNPAYWALL_EMAIL=test@example.com\n")
-            tmp.flush()
+            tmp.close()
 
             with patch.dict(
                 os.environ,
@@ -56,6 +58,8 @@ class TestConfigEnv(unittest.TestCase):
             ):
                 config.load_env_file(force=True)
                 self.assertEqual(config.get_env("UNPAYWALL_EMAIL", ""), "test@example.com")
+        finally:
+            os.unlink(tmp.name)
 
 
 if __name__ == "__main__":

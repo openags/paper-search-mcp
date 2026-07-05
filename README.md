@@ -90,7 +90,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | IACR | ✅ | ✅ | ✅ | Open API; reliable |
 | Semantic Scholar | ✅ | ✅ (OA) | ✅ (OA) | Works without key (rate-limited); key improves limits; key rejection (403) retried automatically without key |
 | Crossref | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
-| OpenAlex | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
+| OpenAlex | ✅ | ❌ | ⚠️ info-only | Open API; free API key improves daily limits |
 | PMC | ✅ | ✅ (OA only) | ✅ (OA only) | OA PDFs only; direct download may be blocked by some proxy environments |
 | CORE | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Free key recommended; connector retries with backoff and falls back to key-less on 401/403 |
 | Europe PMC | ✅ | ✅ (OA) | ✅ (OA) | OA PDFs only; direct download may be blocked by some proxy environments |
@@ -120,6 +120,8 @@ All keys are **optional** unless noted. Configure them in `~/.config/paper-searc
 | `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` | Unpaywall | **Yes** (Unpaywall disabled without it) | Any valid email; register at [unpaywall.org](https://unpaywall.org/products/api) |
 | `PAPER_SEARCH_MCP_CORE_API_KEY` | CORE | Recommended | Free at [core.ac.uk/services/api](https://core.ac.uk/services/api) |
 | `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` | Semantic Scholar | Optional | Free at [semanticscholar.org](https://www.semanticscholar.org/product/api) — improves rate limits |
+| `PAPER_SEARCH_MCP_OPENALEX_API_KEY` | OpenAlex | Optional | Free at [docs.openalex.org](https://docs.openalex.org/how-to-use-the-api/api-keys) - improves daily limits |
+| `PAPER_SEARCH_MCP_OPENALEX_EMAIL` | OpenAlex | Optional | Contact email used in the OpenAlex `User-Agent` |
 | `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` | Google Scholar | Optional | Your HTTP/HTTPS proxy URL — bypasses bot-detection |
 | `PAPER_SEARCH_MCP_DOAJ_API_KEY` | DOAJ | Optional | Free at [doaj.org](https://doaj.org/apply-for-api-key/) — raises hourly rate limit |
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
@@ -138,6 +140,7 @@ Some search failures are caused by external provider instability, not by bugs in
 |---|---|---|---|
 | Google Scholar | Returns 0 results / empty HTML | Bot-detection (CAPTCHA) | Set `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` to a proxy |
 | Semantic Scholar | 429 rate-limited responses | Anonymous access rate limit | Set `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY`; if key is rejected (403) connector automatically retries without key |
+| OpenAlex | 403/429 or daily quota errors | Anonymous access daily limit | Set `PAPER_SEARCH_MCP_OPENALEX_API_KEY` |
 | CORE | 500 / timeout errors | Unauthenticated rate limiting | Set `PAPER_SEARCH_MCP_CORE_API_KEY` (free); connector retries with exponential backoff and falls back to key-less on 401/403 |
 | OpenAIRE | Transient 403 responses | IP-based session rate limiting | Connector retries 3× per profile, escalating: plain session → XML Accept header → raw `requests.get` with Mozilla UA |
 | CiteSeerX | 404 via web archive redirect | PSU endpoint intermittently redirects to archive | No workaround; connector returns empty gracefully |

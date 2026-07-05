@@ -125,6 +125,17 @@ if _acm_api_key:
 else:
     acm_searcher = None
 
+# Scopus (Elsevier) — requires PAPER_SEARCH_MCP_SCOPUS_API_KEY (or SCOPUS_API_KEY).
+_scopus_api_key = get_env("SCOPUS_API_KEY", "")
+
+if _scopus_api_key:
+    from .academic_platforms.scopus import ScopusSearcher
+    scopus_searcher = ScopusSearcher(api_key=_scopus_api_key)
+    ALL_SOURCES.append("scopus")
+    logger.info("Scopus enabled via configured environment key.")
+else:
+    scopus_searcher = None
+
 
 def _parse_sources(sources: str) -> List[str]:
     if not sources or sources.strip().lower() == "all":
@@ -320,6 +331,9 @@ async def search_papers(
         elif source == "acm":
             if acm_searcher is not None:
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
+        elif source == "scopus":
+            if scopus_searcher is not None:
+                task_map[source] = async_search(scopus_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
@@ -1374,6 +1388,69 @@ if acm_searcher is not None:
             str: Extracted text content.
         """
         return acm_searcher.read_paper(paper_id, save_path)
+
+
+# ---------------------------------------------------------------------------
+# Optional Scopus (Elsevier) tools — registered only when API key is set
+# ---------------------------------------------------------------------------
+if scopus_searcher is not None:
+    @mcp.tool()
+    async def search_scopus(query: str, max_results: int = 10, sort: str = "relevance",
+                            field: Optional[str] = None, date: Optional[str] = None) -> List[Dict]:
+        """Search Scopus for papers.  Requires PAPER_SEARCH_MCP_SCOPUS_API_KEY (or SCOPUS_API_KEY).
+
+        Args:
+            query: Search query string. Supports advanced Scopus search syntax:
+                - Field searches: TITLE("machine learning"), ABS("neural networks"),
+                  KEY("computer vision"), AUTH("smith"), AFFILORG("mit")
+                - Boolean operators: AND, OR, AND NOT
+                - Proximity: W/n (within n words), PRE/n (preceding within n words)
+                - Wildcards: * (multiple chars), ? (single char)
+                - Grouping: (TITLE("AI") OR TITLE("ML")) AND ABS("deep learning")
+                See https://dev.elsevier.com/sc_search_tips.html
+            max_results: Maximum number of results (default: 10; the COMPLETE
+                view used here is capped at 25 per request by Elsevier).
+            sort: Sort order: "relevance" (default), "coverDate",
+                "citedby-count", or "creator".
+            field: Limit search to one field: "TITLE", "ABS", "KEY", "AUTH",
+                "AFFILORG", or None for all fields.
+            date: Publication date filter, e.g. "2023", "2020-2023", "2020-", "-2020".
+        Returns:
+            List of paper dicts from Scopus.
+        """
+        return await async_search(scopus_searcher, query, max_results,
+                                  sort=sort, field=field, date=date)
+
+    @mcp.tool()
+    async def download_scopus(paper_id: str, save_path: str = "./downloads") -> str:
+        """Attempt to download a PDF of a Scopus paper.
+        Note: the Scopus API does not provide direct PDF downloads; this returns
+        an explanatory message.
+
+        Args:
+            paper_id: Scopus paper ID (numeric, with or without 'SCOPUS_ID:' prefix).
+            save_path: Directory to save the PDF (default: './downloads').
+        Returns:
+            str: Path to saved PDF or message explaining why download is unsupported.
+        """
+        try:
+            return await asyncio.to_thread(scopus_searcher.download_pdf, paper_id, save_path)
+        except NotImplementedError as e:
+            return str(e)
+
+    @mcp.tool()
+    async def read_scopus_paper(paper_id: str, save_path: str = "./downloads") -> str:
+        """Read full-text content of a Scopus paper via the ScienceDirect APIs.
+        Requires PAPER_SEARCH_MCP_SCOPUS_API_KEY (or SCOPUS_API_KEY); full text is
+        only available for articles your key/network is entitled to on ScienceDirect.
+
+        Args:
+            paper_id: Scopus paper ID (numeric, with or without 'SCOPUS_ID:' prefix).
+            save_path: Directory where content would be saved (default: './downloads').
+        Returns:
+            str: Extracted full-text content with metadata, or an error message.
+        """
+        return await asyncio.to_thread(scopus_searcher.read_paper, paper_id, save_path)
 
 
 def main():

@@ -136,19 +136,19 @@ class TestScopusSearch(unittest.TestCase):
 
         self.assertEqual(papers, [])
 
-    def test_search_no_search_results_key(self):
+    def test_search_no_search_results_key_raises(self):
+        # A 200 without the search-results envelope is malformed, not "no matches"
         self.searcher.session.get.return_value = _mock_response(200, {})
 
-        papers = self.searcher.search("weird payload", max_results=5)
+        with self.assertRaisesRegex(RuntimeError, "search-results"):
+            self.searcher.search("weird payload", max_results=5)
 
-        self.assertEqual(papers, [])
-
-    def test_search_returns_empty_on_request_api_error(self):
+    def test_search_raises_on_request_api_error(self):
+        # API errors must be distinguishable from an empty result set
         error = {"error": "rate_limited", "status_code": 429, "message": "Too many requests"}
         with patch.object(self.searcher, "request_api", return_value=error):
-            papers = self.searcher.search("anything", max_results=5)
-
-        self.assertEqual(papers, [])
+            with self.assertRaisesRegex(RuntimeError, "rate_limited.*Too many requests"):
+                self.searcher.search("anything", max_results=5)
 
 
 class TestScopusRequestApi(unittest.TestCase):
@@ -220,13 +220,12 @@ class TestScopusUnauthorized(unittest.TestCase):
         self.assertEqual(result["status_code"], 403)
         self.assertNotIn("VPN", result["message"])
 
-    def test_search_returns_empty_on_unauthorized(self):
+    def test_search_raises_on_unauthorized(self):
         unauthorized = _mock_response(401, {})
         self.searcher.session.get.return_value = unauthorized
 
-        papers = self.searcher.search("anything", max_results=5)
-
-        self.assertEqual(papers, [])
+        with self.assertRaisesRegex(RuntimeError, "unauthorized"):
+            self.searcher.search("anything", max_results=5)
 
 
 class TestScopusPaperDetails(unittest.TestCase):

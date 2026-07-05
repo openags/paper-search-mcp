@@ -490,22 +490,20 @@ class ScopusSearcher(PaperSource):
 
             # Make request
             response = self.request_api(params)
-            
-            # Check for errors
+
+            # API errors (rate limit, authorization, HTTP failures) must be
+            # distinguishable from "no matches" — raise instead of returning
+            # an empty list, so MCP callers see the actual failure.
             if isinstance(response, dict) and "error" in response:
                 error_msg = response.get("message", "Unknown error")
-                if response.get("error") == "rate_limited":
-                    logger.error(f"Rate limited by Scopus API: {error_msg}")
-                else:
-                    logger.error(f"Scopus API error: {error_msg}")
-                return papers
+                raise RuntimeError(f"Scopus API error ({response.get('error')}): {error_msg}")
 
             data = response.json()
-            
-            # Check if there are search results
+
+            # A 200 response without a search-results envelope is malformed,
+            # not an empty result set
             if 'search-results' not in data:
-                logger.info("No search-results found in response")
-                return papers
+                raise RuntimeError("Scopus API returned an unexpected response without a 'search-results' envelope")
                 
             search_results = data['search-results']
             
@@ -541,6 +539,7 @@ class ScopusSearcher(PaperSource):
 
         except Exception as e:
             logger.error(f"Scopus search error: {e}")
+            raise
 
         return papers[:max_results]
 

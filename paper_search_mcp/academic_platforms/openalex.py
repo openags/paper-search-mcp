@@ -5,6 +5,7 @@ import logging
 from ..paper import Paper
 from .base import PaperSource
 from ..utils import extract_doi
+from ..config import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +14,22 @@ class OpenAlexSearcher(PaperSource):
     """OpenAlex paper search implementation"""
 
     BASE_URL = "https://api.openalex.org/works"
+    DEFAULT_USER_AGENT = "paper-search-mcp/1.0"
+    DEFAULT_EMAIL = "openags@example.com"
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None, email: Optional[str] = None):
         self.session = requests.Session()
-        # OpenAlex encourages providing an email in User-Agent for the "polite pool"
-        self.session.headers.update(
-            {"User-Agent": "paper-search-mcp/1.0 (mailto:openags@example.com)"}
-        )
+        self.api_key = (
+            api_key if api_key is not None else get_env("OPENALEX_API_KEY", "")
+        ).strip()
+        self.email = (
+            email if email is not None else get_env("OPENALEX_EMAIL", self.DEFAULT_EMAIL)
+        ).strip()
+
+        user_agent = self.DEFAULT_USER_AGENT
+        if self.email:
+            user_agent = f"{user_agent} (mailto:{self.email})"
+        self.session.headers.update({"User-Agent": user_agent})
 
     def _reconstruct_abstract(self, inverted_index: dict) -> str:
         """
@@ -58,6 +68,8 @@ class OpenAlexSearcher(PaperSource):
                 "search": query,
                 "per_page": min(max_results, 200),
             }
+            if self.api_key:
+                params["api_key"] = self.api_key
 
             response = self.session.get(self.BASE_URL, params=params, timeout=30)
             

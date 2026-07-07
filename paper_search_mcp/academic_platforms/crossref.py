@@ -12,11 +12,33 @@ logger = logging.getLogger(__name__)
 
 class CrossRefSearcher(PaperSource):
     """Searcher for CrossRef database papers"""
-    
+
     BASE_URL = "https://api.crossref.org"
-    
+
     # User agent for polite API usage as per CrossRef etiquette
     USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/Dragonatorul/paper-search-mcp; mailto:paper-search@example.org)"
+
+    # CrossRef "type" values that are NOT standalone papers and should be
+    # filtered out of search results. These are sub-components (figures,
+    # peer-review materials, decision letters, etc.) that pollute search
+    # output with non-citable items.
+    # Ref: https://api.crossref.org/swagger-ui/index.html#/Works/get_works
+    NON_PAPER_TYPES = frozenset({
+        "peer-review",
+        "peer-review-material",
+        "review",  # ambiguous — kept conservative, only filters review sub-types
+        "component",
+        "figure",
+        "dataset",
+        "report",
+        "report-component",
+        "standard",
+        "standard-series",
+    })
+
+    # Default include set when caller does not override. Conservative: keeps
+    # the most common citable types. Set to None to disable filtering.
+    DEFAULT_INCLUDE_TYPES = None  # None => use NON_PAPER_TYPES denylist
     
     def __init__(self):
         self.session = requests.Session()
@@ -90,8 +112,19 @@ class CrossRefSearcher(PaperSource):
             return []
     
     def _parse_crossref_item(self, item: Dict[str, Any]) -> Optional[Paper]:
-        """Parse a CrossRef API item into a Paper object."""
+        """Parse a CrossRef API item into a Paper object.
+
+        Returns None for non-paper types (peer-review, component, figure, etc.)
+        so they are excluded from search results.
+        """
         try:
+            # Filter out non-paper types (peer-review material, figures, etc.)
+            item_type = item.get('type', '')
+            if item_type in self.NON_PAPER_TYPES:
+                logger.debug("Filtering out non-paper CrossRef item (type=%s, DOI=%s)",
+                             item_type, item.get('DOI', 'unknown'))
+                return None
+
             # Extract basic information
             doi = item.get('DOI', '')
             title = self._extract_title(item)

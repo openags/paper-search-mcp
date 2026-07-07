@@ -169,7 +169,21 @@ def _safe_filename(filename_hint: str, default: str = "paper") -> str:
     return safe[:120]
 
 
-async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = "paper") -> Optional[str]:
+async def _download_from_url(
+    pdf_url: str,
+    save_path: str,
+    filename_hint: str = "paper",
+    expected_title: str = "",
+    expected_doi: str = "",
+) -> Optional[str]:
+    """Download a PDF from a URL and optionally verify it matches the expected paper.
+
+    When `expected_title` is provided, the downloaded PDF's first-page text is
+    extracted and checked for token overlap with the title. If the overlap is
+    below threshold, the file is removed and None is returned — this prevents
+    fallback chains from returning an unrelated PDF (a known failure mode where
+    OpenAIRE/CORE/Unpaywall resolve to a different paper).
+    """
     if not pdf_url:
         return None
 
@@ -193,13 +207,113 @@ async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = 
         with open(output_path, "wb") as file_obj:
             file_obj.write(response.content)
 
+        # Content verification: reject PDFs that don't mention the expected title.
+        # This catches the phantom-PDF bug where a fallback URL resolves to an
+        # unrelated document (e.g. wrong paper due to DOI mis-resolution).
+        if expected_title:
+            if not _pdf_matches_expected(output_path, expected_title, expected_doi):
+                logger.warning(
+                    "Downloaded PDF from %s does not match expected title '%s'; discarding.",
+                    pdf_url, expected_title[:120],
+                )
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+                return None
+
         return output_path
     except Exception as exc:
         logger.warning("Direct URL download failed for %s: %s", pdf_url, exc)
         return None
 
 
-async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tuple[Optional[str], str]:
+def _title_similarity(a: str, b: str) -> float:
+    """Ratio of similarity between two titles, case-insensitive, in [0, 1].
+
+    Uses difflib.SequenceMatcher on normalized strings. Cheap and good enough
+    to discard gross mismatches (e.g. fallback paper titled 'Solar cells' when
+    the expected title is 'Myodural bridge and headache').
+    """
+    if not a or not b:
+        return 0.0
+    na = re.sub(r"\s+", " ", a.strip().lower())
+    nb = re.sub(r"\s+", " ", b.strip().lower())
+    if not na or not nb:
+        return 0.0
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, na, nb).ratio()
+
+
+def _pdf_matches_expected(pdf_path: str, expected_title: str, expected_doi: str = "") -> bool:
+    """Verify that a downloaded PDF plausibly corresponds to the expected paper.
+
+    Heuristic: extract text from the first few pages and check that a meaningful
+    fraction of the title's significant tokens appear. PDFs where the first page
+    is mostly imagery/editorial may fail this check; callers should not treat a
+    False as definitive proof of wrongness, but as a signal to try the next
+    fallback.
+
+    Returns True (accept) when:
+    - expected_title is empty (no claim to verify)
+    - the PDF cannot be parsed (don't penalize unreadable PDFs)
+    - >=40% of significant title tokens are found in the PDF text, OR
+    - the expected DOI appears verbatim in the PDF text
+    """
+    if not expected_title:
+        return True
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(pdf_path)
+    except Exception as exc:
+        logger.debug("pypdf unavailable or unreadable PDF %s: %s", pdf_path, exc)
+        return True  # don't reject on parse failure — could be a legit scanned PDF
+
+    try:
+        text = ""
+        for page in reader.pages[:3]:
+            text += page.extract_text() or ""
+    except Exception as exc:
+        logger.debug("PDF text extraction failed for %s: %s", pdf_path, exc)
+        return True
+
+    if not text.strip():
+        return True  # scanned PDF with no text layer — can't verify, accept
+
+    text_lower = text.lower()
+
+    # Strong signal: DOI appears verbatim
+    if expected_doi:
+        doi_clean = expected_doi.lower().strip()
+        if doi_clean and doi_clean in text_lower:
+            return True
+
+    # Token overlap heuristic
+    title_lower = expected_title.lower()
+    tokens = [t for t in re.findall(r"[a-z0-9]+", title_lower) if len(t) > 4]
+    if not tokens:
+        return True
+    hits = sum(1 for t in tokens if t in text_lower)
+    ratio = hits / len(tokens)
+    # Threshold 0.4: tolerate editorial front-matter that pushes title tokens
+    # to page 2-3, while still rejecting gross mismatches (a chemistry paper
+    # won't contain "myodural", "bridge", "headache", "chronic", "pathological").
+    return ratio >= 0.4
+
+
+async def _try_repository_fallback(
+    doi: str,
+    title: str,
+    save_path: str,
+    expected_title: str = "",
+) -> tuple[Optional[str], str]:
+    """Search OA repositories for a paper matching the DOI or title, then download.
+
+    When `expected_title` is provided, candidate papers whose titles are too
+    dissimilar are skipped — this prevents the fallback from returning a
+    plausible-but-wrong PDF. The same `expected_title` is propagated to
+    `_download_from_url` so the downloaded PDF's content is also verified.
+    """
     repository_searchers = [
         ("openaire", openaire_searcher),
         ("core", core_searcher),
@@ -230,9 +344,30 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
                 if not pdf_url:
                     continue
 
+                # Title-match filter: skip candidates whose title doesn't look
+                # like the paper we asked for. Catches the case where a repo
+                # search returns a topically-unrelated hit for the DOI/title.
+                if expected_title:
+                    candidate_title = str(getattr(paper, "title", "") or "")
+                    if candidate_title:
+                        sim = _title_similarity(candidate_title, expected_title)
+                        if sim < 0.6:
+                            logger.warning(
+                                "Repository %s fallback title mismatch (sim=%.2f): "
+                                "'%s' vs expected '%s' — skipping",
+                                repo_name, sim, candidate_title[:80], expected_title[:80],
+                            )
+                            continue
+
                 raw_paper_id = getattr(paper, "paper_id", "")
                 paper_id = str(raw_paper_id or query).strip()
-                downloaded = await _download_from_url(pdf_url, save_path, f"{repo_name}_{paper_id}")
+                downloaded = await _download_from_url(
+                    pdf_url,
+                    save_path,
+                    f"{repo_name}_{paper_id}",
+                    expected_title=expected_title,
+                    expected_doi=doi,
+                )
                 if downloaded:
                     return downloaded, ""
 
@@ -815,7 +950,9 @@ async def download_with_fallback(
     if primary_error:
         attempt_errors.append(f"primary: {primary_error}")
 
-    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
+    repository_result, repository_error = await _try_repository_fallback(
+        doi, title, save_path, expected_title=title,
+    )
     if repository_result:
         return repository_result
     if repository_error:
@@ -825,10 +962,13 @@ async def download_with_fallback(
     if normalized_doi:
         unpaywall_url = await asyncio.to_thread(unpaywall_resolver.resolve_best_pdf_url, normalized_doi)
         if unpaywall_url:
-            unpaywall_result = await _download_from_url(unpaywall_url, save_path, f"unpaywall_{normalized_doi}")
+            unpaywall_result = await _download_from_url(
+                unpaywall_url, save_path, f"unpaywall_{normalized_doi}",
+                expected_title=title, expected_doi=normalized_doi,
+            )
             if unpaywall_result:
                 return unpaywall_result
-            attempt_errors.append("unpaywall: resolved OA URL but download failed")
+            attempt_errors.append("unpaywall: resolved OA URL but download failed (or content did not match expected title)")
         else:
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:

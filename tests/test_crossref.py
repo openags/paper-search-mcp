@@ -101,5 +101,59 @@ class TestCrossRefSearcher(unittest.TestCase):
         self.assertIn("paper-search-mcp", self.searcher.session.headers.get('User-Agent', ''))
         self.assertIn("mailto:", self.searcher.session.headers.get('User-Agent', ''))
 
+    def test_non_paper_types_are_filtered(self):
+        """Regression: CrossRef returns peer-review material, figures, and other
+        sub-components with real DOIs. Without filtering they pollute search
+        results as 'phantom papers' that have a DOI but no citable content.
+        Bug observed: search for 'myodural bridge' returned multiple
+        'Review for ...' and 'Figure 5: ...' entries as if they were papers."""
+        # peer-review material — must be filtered out
+        peer_review_item = {
+            'DOI': '10.1002/jmor.21431/v1/review1',
+            'type': 'peer-review',
+            'title': ['Review for "The morphology of the suboccipital region"'],
+        }
+        self.assertIsNone(self.searcher._parse_crossref_item(peer_review_item),
+                          "peer-review type must be filtered out")
+
+        # figure component — must be filtered out
+        figure_item = {
+            'DOI': '10.7717/peerj.9716/fig-5',
+            'type': 'figure',
+            'title': ['Figure 5: The myodural bridge.'],
+        }
+        self.assertIsNone(self.searcher._parse_crossref_item(figure_item),
+                          "figure type must be filtered out")
+
+        # dataset — must be filtered out
+        dataset_item = {
+            'DOI': '10.5281/zenodo.123456',
+            'type': 'dataset',
+            'title': ['Dataset: myodural bridge measurements'],
+        }
+        self.assertIsNone(self.searcher._parse_crossref_item(dataset_item),
+                          "dataset type must be filtered out")
+
+    def test_journal_article_passes_filter(self):
+        """Sanity check: real journal-article types must still pass through."""
+        journal_item = {
+            'DOI': '10.1002/ca.21261',
+            'type': 'journal-article',
+            'title': ['Connection between the spinal dura mater and suboccipital musculature'],
+            'author': [{'given': 'Kourosh', 'family': 'Kahkeshani'}],
+            'is-referenced-by-count': 57,
+        }
+        paper = self.searcher._parse_crossref_item(journal_item)
+        self.assertIsNotNone(paper, "journal-article must pass the filter")
+        self.assertEqual(paper.doi, '10.1002/ca.21261')
+        self.assertTrue(any('Kahkeshani' in a for a in paper.authors),
+                        f"authors must contain 'Kahkeshani', got {paper.authors}")
+
+    def test_non_paper_types_constant_covers_observed_phantom_types(self):
+        """Lock the denylist to the types we observed causing phantom results."""
+        required = {"peer-review", "component", "figure", "dataset"}
+        self.assertTrue(required.issubset(CrossRefSearcher.NON_PAPER_TYPES),
+                        f"NON_PAPER_TYPES must include at least {required}")
+
 if __name__ == '__main__':
     unittest.main()

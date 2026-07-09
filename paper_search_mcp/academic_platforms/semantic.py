@@ -7,6 +7,7 @@ import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
@@ -383,15 +384,16 @@ class SemanticSearcher(PaperSource):
             pdf_response = requests.get(pdf_url, timeout=30)
             pdf_response.raise_for_status()
 
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
-
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
+            pdf_path = paper_output_path_for_paper(
+                save_path,
+                paper,
+                identifier=paper_id,
+                extension=".pdf",
+            )
 
             with open(pdf_path, "wb") as f:
                 f.write(pdf_response.content)
-            return pdf_path
+            return str(pdf_path)
         except Exception as e:
             logger.error(f"PDF download error: {e}")
             return f"Error downloading PDF: {e}"
@@ -416,22 +418,10 @@ class SemanticSearcher(PaperSource):
             str: Extracted text from the PDF or error message
         """
         try:
-            os.makedirs(save_path, exist_ok=True)
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
-
-            if not os.path.exists(pdf_path):
-                paper = self.get_paper_details(paper_id)
-                if not paper or not paper.pdf_url:
-                    return f"Error: Could not find PDF URL for paper {paper_id}"
-
-                pdf_response = requests.get(paper.pdf_url, timeout=30)
-                pdf_response.raise_for_status()
-
-                with open(pdf_path, "wb") as f:
-                    f.write(pdf_response.content)
-            else:
-                paper = self.get_paper_details(paper_id)
+            pdf_path = self.download_pdf(paper_id, save_path)
+            if not str(pdf_path).endswith(".pdf"):
+                return str(pdf_path)
+            paper = self.get_paper_details(paper_id)
 
             # Extract text using PyPDF
             reader = PdfReader(pdf_path)

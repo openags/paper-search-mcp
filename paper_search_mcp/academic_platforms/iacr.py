@@ -6,6 +6,7 @@ import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
@@ -210,11 +211,16 @@ class IACRSearcher(PaperSource):
             response = self.session.get(pdf_url)
 
             if response.status_code == 200:
-                filename = f"{save_path}/iacr_{paper_id.replace('/', '_')}.pdf"
-                os.makedirs(save_path, exist_ok=True)
+                paper = self.get_paper_details(paper_id)
+                filename = paper_output_path_for_paper(
+                    save_path,
+                    paper or {},
+                    identifier=paper_id,
+                    extension=".pdf",
+                )
                 with open(filename, "wb") as f:
                     f.write(response.content)
-                return filename
+                return str(filename)
             else:
                 return f"Failed to download PDF: HTTP {response.status_code}"
 
@@ -247,8 +253,12 @@ class IACRSearcher(PaperSource):
             os.makedirs(save_path, exist_ok=True)
 
             # Save the PDF
-            filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
+            pdf_path = paper_output_path_for_paper(
+                save_path,
+                paper,
+                identifier=paper_id,
+                extension=".pdf",
+            )
 
             with open(pdf_path, "wb") as f:
                 f.write(pdf_response.content)

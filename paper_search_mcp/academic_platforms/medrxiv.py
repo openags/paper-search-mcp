@@ -4,6 +4,8 @@ import os
 from datetime import datetime, timedelta
 from ..paper import Paper
 from .base import PaperSource
+from ..crossref_resolver import metadata_for_identifier
+from ..file_naming import paper_output_path
 from pypdf import PdfReader
 
 class MedRxivSearcher(PaperSource):
@@ -108,11 +110,18 @@ class MedRxivSearcher(PaperSource):
                 }
                 response = self.session.get(pdf_url, timeout=self.timeout, headers=headers)
                 response.raise_for_status()
-                os.makedirs(save_path, exist_ok=True)
-                output_file = f"{save_path}/{paper_id.replace('/', '_')}.pdf"
+                metadata = metadata_for_identifier(paper_id)
+                output_file = paper_output_path(
+                    save_path,
+                    title=metadata.get("title", ""),
+                    authors=metadata.get("authors", []),
+                    published_date=metadata.get("published_date", ""),
+                    identifier=paper_id,
+                    extension=".pdf",
+                )
                 with open(output_file, 'wb') as f:
                     f.write(response.content)
-                return output_file
+                return str(output_file)
             except requests.exceptions.RequestException as e:
                 tries += 1
                 if tries == self.max_retries:
@@ -130,9 +139,7 @@ class MedRxivSearcher(PaperSource):
         Returns:
             str: The extracted text content of the paper
         """
-        pdf_path = f"{save_path}/{paper_id.replace('/', '_')}.pdf"
-        if not os.path.exists(pdf_path):
-            pdf_path = self.download_pdf(paper_id, save_path)
+        pdf_path = self.download_pdf(paper_id, save_path)
         
         try:
             reader = PdfReader(pdf_path)

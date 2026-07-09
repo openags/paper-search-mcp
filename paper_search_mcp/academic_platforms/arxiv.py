@@ -9,6 +9,7 @@ from ..utils import extract_doi
 from .base import PaperSource
 from pypdf import PdfReader
 import os
+from ..file_naming import paper_output_path
 
 class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers"""
@@ -29,16 +30,20 @@ class ArxivSearcher(PaperSource):
             'sortOrder': sort_order,
         }
         response = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 response = self.session.get(self.BASE_URL, params=params, timeout=30)
             except requests.RequestException:
-                time.sleep((attempt + 1) * 1.5)
+                time.sleep(3 ** attempt)
                 continue
             if response.status_code == 200:
                 break
-            if response.status_code in (429, 500, 502, 503, 504):
-                time.sleep((attempt + 1) * 1.5)
+            if response.status_code == 429:
+                # arXiv rate limit — back off significantly
+                time.sleep(10 * (attempt + 1))
+                continue
+            if response.status_code in (500, 502, 503, 504):
+                time.sleep(3 ** attempt)
                 continue
             break
 
@@ -80,12 +85,37 @@ class ArxivSearcher(PaperSource):
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"
-        response = requests.get(pdf_url)
-        os.makedirs(save_path, exist_ok=True)
-        output_file = f"{save_path}/{paper_id}.pdf"
+        response = self.session.get(pdf_url, timeout=60)
+        response.raise_for_status()
+        metadata = self._metadata_for_id(paper_id)
+        output_file = paper_output_path(
+            save_path,
+            title=metadata.get("title", ""),
+            authors=metadata.get("authors", []),
+            published_date=metadata.get("published_date", ""),
+            identifier=paper_id,
+            extension=".pdf",
+        )
         with open(output_file, 'wb') as f:
             f.write(response.content)
-        return output_file
+        return str(output_file)
+
+    def _metadata_for_id(self, paper_id: str) -> dict:
+        try:
+            response = self.session.get(self.BASE_URL, params={"id_list": paper_id}, timeout=30)
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
+            if not feed.entries:
+                return {}
+            entry = feed.entries[0]
+            published = datetime.strptime(entry.published, '%Y-%m-%dT%H:%M:%SZ')
+            return {
+                "title": entry.title,
+                "authors": [author.name for author in entry.authors],
+                "published_date": published,
+            }
+        except Exception:
+            return {}
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Read a paper and convert it to text format.
@@ -97,10 +127,9 @@ class ArxivSearcher(PaperSource):
         Returns:
             str: The extracted text content of the paper
         """
-        # First ensure we have the PDF
-        pdf_path = f"{save_path}/{paper_id}.pdf"
-        if not os.path.exists(pdf_path):
-            pdf_path = self.download_pdf(paper_id, save_path)
+        # First ensure we have the PDF. The filename is metadata-based, so
+        # always ask the downloader for the actual path.
+        pdf_path = self.download_pdf(paper_id, save_path)
         
         # Read the PDF
         try:

@@ -4,19 +4,35 @@ Simple wrapper adapted from scihub.py for downloading PDFs via Sci-Hub.
 """
 from pathlib import Path
 import re
-import hashlib
 import logging
-from typing import Optional
+from typing import Optional, List
 
 import requests
 from bs4 import BeautifulSoup
 
+from ..config import get_env
+from ..crossref_resolver import metadata_for_identifier
+from ..file_naming import paper_filename, paper_output_path
+from .base import PaperSource
+from ..paper import Paper
+
+DEFAULT_MIRRORS: List[str] = [
+    "https://sci-hub.se",
+    "https://sci-hub.st",
+    "https://sci-hub.ru",
+    "https://sci-hub.ren",
+]
+
+
+def _get_proxy() -> Optional[dict]:
+    proxy = get_env("HTTP_PROXY", "") or get_env("HTTPS_PROXY", "")
+    return {"http": proxy, "https": proxy} if proxy else None
+
 
 class SciHubFetcher:
-    """Simple Sci-Hub PDF downloader."""
+    """Single-mirror Sci-Hub PDF downloader."""
 
     def __init__(self, base_url: str = "https://sci-hub.se", output_dir: str = "./downloads"):
-        """Initialize with Sci-Hub URL and output directory."""
         self.base_url = base_url.rstrip("/")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -30,6 +46,9 @@ class SciHubFetcher:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
+        proxy = _get_proxy()
+        if proxy:
+            self.session.proxies.update(proxy)
 
     def download_pdf(self, identifier: str) -> Optional[str]:
         """Download a PDF from Sci-Hub using a DOI, PMID, or URL.
@@ -57,13 +76,14 @@ class SciHubFetcher:
                 logging.error(f"Failed to download PDF, status {response.status_code}")
                 return None
 
-            if response.headers.get('Content-Type') != 'application/pdf':
-                logging.error("Response is not a PDF")
+            # Check by magic bytes first, then Content-Type (some servers add charset)
+            content_type = response.headers.get('Content-Type', '')
+            if 'application/pdf' not in content_type and not response.content[:4] == b'%PDF':
+                logging.error(f"Response is not a PDF (Content-Type: {content_type})")
                 return None
 
             # Generate filename and save
-            filename = self._generate_filename(response, identifier)
-            file_path = self.output_dir / filename
+            file_path = self._generate_output_path(identifier)
             
             with open(file_path, 'wb') as f:
                 f.write(response.content)
@@ -158,21 +178,72 @@ class SciHubFetcher:
             logging.error(f"Error getting direct URL for {identifier}: {e}")
             return None
 
-    def _generate_filename(self, response: requests.Response, identifier: str) -> str:
-        """Generate a unique filename for the PDF."""
-        # Try to get filename from URL
-        url_parts = response.url.split('/')
-        if url_parts:
-            name = url_parts[-1]
-            # Remove view parameters
-            name = re.sub(r'#view=(.+)', '', name)
-            if name.endswith('.pdf'):
-                # Generate hash for uniqueness
-                pdf_hash = hashlib.md5(response.content).hexdigest()[:8]
-                base_name = name[:-4]  # Remove .pdf
-                return f"{pdf_hash}_{base_name}.pdf"
+    def _generate_output_path(self, identifier: str) -> Path:
+        metadata = metadata_for_identifier(identifier)
+        return paper_output_path(
+            str(self.output_dir),
+            title=metadata.get("title", ""),
+            authors=metadata.get("authors", []),
+            published_date=metadata.get("published_date", ""),
+            identifier=identifier,
+            extension=".pdf",
+        )
 
-        # Fallback: use identifier
-        clean_identifier = re.sub(r'[^\w\-_.]', '_', identifier)
-        pdf_hash = hashlib.md5(response.content).hexdigest()[:8]
-        return f"{pdf_hash}_{clean_identifier}.pdf"
+    def _generate_filename(self, response: requests.Response, identifier: str) -> str:
+        """Generate a FirstAuthor_Year_ShortTitle filename for compatibility tests."""
+        metadata = metadata_for_identifier(identifier)
+        return paper_filename(
+            title=metadata.get("title", ""),
+            authors=metadata.get("authors", []),
+            published_date=metadata.get("published_date", ""),
+            identifier=identifier,
+            extension=".pdf",
+        )
+
+
+class SciHubSource(PaperSource):
+    """PaperSource wrapper around SciHubFetcher with mirror fallback and proxy support."""
+
+    def __init__(self):
+        custom = get_env("SCIHUB_URL", "").strip()
+        self._mirrors: List[str] = ([custom] if custom else []) + DEFAULT_MIRRORS
+
+    def search(self, query: str, **kwargs):
+        # Sci-Hub does not support search
+        return []
+
+    def download_pdf(self, paper_id: str, save_path: str = "./downloads") -> str:
+        last_error: Optional[Exception] = None
+        for mirror in self._mirrors:
+            try:
+                fetcher = SciHubFetcher(base_url=mirror, output_dir=save_path)
+                result = fetcher.download_pdf(paper_id)
+                if result:
+                    logging.info(f"[Sci-Hub] Downloaded via {mirror}: {result}")
+                    return result
+            except Exception as e:
+                logging.warning(f"[Sci-Hub] Mirror {mirror} failed: {e}")
+                last_error = e
+        raise RuntimeError(
+            f"Sci-Hub: all mirrors failed for '{paper_id}'. Last error: {last_error}"
+        )
+
+    def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
+        pdf_path = self.download_pdf(paper_id, save_path)
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                return "\n\n".join(
+                    page.extract_text() or "" for page in pdf.pages
+                ).strip()
+        except ImportError:
+            pass
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(pdf_path)
+            return "\n\n".join(
+                page.extract_text() or "" for page in reader.pages
+            ).strip()
+        except ImportError:
+            pass
+        return f"[PDF saved to {pdf_path}. Install pdfplumber or pypdf to extract text.]"

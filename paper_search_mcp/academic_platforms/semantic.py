@@ -1,16 +1,20 @@
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+import hashlib
 import os
 import requests
-from bs4 import BeautifulSoup
 import time
 import random
+import tempfile
+from defusedxml import ElementTree as DefusedElementTree
+from defusedxml.common import DefusedXmlException
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
 import re
+from xml.etree import ElementTree as ET
 from ..config import get_env
 
 logger = logging.getLogger(__name__)
@@ -21,6 +25,14 @@ class SemanticSearcher(PaperSource):
 
     SEMANTIC_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
     SEMANTIC_BASE_URL = "https://api.semanticscholar.org/graph/v1"
+    EUROPE_PMC_PDF_URL = "https://europepmc.org/articles/{pmcid}?pdf=render"
+    PMC_PDF_URL = "https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"
+    EUROPE_PMC_FULL_TEXT_XML_URL = (
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
+    )
+    DOWNLOAD_CHUNK_SIZE = 8192
+    PDF_HEADER_SCAN_BYTES = 1024
+    SAFE_PAPER_ID_MAX_LENGTH = 120
     BROWSERS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -100,8 +112,8 @@ class SemanticSearcher(PaperSource):
 
             # Safely get PDF URL - 支持从 disclaimer 中提取
             pdf_url = ""
-            if item.get("openAccessPdf"):
-                open_access_pdf = item["openAccessPdf"]
+            open_access_pdf = item.get("openAccessPdf") or {}
+            if open_access_pdf:
                 # 首先尝试直接获取 URL
                 if open_access_pdf.get("url"):
                     pdf_url = open_access_pdf["url"]
@@ -113,8 +125,9 @@ class SemanticSearcher(PaperSource):
 
             # Safely get DOI
             doi = ""
-            if item.get("externalIds") and item["externalIds"].get("DOI"):
-                doi = item["externalIds"]["DOI"]
+            external_ids = item.get("externalIds") or {}
+            if external_ids and external_ids.get("DOI"):
+                doi = external_ids["DOI"]
 
             if not doi and item.get("abstract"):
                 doi = extract_doi(item["abstract"])
@@ -138,6 +151,10 @@ class SemanticSearcher(PaperSource):
                 categories=categories,
                 doi=doi,
                 citations=item.get("citationCount", 0),
+                extra={
+                    "externalIds": external_ids,
+                    "openAccessPdf": open_access_pdf,
+                },
             )
 
         except Exception as e:
@@ -153,7 +170,8 @@ class SemanticSearcher(PaperSource):
         api_key = get_env("SEMANTIC_SCHOLAR_API_KEY", "")
         if not api_key or api_key.strip() == "":
             logger.warning(
-                "No SEMANTIC_SCHOLAR_API_KEY set or it's empty. Using unauthenticated access with lower rate limits."
+                "No SEMANTIC_SCHOLAR_API_KEY set or it's empty. "
+                "Using unauthenticated access with lower rate limits."
             )
             return None
         return api_key.strip()
@@ -197,13 +215,18 @@ class SemanticSearcher(PaperSource):
                             else retry_delay * (2**attempt)
                         )
                         logger.warning(
-                            f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}"
+                            "Rate limited (429). Waiting %s seconds before retry %s/%s",
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests."
+                            "Rate limited (429) after %s attempts. "
+                            "Please wait before making more requests.",
+                            max_retries,
                         )
                         return {
                             "error": "rate_limited",
@@ -235,13 +258,18 @@ class SemanticSearcher(PaperSource):
                             else retry_delay * (2**attempt)
                         )
                         logger.warning(
-                            f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}"
+                            "Rate limited (429). Waiting %s seconds before retry %s/%s",
+                            wait_time,
+                            attempt + 1,
+                            max_retries,
                         )
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(
-                            f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests."
+                            "Rate limited (429) after %s attempts. "
+                            "Please wait before making more requests.",
+                            max_retries,
                         )
                         return {
                             "error": "rate_limited",
@@ -356,6 +384,284 @@ class SemanticSearcher(PaperSource):
 
         return papers[:max_results]
 
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    @staticmethod
+    def _normalize_pmcid(value: object) -> str:
+        if value is None:
+            return ""
+
+        text = str(value).strip()
+        if not text:
+            return ""
+
+        pmcid_match = re.search(r"PMC\d+", text, flags=re.IGNORECASE)
+        if pmcid_match:
+            return pmcid_match.group(0).upper()
+
+        if re.fullmatch(r"\d+", text):
+            return f"PMC{text}"
+
+        return ""
+
+    @staticmethod
+    def _is_pmc_article_url(url: str) -> bool:
+        normalized_url = url.split("?", 1)[0].split("#", 1)[0].rstrip("/").lower()
+        return bool(re.search(r"/(?:pmc/)?articles/pmc\d+$", normalized_url))
+
+    @staticmethod
+    def _looks_like_html(content: bytes) -> bool:
+        prefix = content[:128].lstrip().lower()
+        return prefix.startswith((b"<!doctype", b"<html", b"<?xml"))
+
+    @classmethod
+    def _looks_like_pdf(cls, content: bytes) -> bool:
+        if not content:
+            return False
+
+        prefix = content[: cls.PDF_HEADER_SCAN_BYTES]
+        if cls._looks_like_html(prefix):
+            return False
+
+        return prefix.lstrip().startswith(b"%PDF")
+
+    @classmethod
+    def _pdf_file_is_valid(cls, pdf_path: str) -> bool:
+        try:
+            with open(pdf_path, "rb") as file:
+                return cls._looks_like_pdf(file.read(cls.PDF_HEADER_SCAN_BYTES))
+        except OSError:
+            return False
+
+    @staticmethod
+    def _response_content_length(headers: Dict[str, str]) -> Optional[int]:
+        content_encoding = headers.get("Content-Encoding", "").lower()
+        if content_encoding and content_encoding != "identity":
+            return None
+
+        content_length = headers.get("Content-Length")
+        if not content_length:
+            return None
+
+        try:
+            return int(content_length)
+        except ValueError:
+            return None
+
+    def _download_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": self.session.headers.get(
+                "User-Agent", random.choice(self.BROWSERS)
+            ),
+            "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+    def _extract_pmcids(self, paper: Paper) -> List[str]:
+        pmcids: List[str] = []
+
+        def add(value: object) -> None:
+            pmcid = self._normalize_pmcid(value)
+            if pmcid and pmcid not in pmcids:
+                pmcids.append(pmcid)
+
+        extra = getattr(paper, "extra", None) or {}
+        external_ids = extra.get("externalIds", {}) if isinstance(extra, dict) else {}
+        if isinstance(external_ids, dict):
+            add(external_ids.get("PubMedCentral"))
+            add(external_ids.get("PMCID"))
+
+        for text in (getattr(paper, "pdf_url", ""), getattr(paper, "url", "")):
+            if not text:
+                continue
+            for match in re.findall(r"PMC\d+", text, flags=re.IGNORECASE):
+                add(match)
+
+        return pmcids
+
+    def _candidate_pdf_urls(self, paper: Paper) -> List[str]:
+        candidates: List[str] = []
+        seen = set()
+
+        def add(url: str) -> None:
+            url = (url or "").strip()
+            if url and url not in seen:
+                seen.add(url)
+                candidates.append(url)
+
+        semantic_pdf_url = getattr(paper, "pdf_url", "")
+        if semantic_pdf_url and not self._is_pmc_article_url(semantic_pdf_url):
+            add(semantic_pdf_url)
+
+        for pmcid in self._extract_pmcids(paper):
+            add(self.EUROPE_PMC_PDF_URL.format(pmcid=pmcid))
+            add(self.PMC_PDF_URL.format(pmcid=pmcid))
+
+        if semantic_pdf_url and self._is_pmc_article_url(semantic_pdf_url):
+            add(semantic_pdf_url)
+
+        return candidates
+
+    def _download_pdf_url(self, pdf_url: str, pdf_path: str) -> None:
+        response = None
+        temp_path = ""
+        try:
+            response = self.session.get(
+                pdf_url,
+                headers=self._download_headers(),
+                stream=True,
+                timeout=60,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+
+            content_type = response.headers.get("Content-Type", "")
+            chunks = response.iter_content(chunk_size=self.DOWNLOAD_CHUNK_SIZE)
+            initial_chunks: List[bytes] = []
+            initial_content = b""
+
+            for chunk in chunks:
+                if chunk:
+                    initial_chunks.append(chunk)
+                    initial_content += chunk
+                    header_scan_complete = (
+                        len(initial_content) >= self.PDF_HEADER_SCAN_BYTES
+                    )
+                    if header_scan_complete or self._looks_like_pdf(initial_content):
+                        break
+
+            if not self._looks_like_pdf(initial_content):
+                first_bytes = initial_content[:16]
+                raise ValueError(
+                    "URL did not return a PDF "
+                    f"(content-type={content_type or 'unknown'}, "
+                    f"final_url={getattr(response, 'url', pdf_url)}, "
+                    f"first_bytes={first_bytes!r})"
+                )
+
+            expected_size = self._response_content_length(response.headers)
+            target_dir = os.path.dirname(pdf_path) or "."
+            temp_file = tempfile.NamedTemporaryFile(
+                "wb",
+                delete=False,
+                dir=target_dir,
+                prefix=f".{os.path.basename(pdf_path)}.",
+                suffix=".tmp",
+            )
+            temp_path = temp_file.name
+
+            bytes_written = 0
+            with temp_file as file:
+                for chunk in initial_chunks:
+                    file.write(chunk)
+                    bytes_written += len(chunk)
+                for chunk in chunks:
+                    if chunk:
+                        file.write(chunk)
+                        bytes_written += len(chunk)
+
+            if expected_size is not None and bytes_written != expected_size:
+                raise ValueError(
+                    "Downloaded PDF size mismatch "
+                    f"(expected={expected_size}, actual={bytes_written}, "
+                    f"final_url={getattr(response, 'url', pdf_url)})"
+                )
+
+            if not self._pdf_file_is_valid(temp_path):
+                raise ValueError(
+                    f"Downloaded file failed PDF validation "
+                    f"(final_url={getattr(response, 'url', pdf_url)})"
+                )
+
+            os.replace(temp_path, pdf_path)
+            temp_path = ""
+        finally:
+            if response is not None:
+                response.close()
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    logger.warning(
+                        "Could not remove partial PDF download: %s", temp_path
+                    )
+
+    @classmethod
+    def _safe_paper_id(cls, paper_id: str) -> str:
+        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "_", paper_id).strip("._")
+        if not safe_id:
+            return "paper"
+
+        if len(safe_id) <= cls.SAFE_PAPER_ID_MAX_LENGTH:
+            return safe_id
+
+        digest = hashlib.sha256(paper_id.encode("utf-8")).hexdigest()[:12]
+        prefix_length = cls.SAFE_PAPER_ID_MAX_LENGTH - len(digest) - 1
+        prefix = safe_id[:prefix_length].rstrip("._-") or "paper"
+        return f"{prefix}_{digest}"
+
+    @staticmethod
+    def _remove_pdf_file(pdf_path: str, reason: str) -> Optional[str]:
+        try:
+            os.remove(pdf_path)
+            return None
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            logger.warning(
+                "Could not remove PDF %s after %s: %s", pdf_path, reason, exc
+            )
+            return str(exc)
+
+    def _download_paper_pdf(
+        self, paper_id: str, save_path: str
+    ) -> Tuple[Optional[str], Optional[Paper], List[str]]:
+        os.makedirs(save_path, exist_ok=True)
+        filename = f"semantic_{self._safe_paper_id(paper_id)}.pdf"
+        pdf_path = os.path.join(save_path, filename)
+
+        if os.path.exists(pdf_path):
+            if self._pdf_file_is_valid(pdf_path):
+                return pdf_path, None, []
+            remove_error = self._remove_pdf_file(pdf_path, "cache validation failed")
+            if remove_error:
+                return (
+                    None,
+                    None,
+                    [f"Could not remove invalid cached PDF: {remove_error}"],
+                )
+
+        paper = self.get_paper_details(paper_id)
+        if not paper:
+            return None, None, [f"Could not find paper details for {paper_id}"]
+
+        candidates = self._candidate_pdf_urls(paper)
+        if not candidates:
+            return None, paper, [f"Could not find PDF URL for paper {paper_id}"]
+
+        errors: List[str] = []
+        for pdf_url in candidates:
+            try:
+                self._download_pdf_url(pdf_url, pdf_path)
+                return pdf_path, paper, errors
+            except Exception as exc:
+                errors.append(f"{pdf_url}: {exc}")
+                if os.path.exists(pdf_path) and not self._pdf_file_is_valid(pdf_path):
+                    self._remove_pdf_file(pdf_path, "download validation failed")
+
+        return None, paper, errors
+
+    @staticmethod
+    def _format_download_error(paper_id: str, errors: List[str]) -> str:
+        details = "; ".join(errors) if errors else "No downloadable PDF found"
+        return f"Error downloading PDF for {paper_id}: {details}"
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         Download PDF from Semantic Scholar
@@ -376,25 +682,143 @@ class SemanticSearcher(PaperSource):
             str: Path to downloaded file or error message
         """
         try:
-            paper = self.get_paper_details(paper_id)
-            if not paper or not paper.pdf_url:
-                return f"Error: Could not find PDF URL for paper {paper_id}"
-            pdf_url = paper.pdf_url
-            pdf_response = requests.get(pdf_url, timeout=30)
-            pdf_response.raise_for_status()
-
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
-
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
-
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
-            return pdf_path
+            pdf_path, _paper, errors = self._download_paper_pdf(paper_id, save_path)
+            if pdf_path:
+                return pdf_path
+            return self._format_download_error(paper_id, errors)
         except Exception as e:
             logger.error(f"PDF download error: {e}")
-            return f"Error downloading PDF: {e}"
+            return self._format_download_error(paper_id, [str(e)])
+
+    def _extract_pdf_text(self, pdf_path: str) -> str:
+        reader = PdfReader(pdf_path)
+        text = ""
+
+        for page_num, page in enumerate(reader.pages):
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    text += f"\n--- Page {page_num + 1} ---\n"
+                    text += page_text + "\n"
+            except Exception as e:
+                logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+                continue
+
+        return text.strip()
+
+    def _format_read_metadata(
+        self,
+        paper: Optional[Paper],
+        paper_id: str,
+        pdf_path: str = "",
+        full_text_source: str = "",
+    ) -> str:
+        title = getattr(paper, "title", paper_id) if paper else paper_id
+        authors = getattr(paper, "authors", []) if paper else []
+        published_date = getattr(paper, "published_date", "") if paper else ""
+        url = getattr(paper, "url", "") if paper else ""
+
+        metadata = f"Title: {title}\n"
+        metadata += f"Authors: {', '.join(authors) if authors else ''}\n"
+        metadata += f"Published Date: {published_date or ''}\n"
+        metadata += f"URL: {url}\n"
+        if pdf_path:
+            metadata += f"PDF downloaded to: {pdf_path}\n"
+        if full_text_source:
+            metadata += f"Full text source: {full_text_source}\n"
+        metadata += "=" * 80 + "\n\n"
+        return metadata
+
+    def _element_text(self, element: ET.Element) -> str:
+        return self._clean_text(" ".join(element.itertext()))
+
+    def _find_first_element(
+        self, root: ET.Element, tag_name: str
+    ) -> Optional[ET.Element]:
+        for element in root.iter():
+            if self._local_name(element.tag) == tag_name:
+                return element
+        return None
+
+    def _collect_body_text(self, element: ET.Element, parts: List[str]) -> None:
+        for child in list(element):
+            tag_name = self._local_name(child.tag)
+            if tag_name in {"title", "p"}:
+                text = self._element_text(child)
+                if text:
+                    parts.append(text)
+            elif tag_name in {"sec", "body"}:
+                self._collect_body_text(child, parts)
+
+    @staticmethod
+    def _parse_article_xml(xml_content: bytes) -> ET.Element:
+        try:
+            return DefusedElementTree.fromstring(xml_content)
+        except DefusedXmlException as exc:
+            raise ValueError("Unsafe XML declaration in Europe PMC full text") from exc
+
+    def _extract_text_from_article_xml(self, xml_content: bytes) -> str:
+        root = self._parse_article_xml(xml_content)
+        parts: List[str] = []
+
+        title = self._find_first_element(root, "article-title")
+        if title is not None:
+            title_text = self._element_text(title)
+            if title_text:
+                parts.append(title_text)
+
+        for abstract in root.iter():
+            if self._local_name(abstract.tag) == "abstract":
+                abstract_text = self._element_text(abstract)
+                if abstract_text:
+                    parts.append(abstract_text)
+
+        body = self._find_first_element(root, "body")
+        if body is not None:
+            self._collect_body_text(body, parts)
+
+        deduped_parts: List[str] = []
+        seen = set()
+        for part in parts:
+            if part not in seen:
+                seen.add(part)
+                deduped_parts.append(part)
+
+        return "\n\n".join(deduped_parts)
+
+    def _read_europe_pmc_full_text(self, paper: Optional[Paper]) -> Tuple[str, str]:
+        if not paper:
+            return "", ""
+
+        for pmcid in self._extract_pmcids(paper):
+            full_text_url = self.EUROPE_PMC_FULL_TEXT_XML_URL.format(pmcid=pmcid)
+            response = None
+            try:
+                response = self.session.get(
+                    full_text_url,
+                    headers={
+                        "User-Agent": self.session.headers.get(
+                            "User-Agent", random.choice(self.BROWSERS)
+                        ),
+                        "Accept": "application/xml,text/xml;q=0.9,*/*;q=0.8",
+                    },
+                    timeout=60,
+                )
+                response.raise_for_status()
+                text = self._extract_text_from_article_xml(response.content)
+                if text:
+                    return text, full_text_url
+            except Exception as exc:
+                logger.warning(
+                    "Europe PMC full-text fallback failed for %s: %s",
+                    pmcid,
+                    exc,
+                )
+            finally:
+                if response is not None:
+                    response.close()
+
+        return "", ""
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """
@@ -416,60 +840,77 @@ class SemanticSearcher(PaperSource):
             str: Extracted text from the PDF or error message
         """
         try:
-            os.makedirs(save_path, exist_ok=True)
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
-
-            if not os.path.exists(pdf_path):
-                paper = self.get_paper_details(paper_id)
-                if not paper or not paper.pdf_url:
-                    return f"Error: Could not find PDF URL for paper {paper_id}"
-
-                pdf_response = requests.get(paper.pdf_url, timeout=30)
-                pdf_response.raise_for_status()
-
-                with open(pdf_path, "wb") as f:
-                    f.write(pdf_response.content)
-            else:
-                paper = self.get_paper_details(paper_id)
-
-            # Extract text using PyPDF
-            reader = PdfReader(pdf_path)
-            text = ""
-
-            for page_num, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page_text + "\n"
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to extract text from page {page_num + 1}: {e}"
+            pdf_path, paper, errors = self._download_paper_pdf(paper_id, save_path)
+            if not pdf_path:
+                full_text, full_text_source = self._read_europe_pmc_full_text(paper)
+                if full_text:
+                    return (
+                        self._format_read_metadata(
+                            paper,
+                            paper_id,
+                            full_text_source=full_text_source,
+                        )
+                        + full_text
                     )
-                    continue
+                return self._format_download_error(paper_id, errors)
 
-            if not text.strip():
+            if paper is None:
+                paper = self.get_paper_details(paper_id)
+
+            try:
+                text = self._extract_pdf_text(pdf_path)
+            except Exception as exc:
+                logger.warning("PDF text extraction failed for %s: %s", pdf_path, exc)
+                remove_error = self._remove_pdf_file(pdf_path, "text extraction failed")
+                cached_pdf_removed = remove_error is None and not os.path.exists(
+                    pdf_path
+                )
+                full_text, full_text_source = self._read_europe_pmc_full_text(paper)
+                if full_text:
+                    return (
+                        self._format_read_metadata(
+                            paper,
+                            paper_id,
+                            pdf_path="" if cached_pdf_removed else pdf_path,
+                            full_text_source=full_text_source,
+                        )
+                        + full_text
+                    )
+                if cached_pdf_removed:
+                    return (
+                        f"PDF text extraction failed for {pdf_path}; "
+                        f"cached PDF was removed: {exc}"
+                    )
+                return (
+                    f"PDF downloaded to {pdf_path}, but text extraction failed "
+                    f"and the cached PDF could not be removed "
+                    f"({remove_error}): {exc}"
+                )
+
+            if not text:
+                full_text, full_text_source = self._read_europe_pmc_full_text(paper)
+                if full_text:
+                    return (
+                        self._format_read_metadata(
+                            paper,
+                            paper_id,
+                            pdf_path=pdf_path,
+                            full_text_source=full_text_source,
+                        )
+                        + full_text
+                    )
                 return (
                     f"PDF downloaded to {pdf_path}, but unable to extract readable text"
                 )
 
-            # Add paper metadata at the beginning
-            metadata = f"Title: {paper.title if paper else paper_id}\n"
-            metadata += f"Authors: {', '.join(paper.authors) if paper else ''}\n"
-            metadata += f"Published Date: {paper.published_date if paper else ''}\n"
-            metadata += f"URL: {paper.url if paper else ''}\n"
-            metadata += f"PDF downloaded to: {pdf_path}\n"
-            metadata += "=" * 80 + "\n\n"
-
-            return metadata + text.strip()
+            return self._format_read_metadata(paper, paper_id, pdf_path=pdf_path) + text
 
         except requests.RequestException as e:
             logger.error(f"Error downloading PDF: {e}")
-            return f"Error downloading PDF: {e}"
+            return self._format_download_error(paper_id, [str(e)])
         except Exception as e:
             logger.error(f"Read paper error: {e}")
-            return f"Error reading paper: {e}"
+            return f"Error reading paper {paper_id}: {e}"
 
     def get_paper_details(self, paper_id: str) -> Optional[Paper]:
         """

@@ -20,6 +20,7 @@ from .academic_platforms.pmc import PMCSearcher
 from .academic_platforms.core import CORESearcher
 from .academic_platforms.europepmc import EuropePMCSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
+from .academic_platforms.annas_archive import AnnasArchiveFetcher
 from .academic_platforms.dblp import DBLPSearcher
 from .academic_platforms.openaire import OpenAiresearcher
 from .academic_platforms.citeseerx import CiteSeerXSearcher
@@ -62,6 +63,7 @@ zenodo_searcher = ZenodoSearcher()
 hal_searcher = HALSearcher()
 ssrn_searcher = SSRNSearcher()
 # scihub_searcher = SciHubSearcher()
+annas_fetcher = AnnasArchiveFetcher()
 
 
 # Asynchronous helper to adapt synchronous searchers
@@ -817,6 +819,15 @@ async def download_with_fallback(
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:
         attempt_errors.append("unpaywall: DOI not provided")
+
+    if normalized_doi:
+        anna_result = await asyncio.to_thread(annas_fetcher.download_pdf, normalized_doi, save_path)
+        if anna_result and os.path.exists(anna_result):
+            return anna_result
+        if anna_result:
+            attempt_errors.append(f"annas_archive: {anna_result}")
+        else:
+            attempt_errors.append("annas_archive: failed to retrieve")
 
     if not use_scihub:
         return "Download failed after OA fallback chain. Details: " + " | ".join(attempt_errors)

@@ -77,27 +77,11 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
 
 
 ALL_SOURCES = [
-    "arxiv",
     "pubmed",
-    "biorxiv",
-    "medrxiv",
-    "google_scholar",
-    "iacr",
-    "semantic",
-    "crossref",
-    "openalex",
     "pmc",
-    "core",
     "europepmc",
-    "dblp",
-    "openaire",
-    "citeseerx",
-    "doaj",
-    "base",
-    "zenodo",
-    "hal",
-    "ssrn",
-    "unpaywall",
+    "medrxiv",
+    "biorxiv"
 ]
 
 

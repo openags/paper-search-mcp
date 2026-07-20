@@ -51,6 +51,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - **Layer 1 (Unified Tooling)**: High-level `search_papers` for multi-source concurrent search & deduplication, and `download_with_fallback` relying on publisher open access links with sequential fallbacks.
   - **Layer 2 (Platform Connectors)**: Modular connectors for specific academic platforms (arXiv, PubMed, bioRxiv, Semantic Scholar, etc.) equipped with intelligent DOI extraction via regex text analysis or API fields.
 - **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
+- **Fast Search Defaults**: CLI search defaults to a curated fast set (OpenAlex, Crossref, arXiv, PubMed, Europe PMC). Slow or rate-limited broad sources remain available via explicit source selection or `--exhaustive`.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
@@ -226,6 +227,27 @@ Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment
 - "Download the PDF for arxiv paper 2106.12345"
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
+
+Useful CLI examples:
+
+```bash
+paper-search search "gender imbalance neuroscience references" -n 3
+paper-search search "gender imbalance neuroscience references" -s fastest -n 3
+paper-search search "gender imbalance neuroscience references" --exhaustive -s all -n 3
+paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
+```
+
+For broad topic search, the CLI defaults to `-s fast`, which keeps arXiv in
+the search set but avoids known slow/noisy topic-search paths such as
+anonymous Semantic Scholar retries, CORE, PMC, Google Scholar, and Unpaywall.
+If `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` is configured, Semantic Scholar
+is added back to the fast set because authenticated access avoids the anonymous
+rate-limit delay. Use `-s fastest` for only OpenAlex and Crossref, or
+`--exhaustive -s all` when coverage matters more than latency.
+
+Use `download-doi` for DOI retrieval. `unpaywall` is automatically added to
+generic `search` only when the query contains a DOI, because Unpaywall is a DOI
+lookup service rather than a broad topic search engine.
 
 ---
 

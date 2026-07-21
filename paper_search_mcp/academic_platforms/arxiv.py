@@ -11,8 +11,17 @@ from pypdf import PdfReader
 import os
 
 class ArxivSearcher(PaperSource):
-    """Searcher for arXiv papers"""
+    """Searcher for arXiv papers.
+
+    arXiv TOU requires no more than 1 request per 3 seconds with a single
+    concurrent connection (https://info.arxiv.org/help/api/tou.html). We
+    enforce this with an instance-level last-call timestamp; bulk runs from
+    saturate.py serialize correctly because they reuse the same searcher.
+    Cross-process pacing is the user's responsibility (don't run two saturates
+    in parallel).
+    """
     BASE_URL = "http://export.arxiv.org/api/query"
+    MIN_INTERVAL_SEC = 3.0  # arXiv TOU minimum
 
     def __init__(self):
         self.session = requests.Session()
@@ -20,6 +29,15 @@ class ArxivSearcher(PaperSource):
             'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
+        self._last_call_at = 0.0  # monotonic seconds; 0 = never
+
+    def _pace(self):
+        """Sleep just long enough to respect the arXiv TOU rate-limit."""
+        now = time.monotonic()
+        elapsed = now - self._last_call_at
+        if self._last_call_at > 0 and elapsed < self.MIN_INTERVAL_SEC:
+            time.sleep(self.MIN_INTERVAL_SEC - elapsed)
+        self._last_call_at = time.monotonic()
 
     def search(self, query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Paper]:
         params = {
@@ -30,12 +48,20 @@ class ArxivSearcher(PaperSource):
         }
         response = None
         for attempt in range(3):
+            self._pace()
             try:
                 response = self.session.get(self.BASE_URL, params=params, timeout=30)
             except requests.RequestException:
                 time.sleep((attempt + 1) * 1.5)
                 continue
             if response.status_code == 200:
+                # arxiv.org rate-limits with HTTP 200 + body 'Rate exceeded.'
+                # rather than a proper 429, so a status check alone misses it.
+                # Treat the soft-rate-limit response as a retryable error.
+                body_head = (response.text or "")[:64].strip().lower()
+                if body_head.startswith("rate exceeded") or body_head == "rate exceeded.":
+                    time.sleep((attempt + 1) * 5.0)  # arxiv asks for slower cadence
+                    continue
                 break
             if response.status_code in (429, 500, 502, 503, 504):
                 time.sleep((attempt + 1) * 1.5)
@@ -44,6 +70,17 @@ class ArxivSearcher(PaperSource):
 
         if response is None or response.status_code != 200:
             return []
+        # Final safety: if we ended on a soft-rate-limit body, raise so the
+        # upstream harness records it in source_results.errors. Returning []
+        # silently is indistinguishable from "0 actual hits" — and bulk
+        # consumers (lit-review skill) need to tell those apart to know
+        # whether to retry-with-backoff or accept the result. This is the
+        # `Rate exceeded.` HTTP-200 body documented in PR #81.
+        body_head = (response.text or "")[:64].strip().lower()
+        if body_head.startswith("rate exceeded"):
+            raise requests.RequestException(
+                "arxiv rate-limited: 'Rate exceeded.' body persisted across 3 retries"
+            )
 
         feed = feedparser.parse(response.content)
         papers = []
@@ -60,6 +97,20 @@ class ArxivSearcher(PaperSource):
                     if link.get('title') == 'doi':
                         doi = doi or extract_doi(link.href)
 
+                # Venue: arxiv records aren't published anywhere by definition,
+                # but `arxiv:journal_ref` is set when the author has flagged
+                # the paper as published in a venue. Falls back to the arxiv
+                # primary category (e.g. "cs.CV") so the venue field is at
+                # least informative for downstream venue diagnostics that
+                # know to special-case "arxiv" via SOURCE_FALLBACK_VENUES.
+                venue = entry.get('arxiv_journal_ref', '') or ''
+                if not venue:
+                    primary_cat = entry.get('arxiv_primary_category', {})
+                    if isinstance(primary_cat, dict):
+                        cat = primary_cat.get('term', '')
+                        if cat:
+                            venue = f"arXiv ({cat})"
+
                 papers.append(Paper(
                     paper_id=entry.id.split('/')[-1],
                     title=entry.title,
@@ -72,7 +123,8 @@ class ArxivSearcher(PaperSource):
                     source='arxiv',
                     categories=[tag.term for tag in entry.tags],
                     keywords=[],
-                    doi=doi
+                    doi=doi,
+                    venue=venue,
                 ))
             except Exception as e:
                 print(f"Error parsing arXiv entry: {e}")

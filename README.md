@@ -56,6 +56,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
 - **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
+- **Citation Graph (no API key)**: `get_citing_papers` (forward snowballing) and `get_referenced_papers` (backward snowballing) walk the OpenAlex citation graph from a DOI, title, or OpenAlex work ID; `find_open_access_pdf` resolves a free OA copy without Unpaywall's registered email.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
@@ -90,7 +91,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | IACR | ✅ | ✅ | ✅ | Open API; reliable |
 | Semantic Scholar | ✅ | ✅ (OA) | ✅ (OA) | Works without key (rate-limited); key improves limits; key rejection (403) retried automatically without key |
 | Crossref | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
-| OpenAlex | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
+| OpenAlex | ✅ | ❌ | ⚠️ info-only | Open API; reliable; also powers the citation-graph tools (`get_citing_papers`, `get_referenced_papers`, `find_open_access_pdf`) with no key |
 | PMC | ✅ | ✅ (OA only) | ✅ (OA only) | OA PDFs only; direct download may be blocked by some proxy environments |
 | CORE | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Free key recommended; connector retries with backoff and falls back to key-less on 401/403 |
 | Europe PMC | ✅ | ✅ (OA) | ✅ (OA) | OA PDFs only; direct download may be blocked by some proxy environments |
@@ -541,7 +542,7 @@ We welcome contributions! Here's how to get started:
 - [√] End-to-End full pipeline testing script (search, parse, download)
 - [√] Establish two-layer federated architecture (Layer 1 tool: `search_papers`)
 - [√] Ensure pervasive DOI extraction across metadata fields & abstract fallbacks
-- [ ] Citation graph & Paper relation context feature
+- [√] Citation graph & Paper relation context feature (OpenAlex, no API key)
 - [√] Expand full-stack OpenAlex provider
 
 ### Priority Free and Open Sources

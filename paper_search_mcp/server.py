@@ -162,6 +162,41 @@ def _dedupe_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return deduped
 
 
+async def _add_missing_citation_counts(papers: List[Dict[str, Any]]) -> int:
+    """Fill in citation counts for papers whose source doesn't publish one.
+
+    Only OpenAlex, Crossref and Semantic Scholar report citations; arXiv, dblp, PubMed
+    and the rest return 0. Backfilling them from OpenAlex by DOI needs no API key and
+    costs one request per 100 papers. Mutates `papers` in place.
+
+    Args:
+        papers: Aggregated paper dictionaries, as produced by Paper.to_dict().
+    Returns:
+        int: Number of papers whose citation count was filled in.
+    """
+    missing = [
+        paper for paper in papers
+        if not int(paper.get("citations") or 0) and paper.get("doi")
+    ]
+    if not missing:
+        return 0
+
+    counts = await asyncio.to_thread(
+        openalex_searcher.citation_counts_by_doi, [str(p["doi"]) for p in missing]
+    )
+    if not counts:
+        return 0
+
+    enriched = 0
+    for paper in missing:
+        key = OpenAlexSearcher._normalize_identifier(str(paper.get("doi", ""))).lower()
+        count = counts.get(key)
+        if count:
+            paper["citations"] = count
+            enriched += 1
+    return enriched
+
+
 def _safe_filename(filename_hint: str, default: str = "paper") -> str:
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", filename_hint).strip("._")
     if not safe:
@@ -245,6 +280,7 @@ async def search_papers(
     max_results_per_source: int = 5,
     sources: str = "all",
     year: Optional[str] = None,
+    enrich_citations: bool = True,
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -254,6 +290,9 @@ async def search_papers(
         sources: Comma-separated source names or 'all'.
             Available: arxiv,pubmed,biorxiv,medrxiv,google_scholar,iacr,semantic,crossref,openalex,pmc,core,europepmc,dblp,openaire,citeseerx,doaj,base,zenodo,hal,ssrn,unpaywall
         year: Optional year filter for Semantic Scholar only.
+        enrich_citations: Backfill citation counts from OpenAlex (no API key) for papers
+            whose source doesn't report them, such as arXiv, dblp and PubMed. Costs one
+            extra request per 100 papers; set False when latency matters more.
     Returns:
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
     """
@@ -342,6 +381,14 @@ async def search_papers(
 
     deduped_papers = _dedupe_papers(merged_papers)
 
+    citations_enriched = 0
+    if enrich_citations:
+        try:
+            citations_enriched = await _add_missing_citation_counts(deduped_papers)
+        except Exception as exc:  # enrichment is a bonus; never fail the search for it
+            logger.warning("Citation enrichment failed: %s", exc)
+            errors["citation_enrichment"] = str(exc)
+
     return {
         "query": query,
         "sources_requested": sources,
@@ -351,6 +398,7 @@ async def search_papers(
         "papers": deduped_papers,
         "total": len(deduped_papers),
         "raw_total": len(merged_papers),
+        "citations_enriched": citations_enriched,
     }
 
 
@@ -875,6 +923,72 @@ async def search_openalex(query: str, max_results: int = 10) -> List[Dict]:
     """
     papers = await async_search(openalex_searcher, query, max_results)
     return papers if papers else []
+
+
+@mcp.tool()
+async def get_citing_papers(identifier: str, max_results: int = 10) -> List[Dict]:
+    """Find papers that CITE a given paper (forward snowballing), most-cited first.
+
+    Backed by OpenAlex, so no API key is required. Use it to trace how an idea was
+    taken up after publication, or to find the influential follow-up work on a
+    seminal paper.
+
+    Args:
+        identifier: DOI, paper title, or OpenAlex work ID (e.g., 'W4389984066').
+        max_results: Maximum number of citing papers to return (default: 10).
+    Returns:
+        List of paper metadata in dictionary format; empty list if unresolvable.
+    """
+    papers = await asyncio.to_thread(
+        openalex_searcher.get_citations, identifier, max_results
+    )
+    return [paper.to_dict() for paper in papers]
+
+
+@mcp.tool()
+async def get_referenced_papers(identifier: str, max_results: int = 10) -> List[Dict]:
+    """Find the papers a given paper CITES (backward snowballing), most-cited first.
+
+    Backed by OpenAlex, so no API key is required. Use it to walk back to the
+    foundational work a paper builds on. Returns an empty list when the publisher
+    never deposited a reference list, which is common for arXiv preprints.
+
+    Args:
+        identifier: DOI, paper title, or OpenAlex work ID (e.g., 'W4389984066').
+        max_results: Maximum number of referenced papers to return (default: 10).
+    Returns:
+        List of paper metadata in dictionary format; empty list if none are deposited.
+    """
+    papers = await asyncio.to_thread(
+        openalex_searcher.get_references, identifier, max_results
+    )
+    return [paper.to_dict() for paper in papers]
+
+
+@mcp.tool()
+async def find_open_access_pdf(identifier: str) -> Dict:
+    """Locate a free, legal open-access PDF for a paper, given a DOI or title.
+
+    Backed by OpenAlex's open-access index, so no API key and no registered email are
+    required (unlike Unpaywall). Check the returned 'pdf_url': an empty string means
+    no open copy is indexed, not that the lookup failed.
+
+    Args:
+        identifier: DOI, paper title, or OpenAlex work ID.
+    Returns:
+        Paper metadata plus two distinct flags: 'is_open_access' is OpenAlex's verdict
+        on whether a free copy exists anywhere, and 'has_direct_pdf' says whether
+        'pdf_url' is a file rather than a landing page — a paper can be open access
+        with no direct PDF. Both flags are OpenAlex's claim about the link, not a
+        verified fetch. An 'error' key means the paper could not be resolved.
+    """
+    paper = await asyncio.to_thread(openalex_searcher.resolve_oa_pdf, identifier)
+    if paper is None:
+        return {"error": f"Could not resolve paper: {identifier}"}
+    result = paper.to_dict()
+    result["is_open_access"] = bool((paper.extra or {}).get("is_oa"))
+    result["has_direct_pdf"] = bool((paper.extra or {}).get("pdf_is_direct"))
+    return result
 
 
 @mcp.tool()

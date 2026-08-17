@@ -106,6 +106,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | Sci-Hub (optional) | ⚠️ fallback-only | ✅ | ❌ | Optional; unstable mirrors; user responsibility |
 | **IEEE Xplore** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_IEEE_API_KEY` to activate |
 | **ACM DL** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_ACM_API_KEY` to activate |
+| **Scopus** 🔑 | ✅ | ❌ | ⚠️ (entitlement-dependent) | Requires `PAPER_SEARCH_MCP_SCOPUS_API_KEY` to activate; full-text read via ScienceDirect for entitled articles |
 
 > ✅ = reliable in live tests.  ⚠️ = works but subject to upstream instability or access restrictions.  ❌ = not supported.  🔑 = key required.  🚧 = skeleton only.
 
@@ -125,6 +126,7 @@ All keys are **optional** unless noted. Configure them in `~/.config/paper-searc
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
 | `PAPER_SEARCH_MCP_ACM_API_KEY` | ACM DL | **Required to activate** | See [libraries.acm.org/digital-library/acm-open](https://libraries.acm.org/digital-library/acm-open) |
+| `PAPER_SEARCH_MCP_SCOPUS_API_KEY` | Scopus (Elsevier) | **Required to activate** | Free at [dev.elsevier.com](https://dev.elsevier.com/) — available results depend on your Scopus subscription entitlements |
 
 All variables follow the `PAPER_SEARCH_MCP_<NAME>` prefix scheme. Legacy names without the prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
@@ -148,22 +150,66 @@ Some search failures are caused by external provider instability, not by bugs in
 
 ## Optional Paid Platform Connectors (Phase 3)
 
-IEEE Xplore and ACM Digital Library connectors are included as **opt-in skeletons**.
-They are **disabled by default** — no API calls are made unless you explicitly configure the corresponding keys.
+IEEE Xplore, ACM Digital Library, and Scopus connectors are **opt-in** and
+**disabled by default** — no API calls are made unless you explicitly configure the corresponding keys.
 
 | Platform | Env Var | Status |
 |---|---|---|
 | IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
 | ACM Digital Library | `PAPER_SEARCH_MCP_ACM_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
+| Scopus (Elsevier) | `PAPER_SEARCH_MCP_SCOPUS_API_KEY` | ✅ implemented — advanced search (field/sort/date filters) plus full-text read via ScienceDirect for entitled articles |
 
 **How to enable:**
 
 ```bash
 export PAPER_SEARCH_MCP_IEEE_API_KEY=<your_ieee_key>       # free key at https://developer.ieee.org/
 export PAPER_SEARCH_MCP_ACM_API_KEY=<your_acm_key>         # see https://libraries.acm.org/digital-library
+export PAPER_SEARCH_MCP_SCOPUS_API_KEY=<your_scopus_key>   # free key at https://dev.elsevier.com/
 ```
 
-Once a key is set, the corresponding source is automatically added to `ALL_SOURCES` and its MCP tools (`search_ieee` / `search_acm`, `download_ieee` / `download_acm`, `read_ieee_paper` / `read_acm_paper`) are registered at server startup.
+Once a key is set, the corresponding source is automatically added to `ALL_SOURCES` and its MCP tools (e.g. `search_ieee` / `search_acm` / `search_scopus`, `download_*`, `read_*_paper`) are registered at server startup.
+
+### Scopus Usage
+
+With `PAPER_SEARCH_MCP_SCOPUS_API_KEY` set (free key at [dev.elsevier.com](https://dev.elsevier.com/)), three MCP tools are registered and `scopus` becomes a selectable source in the `search_papers` aggregate.
+
+**`search_scopus(query, max_results=10, sort="relevance", field=None, date=None)`**
+
+Supports the full [Scopus advanced query syntax](https://dev.elsevier.com/sc_search_tips.html):
+
+| Capability | Example |
+|---|---|
+| Field search | `TITLE("machine learning")`, `ABS("neural networks")`, `KEY("computer vision")`, `AUTH("smith")`, `AFFILORG("mit")` |
+| Boolean operators | `"machine learning" AND "neural networks"`, `"AI" OR "artificial intelligence"`, `... AND NOT review` |
+| Proximity | `machine W/3 learning` (within 3 words), `deep PRE/2 learning` (preceding within 2 words) |
+| Wildcards | `neural*` (multiple chars), `wom?n` (single char) |
+| Grouping | `(TITLE("AI") OR TITLE("ML")) AND ABS("deep learning")` |
+
+Parameters:
+
+- `sort`: `"relevance"` (default), `"coverDate"` (newest first), `"citedby-count"` (most cited first), `"creator"` (alphabetical by first author)
+- `field`: restrict the whole query to one field — `"TITLE"`, `"ABS"`, `"KEY"`, `"AUTH"`, `"AFFILORG"`
+- `date`: publication window — `"2023"`, `"2020-2023"`, `"2020-"` (from 2020), `"-2020"` (up to 2020)
+- `max_results`: capped at 25 per request (Scopus COMPLETE-view limit)
+
+Example prompts for your MCP client:
+
+> *"Search Scopus for `TITLE("crispr") AND ABS("delivery")` from 2020-2024, sorted by citations."*
+> *"Use search_papers with sources `scopus,pubmed` to find papers on perovskite solar cells."*
+
+**`read_scopus_paper(paper_id)`** — resolves the paper via the Scopus Abstract Retrieval API, then fetches full text through the ScienceDirect APIs. Accepts the numeric Scopus ID with or without the `SCOPUS_ID:` prefix (as returned by `search_scopus`).
+
+**`download_scopus(paper_id)`** — the Scopus API does not offer direct PDF downloads; this returns an explanatory message pointing to the paper's DOI/URL.
+
+CLI equivalents:
+
+```bash
+paper-search search 'TITLE("deep learning")' -s scopus -n 10
+paper-search read scopus 85091212513
+paper-search sources        # lists scopus when the key is configured
+```
+
+> **Note:** which records and full texts are returned depends on the Scopus/ScienceDirect entitlements associated with your key and subscription. Requests beyond your entitlements fail gracefully with a clear authorization message; rate limiting honors `Retry-After`, and an exhausted weekly quota is reported immediately instead of being retried.
 
 Without a key the connectors log a startup warning only — the rest of the server is unaffected.
 
@@ -272,7 +318,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
         "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_ACM_API_KEY": "",
+        "PAPER_SEARCH_MCP_SCOPUS_API_KEY": ""
       }
     }
   }
@@ -302,7 +349,8 @@ uv tool install paper-search-mcp
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
         "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_ACM_API_KEY": "",
+        "PAPER_SEARCH_MCP_SCOPUS_API_KEY": ""
       }
     }
   }
@@ -332,7 +380,8 @@ pip install paper-search-mcp
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
         "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_ACM_API_KEY": "",
+        "PAPER_SEARCH_MCP_SCOPUS_API_KEY": ""
       }
     }
   }
@@ -394,7 +443,8 @@ docker run --rm -i \
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
         "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_ACM_API_KEY": "",
+        "PAPER_SEARCH_MCP_SCOPUS_API_KEY": ""
       }
     }
   }
@@ -438,7 +488,8 @@ uv run -m paper_search_mcp.server
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
         "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_ACM_API_KEY": "",
+        "PAPER_SEARCH_MCP_SCOPUS_API_KEY": ""
       }
     }
   }
@@ -481,6 +532,7 @@ PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN=
 PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL=
 PAPER_SEARCH_MCP_IEEE_API_KEY=
 PAPER_SEARCH_MCP_ACM_API_KEY=
+PAPER_SEARCH_MCP_SCOPUS_API_KEY=
 ```
 
 To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
@@ -564,12 +616,12 @@ We welcome contributions! Here's how to get started:
 
 - [ ] ResearchGate
 - [ ] JSTOR
-- [ ] ScienceDirect
+- [√] ScienceDirect (full-text read via Scopus connector — activate with `SCOPUS_API_KEY`)
 - [ ] Springer Link
 - [√] IEEE Xplore (optional skeleton — activate with `IEEE_API_KEY`)
 - [√] ACM Digital Library (optional skeleton — activate with `ACM_API_KEY`)
 - [ ] Web of Science
-- [ ] Scopus
+- [√] Scopus (optional — activate with `SCOPUS_API_KEY`)
 
 ---
 

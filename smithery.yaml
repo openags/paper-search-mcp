@@ -26,6 +26,9 @@ startCommand:
       PAPER_SEARCH_MCP_ACM_API_KEY:
         type: string
         description: "API key to enable ACM Digital Library (optional)"
+      PAPER_SEARCH_MCP_SCOPUS_API_KEY:
+        type: string
+        description: "API key to enable Scopus / ScienceDirect (optional, free at dev.elsevier.com)"
   commandFunction:
     |-
     (config) => {
@@ -37,6 +40,7 @@ startCommand:
       if (config.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL) env.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL = config.PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL;
       if (config.PAPER_SEARCH_MCP_IEEE_API_KEY) env.PAPER_SEARCH_MCP_IEEE_API_KEY = config.PAPER_SEARCH_MCP_IEEE_API_KEY;
       if (config.PAPER_SEARCH_MCP_ACM_API_KEY) env.PAPER_SEARCH_MCP_ACM_API_KEY = config.PAPER_SEARCH_MCP_ACM_API_KEY;
+      if (config.PAPER_SEARCH_MCP_SCOPUS_API_KEY) env.PAPER_SEARCH_MCP_SCOPUS_API_KEY = config.PAPER_SEARCH_MCP_SCOPUS_API_KEY;
       return { command: 'paper-search-mcp', env };
     }
   exampleConfig:

@@ -17,6 +17,7 @@ import requests
 
 from .base import PaperSource
 from ..paper import Paper
+from ..file_naming import paper_output_path_for_paper
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,13 @@ class HALSearcher(PaperSource):
                 "The document may be metadata-only or under embargo."
             )
 
-        os.makedirs(save_path, exist_ok=True)
-        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", hal_id) or hal_id
-        output_path = os.path.join(save_path, f"hal_{safe_name}.pdf")
+        paper = next(iter(self.search(hal_id, max_results=1)), None)
+        output_path = paper_output_path_for_paper(
+            save_path,
+            paper or {},
+            identifier=hal_id,
+            extension=".pdf",
+        )
 
         try:
             dl_response = self.session.get(pdf_url, stream=True, timeout=60)

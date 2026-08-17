@@ -4,6 +4,7 @@ import tempfile
 import shutil
 import os
 import requests
+from unittest.mock import patch
 from paper_search_mcp.academic_platforms.sci_hub import SciHubFetcher
 
 
@@ -110,17 +111,18 @@ class TestSciHubFetcher(unittest.TestCase):
                 self.url = url
                 self.content = content.encode()
         
-        # Test with PDF URL
-        response = MockResponse("https://example.com/paper.pdf", "fake pdf content")
-        filename = self.fetcher._generate_filename(response, "10.1234/test")
-        self.assertTrue(filename.endswith('.pdf'))
-        self.assertIn('_', filename)  # Should contain hash separator
-        
-        # Test with non-PDF URL
-        response = MockResponse("https://example.com/page", "fake content")
-        filename = self.fetcher._generate_filename(response, "test-paper")
-        self.assertTrue(filename.endswith('.pdf'))
-        self.assertIn('test-paper', filename)
+        with patch("paper_search_mcp.academic_platforms.sci_hub.metadata_for_identifier", return_value={}):
+            # Test with PDF URL
+            response = MockResponse("https://example.com/paper.pdf", "fake pdf content")
+            filename = self.fetcher._generate_filename(response, "10.1234/test")
+            self.assertTrue(filename.endswith('.pdf'))
+            self.assertRegex(filename, r"^[^_]+_[^_]+_.+\.pdf$")
+
+            # Test with non-PDF URL
+            response = MockResponse("https://example.com/page", "fake content")
+            filename = self.fetcher._generate_filename(response, "test-paper")
+            self.assertTrue(filename.endswith('.pdf'))
+            self.assertIn('test_paper', filename)
 
     def test_get_direct_url_pdf_url(self):
         """Test _get_direct_url with direct PDF URL"""

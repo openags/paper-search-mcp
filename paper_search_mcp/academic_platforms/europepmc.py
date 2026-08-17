@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from ..paper import Paper
 from ..utils import extract_doi
+from ..file_naming import paper_output_path
 from .base import PaperSource
 from pypdf import PdfReader
 
@@ -289,10 +290,14 @@ class EuropePMCSearcher(PaperSource):
                 raise ValueError(f"URL does not point to a PDF file: {pdf_url}")
 
             # Generate filename
-            title = paper_details.get('title', 'paper').replace(' ', '_')[:50]
-            filename = f"europepmc_{paper_id}_{title}.pdf"
-            filename = ''.join(c for c in filename if c.isalnum() or c in ('_', '-', '.'))
-            filepath = save_dir / filename
+            filepath = paper_output_path(
+                str(save_dir),
+                title=paper_details.get('title', ''),
+                authors=(paper_details.get('authorString') or '').replace(', ', '; '),
+                published_date=paper_details.get('firstPublicationDate') or paper_details.get('pubYear') or '',
+                identifier=str(paper_id),
+                extension=".pdf",
+            )
 
             # Save PDF
             with open(filepath, 'wb') as f:

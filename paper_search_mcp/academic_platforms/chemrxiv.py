@@ -11,6 +11,7 @@ from typing import List, Optional
 import logging
 from .crossref import CrossRefSearcher
 from ..paper import Paper
+from ..file_naming import paper_output_path_for_paper
 
 logger = logging.getLogger(__name__)
 
@@ -115,16 +116,18 @@ class ChemRxivSearcher(CrossRefSearcher):
             response.raise_for_status()
             os.makedirs(save_path, exist_ok=True)
 
-            # Create safe filename
-            safe_id = paper_id.replace('/', '_').replace(':', '_')
-            filename = f"chemrxiv_{safe_id}.pdf"
-            output_file = os.path.join(save_path, filename)
+            output_file = paper_output_path_for_paper(
+                save_path,
+                paper,
+                identifier=str(paper_id),
+                extension=".pdf",
+            )
 
             with open(output_file, 'wb') as f:
                 f.write(response.content)
 
             logger.info(f"Downloaded PDF to {output_file}")
-            return output_file
+            return str(output_file)
 
         raise NotImplementedError(
             f"No PDF available for ChemRxiv preprint: {paper_id}"

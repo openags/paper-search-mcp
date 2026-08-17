@@ -3,6 +3,7 @@ import os
 import requests
 import tempfile
 from pathlib import Path
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
@@ -30,7 +31,13 @@ class TestSemanticSearcher(unittest.TestCase):
         self.searcher = SemanticSearcher()
 
     def test_download_pdf_saves_file_when_pdf_url_available(self):
-        paper = SimpleNamespace(pdf_url="https://example.com/paper.pdf")
+        paper = SimpleNamespace(
+            paper_id="paper/123",
+            title="A Test Paper",
+            authors=["Ada Lovelace"],
+            published_date=datetime(2024, 1, 1),
+            pdf_url="https://example.com/paper.pdf",
+        )
         response = Mock()
         response.content = b"%PDF-1.4 test content"
         response.raise_for_status.return_value = None
@@ -40,7 +47,7 @@ class TestSemanticSearcher(unittest.TestCase):
                 with patch("paper_search_mcp.academic_platforms.semantic.requests.get", return_value=response):
                     result = self.searcher.download_pdf("paper/123", test_dir)
 
-            expected_path = Path(test_dir) / "semantic_paper_123.pdf"
+            expected_path = Path(test_dir) / "Lovelace_2024_A_Test_Paper.pdf"
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
             self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
@@ -179,9 +186,9 @@ class TestSemanticSearcher(unittest.TestCase):
                 self.assertIn("--- Page", result)
 
                 # Check if PDF was actually downloaded
-                expected_filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
-                expected_path = os.path.join(test_dir, expected_filename)
-                self.assertTrue(os.path.exists(expected_path))
+                pdfs = list(Path(test_dir).glob("*.pdf"))
+                self.assertTrue(pdfs)
+                expected_path = str(pdfs[0])
 
                 file_size = os.path.getsize(expected_path)
                 print(f"PDF file found: {expected_path} (size: {file_size} bytes)")

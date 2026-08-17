@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import time
 import logging
 from ..paper import Paper
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 
 logger = logging.getLogger(__name__)
@@ -399,12 +400,15 @@ class OAIPMHSearcher(PaperSource):
             import os
             response = self.session.get(papers[0].pdf_url, timeout=30)
             response.raise_for_status()
-            os.makedirs(save_path, exist_ok=True)
-            filename = f"{paper_id.replace('/', '_')}.pdf"
-            output_file = os.path.join(save_path, filename)
+            output_file = paper_output_path_for_paper(
+                save_path,
+                papers[0],
+                identifier=str(paper_id),
+                extension=".pdf",
+            )
             with open(output_file, 'wb') as f:
                 f.write(response.content)
-            return output_file
+            return str(output_file)
 
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support direct PDF downloads."

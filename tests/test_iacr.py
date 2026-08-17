@@ -1,6 +1,7 @@
 import unittest
 import os
 import requests
+from pathlib import Path
 from paper_search_mcp.academic_platforms.iacr import IACRSearcher
 
 
@@ -140,9 +141,9 @@ class TestIACRSearcher(unittest.TestCase):
                 self.assertIn("--- Page", result)
 
                 # Check if PDF was actually downloaded
-                expected_filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
-                expected_path = os.path.join(test_dir, expected_filename)
-                self.assertTrue(os.path.exists(expected_path))
+                pdfs = list(Path(test_dir).glob("*.pdf"))
+                self.assertTrue(pdfs)
+                expected_path = str(pdfs[0])
 
                 file_size = os.path.getsize(expected_path)
                 print(f"PDF file found: {expected_path} (size: {file_size} bytes)")

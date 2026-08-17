@@ -29,6 +29,7 @@ from bs4 import BeautifulSoup
 
 from .base import PaperSource
 from ..paper import Paper
+from ..file_naming import paper_output_path_for_paper
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,13 @@ class SSRNSearcher(PaperSource):
                 "The paper may require SSRN login or restricted access."
             )
 
-        os.makedirs(save_path, exist_ok=True)
-        output_path = os.path.join(save_path, f"ssrn_{abstract_id}.pdf")
+        paper = next(iter(self.search(abstract_id, max_results=1)), None)
+        output_path = paper_output_path_for_paper(
+            save_path,
+            paper or {},
+            identifier=abstract_id,
+            extension=".pdf",
+        )
 
         try:
             response = self.session.get(pdf_url, stream=True, timeout=60)

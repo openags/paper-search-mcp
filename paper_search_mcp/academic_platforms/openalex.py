@@ -1,7 +1,10 @@
-from typing import List, Optional
 from datetime import datetime
-import requests
 import logging
+import re
+from typing import Any, List
+
+import requests
+
 from ..paper import Paper
 from .base import PaperSource
 from ..utils import extract_doi
@@ -13,6 +16,8 @@ class OpenAlexSearcher(PaperSource):
     """OpenAlex paper search implementation"""
 
     BASE_URL = "https://api.openalex.org/works"
+    SSRN_SOURCE_ID = "S4210172589"  # OpenAlex source ID for SSRN
+    OPENALEX_PAGE_SIZE = 100
 
     def __init__(self):
         self.session = requests.Session()
@@ -39,6 +44,53 @@ class OpenAlexSearcher(PaperSource):
         except Exception as e:
             logger.warning(f"Error reconstructing OpenAlex abstract: {e}")
             return ""
+
+    @staticmethod
+    def _extract_ssrn_abstract_id(value: str) -> str:
+        """Extract SSRN abstract_id from a locator URL."""
+        match = re.search(r"abstract(?:_id)?[=_](\d+)", value or "")
+        return match.group(1) if match else ""
+
+    def _iter_ssrn_locator_candidates(self, item: dict[str, Any]) -> list[str]:
+        """Yield URL candidates that may contain an SSRN abstract identifier."""
+        candidates: list[str] = []
+
+        primary_location = item.get("primary_location") or {}
+        if isinstance(primary_location, dict):
+            for key in ("landing_page_url", "pdf_url"):
+                value = primary_location.get(key)
+                if value:
+                    candidates.append(value)
+
+        for location in item.get("locations") or []:
+            if not isinstance(location, dict):
+                continue
+            for key in ("landing_page_url", "pdf_url"):
+                value = location.get(key)
+                if value:
+                    candidates.append(value)
+
+        open_access = item.get("open_access") or {}
+        if isinstance(open_access, dict):
+            oa_url = open_access.get("oa_url")
+            if oa_url:
+                candidates.append(oa_url)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if candidate not in seen:
+                deduped.append(candidate)
+                seen.add(candidate)
+        return deduped
+
+    def _normalize_ssrn_paper_id(self, item: dict[str, Any]) -> tuple[str, str]:
+        """Return SSRN-compatible paper_id and matched locator URL."""
+        for candidate in self._iter_ssrn_locator_candidates(item):
+            abstract_id = self._extract_ssrn_abstract_id(candidate)
+            if abstract_id:
+                return f"ssrn:{abstract_id}", candidate
+        return "", ""
 
     def search(self, query: str, max_results: int = 10) -> List[Paper]:
         """
@@ -150,6 +202,127 @@ class OpenAlexSearcher(PaperSource):
 
         except Exception as e:
             logger.error(f"OpenAlex search error: {e}")
+
+        return papers
+
+    def search_ssrn(self, query: str, max_results: int = 10) -> List[Paper]:
+        """Search SSRN papers via OpenAlex, filtering by SSRN source ID.
+
+        OpenAlex indexes ~85% of SSRN papers (1.57M/1.83M).
+        This avoids SSRN's Cloudflare protection and ToS issues.
+
+        Args:
+            query: Search query string.
+            max_results: Maximum results to return.
+
+        Returns:
+            List[Paper]: SSRN papers with source set to "ssrn".
+        """
+        papers: List[Paper] = []
+        if max_results <= 0:
+            return papers
+
+        try:
+            cursor: str | None = "*"
+            page_size = min(max_results, self.OPENALEX_PAGE_SIZE)
+
+            while len(papers) < max_results and cursor:
+                params = {
+                    "search": query,
+                    "filter": f"primary_location.source.id:{self.SSRN_SOURCE_ID}",
+                    "per_page": page_size,
+                    "cursor": cursor,
+                }
+                response = self.session.get(self.BASE_URL, params=params, timeout=30)
+
+                if response.status_code != 200:
+                    logger.error(
+                        "OpenAlex SSRN search failed with status %d",
+                        response.status_code,
+                    )
+                    return papers
+
+                data = response.json()
+                results = data.get("results", [])
+                if not results:
+                    break
+
+                for item in results:
+                    if len(papers) >= max_results:
+                        break
+
+                    title = item.get("title")
+                    if not title:
+                        continue
+
+                    authors = [
+                        author.get("author", {}).get("display_name", "")
+                        for author in item.get("authorships", [])
+                        if author.get("author", {}).get("display_name")
+                    ]
+
+                    abstract = self._reconstruct_abstract(
+                        item.get("abstract_inverted_index")
+                    )
+
+                    doi = item.get("doi", "")
+                    if doi:
+                        doi = doi.replace("https://doi.org/", "")
+
+                    if not doi and abstract:
+                        doi = extract_doi(abstract)
+
+                    url = ""
+                    pdf_url = ""
+                    primary_location = item.get("primary_location")
+                    if primary_location:
+                        url = primary_location.get("landing_page_url", "")
+                        pdf_url = primary_location.get("pdf_url", "")
+
+                    open_access = item.get("open_access", {})
+                    if not pdf_url and open_access.get("is_oa"):
+                        pdf_url = open_access.get("oa_url", "")
+
+                    paper_id, matched_locator = self._normalize_ssrn_paper_id(item)
+                    if not paper_id:
+                        logger.warning(
+                            "Skipping OpenAlex SSRN result without SSRN-compatible locator: %s",
+                            item.get("id") or title,
+                        )
+                        continue
+
+                    if not self._extract_ssrn_abstract_id(url):
+                        url = matched_locator
+
+                    pub_date_str = item.get("publication_date")
+                    published_date = None
+                    if pub_date_str:
+                        try:
+                            published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+                        except ValueError:
+                            pass
+
+                    papers.append(
+                        Paper(
+                            paper_id=paper_id,
+                            title=title,
+                            authors=authors,
+                            abstract=abstract,
+                            url=url,
+                            pdf_url=pdf_url or "",
+                            published_date=published_date,
+                            source="ssrn",
+                            doi=doi,
+                            citations=item.get("cited_by_count", 0),
+                        )
+                    )
+
+                cursor = data.get("meta", {}).get("next_cursor")
+                if not cursor:
+                    break
+
+        except Exception as e:
+            logger.error("OpenAlex SSRN search error: %s", e)
 
         return papers
 

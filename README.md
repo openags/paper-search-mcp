@@ -23,6 +23,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - [Method 5 — npx](#method-5--npx-via-smithery-cli-no-local-python-needed)
   - [Method 6 — Docker](#method-6--docker)
   - [Method 7 — Clone & run from source](#method-7--clone--run-from-source-development--recommended-for-macos-local)
+  - [DeepSeek Harness (DSH)](#deepseek-harness-dsh)
   - [Environment Variables](#environment-variables-env-file)
 - [Contributing](#contributing)
 - [Demo](#demo)
@@ -57,6 +58,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
 - **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
+- **DeepSeek Harness (DSH) Integration**: A dsh profile bundle (clone the repo, `npx @deepseek-ai/dsh plugin --profile web add link:./dsh`) exposing every tool as `mcp__paper-search__*`, with an optional guidance skill.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
 ## Source Strategy
@@ -459,6 +461,41 @@ For active development, optionally install an editable copy:
 uv venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 ```
+
+---
+
+### DeepSeek Harness (DSH)
+
+Paper search is available inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) as a profile bundle: it boots the MCP server and registers all its tools in any dsh profile as `mcp__paper-search__*`. The bundle only mounts a composition row — the MCP server itself is untouched.
+
+**Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) (the default launcher is `uvx`) and [pnpm](https://pnpm.io/installation) (`dsh plugin` forwards to pnpm). Commands below use the `npx @deepseek-ai/dsh` launcher (no global install needed); with a global dsh install, drop the prefix.
+
+```bash
+git clone https://github.com/openags/paper-search-mcp.git
+cd paper-search-mcp
+npx @deepseek-ai/dsh plugin --profile web add link:./dsh
+```
+
+`link:` symlinks the live checkout into the profile, so `git pull` in the checkout is the upgrade path. Replace `web` with your profile name; a missing profile is initialized automatically. Restart the profile (`npx @deepseek-ai/dsh web`, or relaunch) and the tools appear — e.g. `mcp__paper-search__search_papers`, `mcp__paper-search__download_with_fallback`, `mcp__paper-search__search_arxiv`.
+
+**API keys**: just follow [Environment Variables](#environment-variables-env-file) — the server auto-loads `~/.config/paper-search-mcp/.env`. DSH deliberately scrubs credential-shaped ambient env vars from spawned processes, so shell exports do not reach the server; to forward variables explicitly, override the `mcp-paper-search` row in `~/.dsh/profiles/<name>/cordis.patch.yml` (a config override replaces the whole object — see `dsh/README.md` for a complete example).
+
+**Optional skill** with usage guidance (workflow, source table, tool mapping):
+
+```bash
+mkdir -p ~/.dsh/skills && cp -r dsh/skills/paper-search ~/.dsh/skills/
+```
+
+**Uninstall**:
+
+```bash
+npx @deepseek-ai/dsh plugin --profile web remove paper-search-mcp-dsh
+rm -rf ~/.dsh/skills/paper-search
+```
+
+Removing the bundle reconciles it out of the composition automatically; deleting the clone afterwards leaves no trace.
+
+If you already run paper-search-mcp through your own `@deepseek-ai/dsh-mcp-client` row, remove that row (or give one of the two a distinct `serverName`) before adding the bundle — duplicate `serverName`s fail at load. The bundle package version tracks the PyPI release it was tested with; `dsh/README.md` documents alternate launchers (`uv tool run`, `python -m`, `npx`), environment forwarding, and development.
 
 ---
 

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.12', '3.13']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Compile source
+        run: python -m compileall -q paper_search_mcp tests
+
+      - name: Run deterministic tests
+        run: python -m pytest tests/test_package_entrypoints.py tests/test_config_env.py tests/test_unpaywall.py tests/test_unpaywall_source.py tests/test_dsh_bundle.py -q --tb=short

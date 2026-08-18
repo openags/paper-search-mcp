@@ -30,7 +30,7 @@ jobs:
         run: python -m compileall -q paper_search_mcp tests
 
       - name: Run deterministic tests
-        run: python -m pytest tests/test_package_entrypoints.py tests/test_config_env.py tests/test_unpaywall.py tests/test_unpaywall_source.py -q --tb=short
+        run: python -m pytest tests/test_package_entrypoints.py tests/test_config_env.py tests/test_unpaywall.py tests/test_unpaywall_source.py tests/test_dsh_bundle.py -q --tb=short
 
       - name: Build package
         run: uv build

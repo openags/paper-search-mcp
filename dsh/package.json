@@ -1,0 +1,33 @@
+{
+  "name": "paper-search-mcp-dsh",
+  "version": "0.1.4",
+  "description": "DeepSeek Harness (dsh) profile bundle: boots the paper-search-mcp MCP server and exposes its tools as mcp__paper-search__*.",
+  "license": "MIT",
+  "author": "P.S Zhang <pengsongzhang96@gmail.com>",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "mcp",
+    "papers",
+    "academic-search",
+    "arxiv",
+    "pubmed",
+    "semantic-scholar"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openags/paper-search-mcp.git",
+    "directory": "dsh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": ">=0.1.0-rc.6 <0.2.0"
+  }
+}

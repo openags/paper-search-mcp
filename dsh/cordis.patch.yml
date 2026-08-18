@@ -1,0 +1,32 @@
+# paper-search-mcp-dsh bundle patch.
+#
+# Inserts ONE `@deepseek-ai/dsh-mcp-client` row into the profile composition.
+# On profile boot the client spawns the published paper-search-mcp MCP server
+# over stdio and registers every tool on the model's tool set as
+# `mcp__paper-search__<tool>` (e.g. mcp__paper-search__search_papers,
+# mcp__paper-search__download_with_fallback).
+#
+# Optional API keys are picked up by the server itself from
+# `~/.config/paper-search-mcp/.env` — no env block is needed here. DSH
+# deliberately scrubs credential-shaped ambient env vars (and all DSH_*
+# vars) from spawned children, so shell exports do NOT reach the server. If
+# you must forward shell variables, or want a different launcher, override
+# the whole `config` of this row in your profile's cordis.patch.yml; a
+# config override REPLACES the entire object, so restate every field you
+# want to keep. The row id `mcp-paper-search` is the stable anchor for such
+# user overrides.
+#
+# serverName `paper-search` namespaces the tools. It is unique across live
+# dsh-mcp-client instances: if you already run paper-search-mcp through your
+# own client row, remove that row (or set a distinct serverName in one of
+# the two) — a duplicate serverName fails the later instance at load.
+
+- insert:
+    - id: mcp-paper-search
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: paper-search
+        transport: stdio
+        command: uvx
+        args: ['paper-search-mcp']
+        toolCallTimeoutMs: 120000

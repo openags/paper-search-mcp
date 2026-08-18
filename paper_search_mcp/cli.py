@@ -10,6 +10,7 @@ import sys
 from typing import Any, Dict, List
 
 from .config import get_env
+from .tool_cli import add_tool_commands, cmd_tool
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -256,6 +257,10 @@ def build_parser() -> argparse.ArgumentParser:
     # sources
     sub.add_parser("sources", help="List available sources")
 
+    # tool
+    tool_parser = sub.add_parser("tool", help="Run a shared API command")
+    add_tool_commands(tool_parser)
+
     return parser
 
 
@@ -268,6 +273,7 @@ def main() -> None:
         "download": cmd_download,
         "read": cmd_read,
         "sources": cmd_sources,
+        "tool": cmd_tool,
     }
 
     exit_code = asyncio.run(dispatch[args.command](args))

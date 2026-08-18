@@ -3,19 +3,19 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from paper_search_mcp import server
+from paper_search_mcp import api
 from paper_search_mcp.paper import Paper
 
 
 class TestUnpaywallSearchSource(unittest.TestCase):
     def test_search_unpaywall_empty_without_access(self):
-        with patch.object(server.unpaywall_resolver, "has_api_access", return_value=False):
-            result = asyncio.run(server.search_unpaywall("10.1000/test"))
+        with patch.object(api.unpaywall_resolver, "has_api_access", return_value=False):
+            result = asyncio.run(api.search_unpaywall("10.1000/test"))
         self.assertEqual(result, [])
 
     def test_search_unpaywall_empty_without_doi(self):
-        with patch.object(server.unpaywall_resolver, "has_api_access", return_value=True):
-            result = asyncio.run(server.search_unpaywall("machine learning"))
+        with patch.object(api.unpaywall_resolver, "has_api_access", return_value=True):
+            result = asyncio.run(api.search_unpaywall("machine learning"))
         self.assertEqual(result, [])
 
     def test_search_unpaywall_returns_one_record(self):
@@ -31,9 +31,9 @@ class TestUnpaywallSearchSource(unittest.TestCase):
             source="unpaywall",
         )
 
-        with patch.object(server.unpaywall_resolver, "has_api_access", return_value=True), \
-             patch.object(server.unpaywall_resolver, "get_paper_by_doi", return_value=paper):
-            result = asyncio.run(server.search_unpaywall("doi:10.1000/test"))
+        with patch.object(api.unpaywall_resolver, "has_api_access", return_value=True), \
+             patch.object(api.unpaywall_resolver, "get_paper_by_doi", return_value=paper):
+            result = asyncio.run(api.search_unpaywall("doi:10.1000/test"))
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["source"], "unpaywall")

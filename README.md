@@ -3,7 +3,7 @@
 A Model Context Protocol (MCP) server for searching and downloading academic papers from multiple sources. The project follows a free-first strategy: prioritize open and public data sources, support optional API keys when they improve stability or coverage, and keep source-specific connectors extensible for advanced users.
 
 ![PyPI](https://img.shields.io/pypi/v/paper-search-mcp.svg) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
-[![smithery badge](https://smithery.ai/badge/@openags/paper-search-mcp)](https://smithery.ai/server/@openags/paper-search-mcp)
+[![Listed on Skillselion](https://skillselion.com/badge/mcp/tool/io.github.openags/paper-search-mcp.svg)](https://skillselion.com/mcp/tool/io.github.openags/paper-search-mcp)
 
 ---
 

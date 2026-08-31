@@ -38,6 +38,22 @@ class Paper:
         if self.extra is None:
             self.extra = {}
 
+    @staticmethod
+    def _format_date(value) -> str:
+        """Render a date field for serialization.
+
+        Some sources (e.g. Zenodo) populate published_date/updated_date with
+        an already-formatted string instead of a datetime, even though the
+        dataclass types them as Optional[datetime]. Calling .isoformat()
+        unconditionally then crashes with
+        AttributeError: 'str' object has no attribute 'isoformat'.
+        """
+        if not value:
+            return ''
+        if isinstance(value, str):
+            return value
+        return value.isoformat()
+
     def to_dict(self) -> Dict:
         """Convert paper to dictionary format for serialization"""
         return {
@@ -46,11 +62,11 @@ class Paper:
             'authors': '; '.join(self.authors) if self.authors else '',
             'abstract': self.abstract,
             'doi': self.doi,
-            'published_date': self.published_date.isoformat() if self.published_date else '',
+            'published_date': self._format_date(self.published_date),
             'pdf_url': self.pdf_url,
             'url': self.url,
             'source': self.source,
-            'updated_date': self.updated_date.isoformat() if self.updated_date else '',
+            'updated_date': self._format_date(self.updated_date),
             'categories': '; '.join(self.categories) if self.categories else '',
             'keywords': '; '.join(self.keywords) if self.keywords else '',
             'citations': self.citations,

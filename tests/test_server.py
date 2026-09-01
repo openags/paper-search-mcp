@@ -2,6 +2,7 @@
 import unittest
 import asyncio
 import os
+from unittest.mock import AsyncMock, patch
 from paper_search_mcp import server
 
 class TestPaperSearchServer(unittest.TestCase):
@@ -46,6 +47,42 @@ class TestPaperSearchServer(unittest.TestCase):
             self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
             self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
             self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
+
+
+class SearchPapersSourceValidationTests(unittest.IsolatedAsyncioTestCase):
+    @patch("paper_search_mcp.server.search_pubmed", new_callable=AsyncMock)
+    async def test_mixed_sources_preserve_results_and_report_invalid_source(self, search_pubmed):
+        search_pubmed.return_value = [{"paper_id": "1", "title": "ECG", "source": "pubmed"}]
+
+        result = await server.search_papers("electrocardiogram", 1, "pubmed,invalid_source")
+
+        self.assertEqual(result["sources_used"], ["pubmed"])
+        self.assertEqual(result["source_results"], {"pubmed": 1})
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["errors"], {"invalid_source": "Unknown or unavailable source."})
+
+    async def test_invalid_source_only_reports_individual_and_aggregate_errors(self):
+        result = await server.search_papers("electrocardiogram", 1, "invalid_source")
+
+        self.assertEqual(result["sources_used"], [])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(
+            result["errors"],
+            {
+                "invalid_source": "Unknown or unavailable source.",
+                "sources": "No valid sources selected.",
+            },
+        )
+
+    @patch("paper_search_mcp.server.search_pubmed", new_callable=AsyncMock)
+    async def test_valid_source_does_not_add_validation_error(self, search_pubmed):
+        search_pubmed.return_value = [{"paper_id": "1", "title": "ECG", "source": "pubmed"}]
+
+        result = await server.search_papers("electrocardiogram", 1, "pubmed")
+
+        self.assertEqual(result["sources_used"], ["pubmed"])
+        self.assertEqual(result["errors"], {})
+        self.assertEqual(result["total"], 1)
 
 if __name__ == "__main__":
     unittest.main()

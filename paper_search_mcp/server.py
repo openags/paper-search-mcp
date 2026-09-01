@@ -257,15 +257,26 @@ async def search_papers(
     Returns:
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
     """
+    requested_sources = (
+        [part.strip().lower() for part in sources.split(",") if part.strip()]
+        if sources and sources.strip().lower() != "all"
+        else []
+    )
     selected_sources = _parse_sources(sources)
+    errors: Dict[str, str] = {
+        source: "Unknown or unavailable source."
+        for source in requested_sources
+        if source not in ALL_SOURCES
+    }
 
     if not selected_sources:
+        errors["sources"] = "No valid sources selected."
         return {
             "query": query,
             "sources_requested": sources,
             "sources_used": [],
             "source_results": {},
-            "errors": {"sources": "No valid sources selected."},
+            "errors": errors,
             "papers": [],
             "total": 0,
         }
@@ -325,7 +336,6 @@ async def search_papers(
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
 
     source_results: Dict[str, int] = {}
-    errors: Dict[str, str] = {}
     merged_papers: List[Dict[str, Any]] = []
 
     for source_name, output in zip(source_names, source_outputs):

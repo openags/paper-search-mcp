@@ -63,10 +63,25 @@ class TestHALSearcher(unittest.TestCase):
             self.assertEqual(paper.paper_id, "hal:hal-01234567")
             self.assertEqual(paper.title, "HAL Parser Test")
             self.assertEqual(paper.doi, "10.1000/hal-test")
+            self.assertEqual(paper.authors, ["Alice Example", "Bob Example"])
 
     def test_parse_doc_invalid(self):
         paper = self.searcher._parse_doc({})
         self.assertIsNone(paper)
+
+    def test_to_dict_keeps_author_names_intact(self):
+        doc = {
+            "halId_s": "hal-01234567",
+            "title_s": ["HAL Parser Test"],
+            "authFullName_s": ["Alice Example", "Bob Example"],
+        }
+
+        paper = self.searcher._parse_doc(doc)
+        self.assertIsNotNone(paper)
+        if paper:
+            self.assertEqual(
+                paper.to_dict()["authors"], "Alice Example; Bob Example"
+            )
 
 
 if __name__ == "__main__":

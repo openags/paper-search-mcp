@@ -71,10 +71,27 @@ class TestZenodoSearcher(unittest.TestCase):
             self.assertEqual(paper.title, "Zenodo Parser Test")
             self.assertEqual(paper.doi, "10.5281/zenodo.12345")
             self.assertTrue(paper.pdf_url.endswith("paper.pdf"))
+            self.assertEqual(paper.authors, ["Alice Example", "Bob Example"])
 
     def test_parse_record_invalid(self):
         paper = self.searcher._parse_record({"metadata": {}})
         self.assertIsNone(paper)
+
+    def test_to_dict_keeps_author_names_intact(self):
+        hit = {
+            "id": 12345,
+            "metadata": {
+                "title": "Zenodo Parser Test",
+                "creators": [{"name": "Alice Example"}, {"name": "Bob Example"}],
+            },
+        }
+
+        paper = self.searcher._parse_record(hit)
+        self.assertIsNotNone(paper)
+        if paper:
+            self.assertEqual(
+                paper.to_dict()["authors"], "Alice Example; Bob Example"
+            )
 
 
 if __name__ == "__main__":

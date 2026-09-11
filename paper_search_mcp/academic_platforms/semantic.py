@@ -16,6 +16,10 @@ from ..config import get_env
 logger = logging.getLogger(__name__)
 
 
+class SemanticScholarRequestError(RuntimeError):
+    """Raised when a Semantic Scholar API request fails, as opposed to matching nothing."""
+
+
 class SemanticSearcher(PaperSource):
     """Semantic Scholar paper search implementation"""
 
@@ -322,7 +326,13 @@ class SemanticSearcher(PaperSource):
                     logger.error(f"Rate limited by Semantic Scholar API: {error_msg}")
                 else:
                     logger.error(f"Semantic Scholar API error: {error_msg}")
-                return papers
+                status_code = response.get("status_code")
+                reason = response.get("error")
+                if status_code:
+                    reason = f"{reason}, HTTP {status_code}"
+                raise SemanticScholarRequestError(
+                    f"Semantic Scholar API request failed ({reason}): {error_msg}"
+                )
 
             # Check response status code
             if not hasattr(response, "status_code") or response.status_code != 200:
@@ -330,7 +340,9 @@ class SemanticSearcher(PaperSource):
                 logger.error(
                     f"Semantic Scholar search failed with status {status_code}"
                 )
-                return papers
+                raise SemanticScholarRequestError(
+                    f"Semantic Scholar search failed with status {status_code}"
+                )
 
             data = response.json()
             results = data["data"]
@@ -351,6 +363,8 @@ class SemanticSearcher(PaperSource):
                 if paper:
                     papers.append(paper)
 
+        except SemanticScholarRequestError:
+            raise
         except Exception as e:
             logger.error(f"Semantic Scholar search error: {e}")
 

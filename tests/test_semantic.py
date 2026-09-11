@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
+from paper_search_mcp.academic_platforms.semantic import SemanticScholarRequestError, SemanticSearcher
 
 
 def check_semantic_accessible():
@@ -63,6 +63,37 @@ class TestSemanticSearcher(unittest.TestCase):
 
         self.assertIsNotNone(paper)
         self.assertIsNone(paper.published_date)
+
+    def test_search_raises_when_api_request_fails(self):
+        failures = [
+            (
+                {"error": "rate_limited", "status_code": 429, "message": "Too many requests. Please wait before retrying."},
+                "Too many requests",
+            ),
+            (
+                {"error": "http_error", "status_code": 500, "message": "500 Server Error"},
+                "500 Server Error",
+            ),
+            (
+                {"error": "general_error", "message": "Connection refused"},
+                "Connection refused",
+            ),
+            (Mock(status_code=202), "202"),
+        ]
+        for response, expected_message in failures:
+            with self.subTest(expected_message=expected_message):
+                with patch.object(self.searcher, "request_api", return_value=response):
+                    with self.assertRaises(SemanticScholarRequestError) as raised:
+                        self.searcher.search("secret sharing", max_results=3)
+                self.assertIn(expected_message, str(raised.exception))
+
+    def test_search_returns_empty_list_when_nothing_matches(self):
+        for body in ({"total": 0, "offset": 0, "data": []}, {"total": 0, "offset": 0}):
+            with self.subTest(body=body):
+                response = Mock(status_code=200)
+                response.json.return_value = body
+                with patch.object(self.searcher, "request_api", return_value=response):
+                    self.assertEqual(self.searcher.search("secret sharing", max_results=3), [])
 
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_basic(self):

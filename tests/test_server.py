@@ -2,6 +2,7 @@
 import unittest
 import asyncio
 import os
+from unittest.mock import patch
 from paper_search_mcp import server
 
 class TestPaperSearchServer(unittest.TestCase):
@@ -46,6 +47,18 @@ class TestPaperSearchServer(unittest.TestCase):
             self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
             self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
             self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
+
+
+class SearchPapersErrorReportingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_source_is_reported_in_errors_not_as_empty_result(self):
+        failure = {"error": "rate_limited", "status_code": 429, "message": "Too many requests. Please wait before retrying."}
+
+        with patch.object(server.semantic_searcher, "request_api", return_value=failure):
+            result = await server.search_papers("secret sharing", 3, "semantic")
+
+        self.assertEqual(result["source_results"], {"semantic": 0})
+        self.assertIn("semantic", result["errors"])
+        self.assertIn("429", result["errors"]["semantic"])
 
 if __name__ == "__main__":
     unittest.main()

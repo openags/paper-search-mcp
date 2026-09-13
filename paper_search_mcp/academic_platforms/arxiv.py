@@ -1,6 +1,8 @@
 # paper_search_mcp/sources/arxiv.py
 from typing import List
 from datetime import datetime
+import re
+
 import requests
 import feedparser
 import time
@@ -12,7 +14,26 @@ import os
 
 class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers"""
-    BASE_URL = "http://export.arxiv.org/api/query"
+    BASE_URL = "https://export.arxiv.org/api/query"
+
+    # #101: a bare multi-word query sent as ``all:a b c`` hangs on read;
+    # phrase-quote it, but leave already-structured queries alone.
+    _FIELD_PREFIX_RE = re.compile(r"(?:^|\s)(ti|au|abs|co|jr|cat|rn|id|all):", re.IGNORECASE)
+    _BOOLEAN_OP_RE = re.compile(r"(?:^|\s)(AND|OR|ANDNOT)(?:\s|$)")
+
+    @staticmethod
+    def _build_search_query(query: str) -> str:
+        """Build the ``search_query`` param without fighting structured input."""
+        q = (query or "").strip()
+        if (
+            '"' in q
+            or ArxivSearcher._FIELD_PREFIX_RE.search(q)
+            or ArxivSearcher._BOOLEAN_OP_RE.search(q)
+        ):
+            return q
+        if re.search(r"\s", q):
+            return f'all:"{q}"'
+        return f"all:{q}"
 
     def __init__(self):
         self.session = requests.Session()
@@ -23,7 +44,7 @@ class ArxivSearcher(PaperSource):
 
     def search(self, query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Paper]:
         params = {
-            'search_query': f'all:{query}',
+            'search_query': self._build_search_query(query),
             'max_results': max_results,
             'sortBy': sort_by,
             'sortOrder': sort_order,

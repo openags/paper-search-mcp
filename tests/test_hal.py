@@ -62,6 +62,8 @@ class TestHALSearcher(unittest.TestCase):
             self.assertEqual(paper.source, "hal")
             self.assertEqual(paper.paper_id, "hal:hal-01234567")
             self.assertEqual(paper.title, "HAL Parser Test")
+            # #109: authors must stay a list so to_dict() joins names, not chars
+            self.assertEqual(paper.authors, ["Alice Example", "Bob Example"])
             self.assertEqual(paper.doi, "10.1000/hal-test")
 
     def test_parse_doc_invalid(self):

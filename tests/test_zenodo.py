@@ -69,6 +69,8 @@ class TestZenodoSearcher(unittest.TestCase):
         if paper:
             self.assertEqual(paper.source, "zenodo")
             self.assertEqual(paper.title, "Zenodo Parser Test")
+            # #109: authors must stay a list so to_dict() joins names, not chars
+            self.assertEqual(paper.authors, ["Alice Example", "Bob Example"])
             self.assertEqual(paper.doi, "10.5281/zenodo.12345")
             self.assertTrue(paper.pdf_url.endswith("paper.pdf"))
 

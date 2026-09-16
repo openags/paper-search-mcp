@@ -4,6 +4,8 @@ import asyncio
 import os
 import logging
 import re
+import threading
+import time
 import httpx
 from mcp.server.fastmcp import FastMCP
 from .config import get_env
@@ -1376,7 +1378,31 @@ if acm_searcher is not None:
         return acm_searcher.read_paper(paper_id, save_path)
 
 
+def _exit_when_orphaned(poll_seconds: float = 5.0) -> None:
+    """Exit if the MCP client that spawned this stdio server goes away.
+
+    A stdio server is owned by exactly one client. When that client dies without
+    closing the pipe cleanly, ``mcp.run`` keeps blocking on stdin and the process
+    survives indefinitely, re-adopted by init. They accumulate: nine of these had
+    piled up on one developer machine, the oldest running for over a day.
+
+    Watch for reparenting and leave.
+    """
+    original_ppid = os.getppid()
+    while True:
+        time.sleep(poll_seconds)
+        ppid = os.getppid()
+        if ppid == 1 or ppid != original_ppid:
+            logger.info(
+                "MCP client gone (ppid %s -> %s); shutting down", original_ppid, ppid
+            )
+            os._exit(0)
+
+
 def main():
+    threading.Thread(
+        target=_exit_when_orphaned, name="orphan-watchdog", daemon=True
+    ).start()
     mcp.run(transport="stdio")
 
 

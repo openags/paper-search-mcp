@@ -1400,10 +1400,42 @@ def _exit_when_orphaned(poll_seconds: float = 5.0) -> None:
 
 
 def main():
-    threading.Thread(
-        target=_exit_when_orphaned, name="orphan-watchdog", daemon=True
-    ).start()
-    mcp.run(transport="stdio")
+    """Run over stdio (one process per client) or shared streamable-http.
+
+    stdio stays the default and is the right choice for a single client. Set
+    PAPER_SEARCH_TRANSPORT=streamable-http to instead run one long-lived server
+    that several MCP clients connect to, which avoids a process — and its
+    interpreter and imports — per session.
+
+    PAPER_SEARCH_HOST and PAPER_SEARCH_PORT select the bind address, defaulting
+    to FastMCP's own 127.0.0.1:8000.
+    """
+    transport = os.environ.get("PAPER_SEARCH_TRANSPORT", "stdio").strip()
+
+    if transport == "stdio":
+        # Only meaningful for stdio: an http server has no owning client to outlive.
+        threading.Thread(
+            target=_exit_when_orphaned, name="orphan-watchdog", daemon=True
+        ).start()
+        mcp.run(transport="stdio")
+        return
+
+    if transport not in ("streamable-http", "sse"):
+        raise SystemExit(
+            f"PAPER_SEARCH_TRANSPORT={transport!r} is not one of "
+            "stdio, streamable-http, sse"
+        )
+
+    host = os.environ.get("PAPER_SEARCH_HOST")
+    port = os.environ.get("PAPER_SEARCH_PORT")
+    if host:
+        mcp.settings.host = host
+    if port:
+        mcp.settings.port = int(port)
+    logger.info(
+        "serving %s on %s:%s", transport, mcp.settings.host, mcp.settings.port
+    )
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":

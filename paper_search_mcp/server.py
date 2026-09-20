@@ -134,6 +134,15 @@ def _parse_sources(sources: str) -> List[str]:
     return [source for source in normalized if source in ALL_SOURCES]
 
 
+def _invalid_sources(sources: str) -> List[str]:
+    """Return distinct requested source names that are unknown or unavailable."""
+    if not sources or sources.strip().lower() == "all":
+        return []
+
+    normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
+    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES))
+
+
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
     doi = (paper.get("doi") or "").strip().lower()
     if doi:
@@ -258,14 +267,19 @@ async def search_papers(
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
     """
     selected_sources = _parse_sources(sources)
+    invalid_sources = _invalid_sources(sources)
+    errors: Dict[str, str] = {
+        source: "Unknown or unavailable source." for source in invalid_sources
+    }
 
     if not selected_sources:
+        errors["sources"] = "No valid sources selected."
         return {
             "query": query,
             "sources_requested": sources,
             "sources_used": [],
             "source_results": {},
-            "errors": {"sources": "No valid sources selected."},
+            "errors": errors,
             "papers": [],
             "total": 0,
         }
@@ -325,7 +339,6 @@ async def search_papers(
     source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
 
     source_results: Dict[str, int] = {}
-    errors: Dict[str, str] = {}
     merged_papers: List[Dict[str, Any]] = []
 
     for source_name, output in zip(source_names, source_outputs):
@@ -760,7 +773,7 @@ async def download_with_fallback(
     doi: str = "",
     title: str = "",
     save_path: str = "./downloads",
-    use_scihub: bool = True,
+    use_scihub: bool = False,
     scihub_base_url: str = "https://sci-hub.se",
 ) -> str:
     """Try source-native download, OA repositories, Unpaywall, then optional Sci-Hub.
@@ -771,7 +784,7 @@ async def download_with_fallback(
         doi: Optional DOI used for repository/unpaywall/Sci-Hub fallback.
         title: Optional title used for repository/Sci-Hub fallback when DOI is unavailable.
         save_path: Directory to save downloaded files.
-        use_scihub: Whether to fallback to Sci-Hub after OA attempts fail.
+        use_scihub: Whether to fallback to Sci-Hub after OA attempts fail. Disabled by default.
         scihub_base_url: Sci-Hub mirror URL for fallback.
     Returns:
         Download path on success or explanatory error message.

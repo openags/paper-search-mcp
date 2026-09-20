@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlencode
 
 import requests
@@ -93,7 +93,10 @@ class BioRxivSearcher(PaperSource):
                 if not doi or not title:
                     raise ValueError("missing DOI or title")
 
-                published_date = date.fromisoformat(item["date"])
+                published_date = datetime.combine(
+                    date.fromisoformat(item["date"]),
+                    time.min,
+                )
                 version = str(item.get("version") or "1")
                 authors = [
                     author.strip()

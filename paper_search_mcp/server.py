@@ -4,6 +4,8 @@ import logging
 import os
 import re
 from collections.abc import Awaitable
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import BoundedSemaphore
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -38,6 +40,44 @@ mcp = FastMCP("paper_search_server")
 logger = logging.getLogger(__name__)
 GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS = 20.0
 SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS = 45.0
+SEARCH_EXECUTOR_MAX_WORKERS = 32
+
+
+class SearchExecutorSaturatedError(RuntimeError):
+    """Raised instead of queuing unbounded work behind blocked providers."""
+
+
+class _BoundedSearchExecutor:
+    """Keep timed-out blocking searches isolated in a fixed-size worker pool."""
+
+    def __init__(self, max_workers: int):
+        self._max_workers = max_workers
+        self._slots = BoundedSemaphore(max_workers)
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="paper-search",
+        )
+
+    def submit(self, function, /, *args, **kwargs) -> Future:
+        if not self._slots.acquire(blocking=False):
+            raise SearchExecutorSaturatedError(
+                "search worker capacity is exhausted by unfinished provider calls"
+            )
+
+        try:
+            future = self._executor.submit(function, *args, **kwargs)
+        except BaseException:
+            self._slots.release()
+            raise
+
+        future.add_done_callback(lambda _future: self._slots.release())
+        return future
+
+    def shutdown(self, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+
+_SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -68,12 +108,13 @@ ssrn_searcher = SSRNSearcher()
 # Asynchronous helper to adapt synchronous searchers
 # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
-    if 'year' in kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, year=kwargs['year'])
-    elif kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
-    else:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
+    search_future = _SEARCH_EXECUTOR.submit(
+        searcher.search,
+        query,
+        max_results=max_results,
+        **kwargs,
+    )
+    papers = await asyncio.wrap_future(search_future)
     return [paper.to_dict() for paper in papers]
 
 
@@ -472,7 +513,12 @@ async def search_google_scholar(query: str, max_results: int = 10) -> List[Dict]
     try:
         papers = await _run_search_with_timeout(
             "google_scholar",
-            async_search(google_scholar_searcher, query, max_results),
+            async_search(
+                google_scholar_searcher,
+                query,
+                max_results,
+                timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS - 1.0,
+            ),
             timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
         )
     except TimeoutError:

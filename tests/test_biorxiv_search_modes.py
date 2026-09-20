@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import Mock
 
 import pytest
@@ -35,6 +36,8 @@ def test_category_search_uses_interval_json_endpoint(searcher):
     papers = searcher.search("Cell Biology", max_results=1, days=30)
 
     assert len(papers) == 1
+    assert isinstance(papers[0].published_date, datetime)
+    assert papers[0].to_dict()["published_date"] == "2024-01-01T00:00:00"
     called_url = searcher.session.get.call_args.args[0]
     assert "/0/json?category=cell_biology" in called_url
 

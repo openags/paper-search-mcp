@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 - [Overview](#overview)
 - [Project Principles](#project-principles)
+- [MCP Authorization Compatibility](#mcp-authorization-compatibility)
 - [Features](#features)
 - [Source Strategy](#source-strategy)
 - [Sci-Hub Notice](#sci-hub-notice)
@@ -42,6 +43,14 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Optional API Keys**: API keys are supported only when they improve stability, rate limits, or metadata quality. The MCP should still be usable without them whenever possible.
 - **LLM-Friendly Retrieval**: Search results should be standardized, deduplicated, and as complete as possible for downstream LLM workflows.
 - **Source Transparency**: Different sources have different strengths. The MCP should make those tradeoffs explicit instead of pretending every source supports full-text retrieval.
+
+---
+
+## MCP Authorization Compatibility
+
+The bundled MCP server currently runs locally over `stdio`. It does not implement OAuth 2.1 protected-resource metadata, bearer-token validation, scopes, or HTTP 401/403 authorization responses.
+
+For a remote protected deployment, put the server behind an MCP/HTTP gateway or reverse proxy that enforces OAuth and forwards only authorized requests. Native authenticated HTTP transport requires a separate transport and security design and is intentionally outside this small stabilization batch.
 
 ---
 
@@ -182,6 +191,7 @@ SSRN integration remains compliance-first: it only attempts direct public PDF li
 
 Sci-Hub support can remain available as an optional connector for users who explicitly choose to enable it, but it should not be treated as the default or recommended full-text path.
 
+- `download_with_fallback` leaves Sci-Hub disabled by default. Pass `use_scihub=true` only when you explicitly choose to use it.
 - Availability is unstable and mirrors change frequently.
 - Legal and policy risks vary by jurisdiction.
 - README and tool descriptions should clearly state that users are responsible for enabling and using it.

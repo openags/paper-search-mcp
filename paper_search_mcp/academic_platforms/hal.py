@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional, Dict, Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import requests
 
-from .base import PaperSource
 from ..paper import Paper
+from .base import PaperSource
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +225,9 @@ class HALSearcher(PaperSource):
 
             authors_field = doc.get("authFullName_s", [])
             if isinstance(authors_field, list):
-                authors = ", ".join(authors_field)
+                authors = [str(author) for author in authors_field if author]
             else:
-                authors = str(authors_field)
+                authors = [str(authors_field)] if authors_field else []
 
             abstract_field = doc.get("abstract_s", [])
             if isinstance(abstract_field, list):
@@ -239,9 +240,19 @@ class HALSearcher(PaperSource):
                 doi = doi[0] if doi else ""
 
             year = doc.get("publicationDateY_i") or doc.get("producedDateY_i", "")
-            pub_date = (
-                str(year) if year else (doc.get("submittedDate_s", "") or "")[:10]
-            )
+            published_date = None
+            try:
+                if year:
+                    published_date = datetime(int(year), 1, 1)
+                else:
+                    submitted_date = (doc.get("submittedDate_s", "") or "")[:10]
+                    if submitted_date:
+                        try:
+                            published_date = datetime.fromisoformat(submitted_date)
+                        except ValueError:
+                            published_date = datetime(int(submitted_date[:4]), 1, 1)
+            except (TypeError, ValueError):
+                logger.debug("HAL: could not parse publication date for %s", hal_id)
 
             pdf_url = doc.get("fileMain_s", "") or ""
             record_url = doc.get("uri_s", f"https://hal.archives-ouvertes.fr/{hal_id}")
@@ -252,7 +263,7 @@ class HALSearcher(PaperSource):
                 authors=authors,
                 abstract=abstract.strip(),
                 doi=doi,
-                published_date=str(pub_date),
+                published_date=published_date,
                 pdf_url=pdf_url,
                 url=record_url,
                 source="hal",

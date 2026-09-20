@@ -23,6 +23,11 @@ The human contributors above are included as co-authors of the follow-up
 attribution commit so their GitHub contribution credit is present on the
 default branch without rewriting published history.
 
+Their original PR commits are also connected to the default-branch history by
+a tree-preserving provenance merge. The merge keeps the already reviewed code
+tree unchanged while making the real, original commit authors reachable from
+the default branch for repository contributor statistics.
+
 ## Consolidation PR #116
 
 | Source PR | Contributor | Incorporated contribution |

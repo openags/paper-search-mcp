@@ -1,42 +1,83 @@
 # paper_search_mcp/server.py
-from typing import List, Dict, Optional, Any
 import asyncio
-import os
 import logging
+import os
 import re
+from collections.abc import Awaitable
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import BoundedSemaphore
+from typing import Any, Dict, List, Optional
+
 import httpx
 from mcp.server.fastmcp import FastMCP
-from .config import get_env
+
 from .academic_platforms.arxiv import ArxivSearcher
-from .academic_platforms.pubmed import PubMedSearcher
+from .academic_platforms.base_search import BASESearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
-from .academic_platforms.medrxiv import MedRxivSearcher
-from .academic_platforms.google_scholar import GoogleScholarSearcher
-from .academic_platforms.iacr import IACRSearcher
-from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.citeseerx import CiteSeerXSearcher
+from .academic_platforms.core import CORESearcher
 from .academic_platforms.crossref import CrossRefSearcher
+from .academic_platforms.dblp import DBLPSearcher
+from .academic_platforms.doaj import DOAJSearcher
+from .academic_platforms.europepmc import EuropePMCSearcher
+from .academic_platforms.google_scholar import GoogleScholarSearcher
+from .academic_platforms.hal import HALSearcher
+from .academic_platforms.iacr import IACRSearcher
+from .academic_platforms.medrxiv import MedRxivSearcher
+from .academic_platforms.openaire import OpenAiresearcher
 from .academic_platforms.openalex import OpenAlexSearcher
 from .academic_platforms.pmc import PMCSearcher
-from .academic_platforms.core import CORESearcher
-from .academic_platforms.europepmc import EuropePMCSearcher
+from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
-from .academic_platforms.dblp import DBLPSearcher
-from .academic_platforms.openaire import OpenAiresearcher
-from .academic_platforms.citeseerx import CiteSeerXSearcher
-from .academic_platforms.doaj import DOAJSearcher
-from .academic_platforms.base_search import BASESearcher
+from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.ssrn import SSRNSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
-from .academic_platforms.hal import HALSearcher
-from .academic_platforms.ssrn import SSRNSearcher
-from .utils import extract_doi
-
-# from .academic_platforms.hub import SciHubSearcher
-from .paper import Paper
+from .config import get_env
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
 logger = logging.getLogger(__name__)
+GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS = 20.0
+SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS = 45.0
+SEARCH_EXECUTOR_MAX_WORKERS = 32
+
+
+class SearchExecutorSaturatedError(RuntimeError):
+    """Raised instead of queuing unbounded work behind blocked providers."""
+
+
+class _BoundedSearchExecutor:
+    """Keep timed-out blocking searches isolated in a fixed-size worker pool."""
+
+    def __init__(self, max_workers: int):
+        self._max_workers = max_workers
+        self._slots = BoundedSemaphore(max_workers)
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="paper-search",
+        )
+
+    def submit(self, function, /, *args, **kwargs) -> Future:
+        if not self._slots.acquire(blocking=False):
+            raise SearchExecutorSaturatedError(
+                "search worker capacity is exhausted by unfinished provider calls"
+            )
+
+        try:
+            future = self._executor.submit(function, *args, **kwargs)
+        except BaseException:
+            self._slots.release()
+            raise
+
+        future.add_done_callback(lambda _future: self._slots.release())
+        return future
+
+    def shutdown(self, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+
+_SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -67,13 +108,31 @@ ssrn_searcher = SSRNSearcher()
 # Asynchronous helper to adapt synchronous searchers
 # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
-    if 'year' in kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, year=kwargs['year'])
-    elif kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
-    else:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
+    search_future = _SEARCH_EXECUTOR.submit(
+        searcher.search,
+        query,
+        max_results=max_results,
+        **kwargs,
+    )
+    papers = await asyncio.wrap_future(search_future)
     return [paper.to_dict() for paper in papers]
+
+
+async def _run_search_with_timeout(
+    source_name: str,
+    search_task: Awaitable[List[Dict]],
+    timeout_seconds: Optional[float] = None,
+) -> List[Dict]:
+    """Run one source without allowing it to stall a multi-source request."""
+    if timeout_seconds is None:
+        timeout_seconds = SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS
+
+    try:
+        return await asyncio.wait_for(search_task, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"search for source '{source_name}' timed out after {timeout_seconds:g} seconds"
+        ) from exc
 
 
 ALL_SOURCES = [
@@ -253,7 +312,7 @@ async def search_papers(
     query: str,
     max_results_per_source: int = 5,
     sources: str = "all",
-    year: Optional[str] = None,
+    year: str = "",
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -336,7 +395,13 @@ async def search_papers(
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
-    source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
+    source_outputs = await asyncio.gather(
+        *(
+            _run_search_with_timeout(source_name, search_task)
+            for source_name, search_task in task_map.items()
+        ),
+        return_exceptions=True,
+    )
 
     source_results: Dict[str, int] = {}
     merged_papers: List[Dict[str, Any]] = []
@@ -403,12 +468,12 @@ async def search_pubmed(query: str, max_results: int = 10, sort: str = 'relevanc
 async def search_biorxiv(query: str, max_results: int = 10) -> List[Dict]:
     """Search academic papers from bioRxiv.
 
-    Note: bioRxiv API filters by category name within the last 30 days, not full-text
-    keyword search. Use a category keyword such as 'bioinformatics', 'neuroscience',
-    'cell biology', etc.
+    Note: bioRxiv does not provide full-text keyword search. The query may be a DOI,
+    a date range such as '2024-01-01/2024-01-31', a category such as
+    'bioinformatics', or an empty string for recent papers.
 
     Args:
-        query: Category name to filter by (e.g., 'bioinformatics', 'neuroscience').
+        query: DOI, date range, category name, or an empty string for recent papers.
         max_results: Maximum number of papers to return (default: 10).
     Returns:
         List of paper metadata in dictionary format.
@@ -445,7 +510,24 @@ async def search_google_scholar(query: str, max_results: int = 10) -> List[Dict]
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(google_scholar_searcher, query, max_results)
+    try:
+        papers = await _run_search_with_timeout(
+            "google_scholar",
+            async_search(
+                google_scholar_searcher,
+                query,
+                max_results,
+                timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS - 1.0,
+            ),
+            timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Google Scholar search timed out after %.1fs for query=%r; returning no results.",
+            GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+            query,
+        )
+        return []
     return papers if papers else []
 
 
@@ -616,7 +698,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def search_semantic(query: str, year: Optional[str] = None, max_results: int = 10) -> List[Dict]:
+async def search_semantic(query: str, year: str = "", max_results: int = 10) -> List[Dict]:
     """Search academic papers from Semantic Scholar.
 
     Args:
@@ -627,7 +709,7 @@ async def search_semantic(query: str, year: Optional[str] = None, max_results: i
         List of paper metadata in dictionary format.
     """
     kwargs = {}
-    if year is not None:
+    if year:
         kwargs['year'] = year
     papers = await async_search(semantic_searcher, query, max_results, **kwargs)
     return papers if papers else []
@@ -683,9 +765,9 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
 async def search_crossref(
     query: str,
     max_results: int = 10,
-    filter: Optional[str] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
+    filter: str = "",
+    sort: str = "",
+    order: str = "",
 ) -> List[Dict]:
     """Search academic papers from CrossRef database.
     
@@ -703,7 +785,11 @@ async def search_crossref(
     Returns:
         List of paper metadata in dictionary format.
     """
-    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v is not None}
+    extra = {
+        key: value
+        for key, value in {"filter": filter, "sort": sort, "order": order}.items()
+        if value
+    }
     papers = await async_search(crossref_searcher, query, max_results, **extra)
     return papers if papers else []
 

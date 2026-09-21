@@ -2,23 +2,52 @@ import asyncio
 import os
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from paper_search_mcp import server
-from paper_search_mcp.server import (
-    _title_similarity,
-    _pdf_matches_expected,
-    _download_from_url,
-    _try_repository_fallback,
-)
+
+
+class _FakeAsyncClient:
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def get(self, url):
+        return self.response
+
+
+def _empty_searcher():
+    return SimpleNamespace(search=lambda query, max_results=3: [])
 
 
 class TestDownloadWithFallback(unittest.TestCase):
     def test_scihub_is_disabled_by_default(self):
-        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
-             patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=(None, "repo failed"))), \
-             patch.object(server.unpaywall_resolver, "resolve_best_pdf_url", return_value=None), \
-             patch("paper_search_mcp.server.SciHubFetcher.download_pdf", side_effect=AssertionError("Sci-Hub should not be called")):
+        with (
+            patch.object(
+                server.arxiv_searcher,
+                "download_pdf",
+                side_effect=Exception("primary failed"),
+            ),
+            patch(
+                "paper_search_mcp.server._try_repository_fallback",
+                new=AsyncMock(return_value=(None, "repo failed")),
+            ),
+            patch.object(
+                server.unpaywall_resolver,
+                "resolve_best_pdf_url",
+                return_value=None,
+            ),
+            patch(
+                "paper_search_mcp.server.SciHubFetcher.download_pdf",
+                side_effect=AssertionError("Sci-Hub should not be called"),
+            ),
+        ):
             result = asyncio.run(
                 server.download_with_fallback(
                     source="arxiv",
@@ -31,9 +60,21 @@ class TestDownloadWithFallback(unittest.TestCase):
         self.assertIn("OA fallback chain", result)
 
     def test_repository_fallback_before_scihub(self):
-        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
-             patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=("/tmp/repo.pdf", ""))), \
-             patch("paper_search_mcp.server.SciHubFetcher.download_pdf", side_effect=AssertionError("Sci-Hub should not be called")):
+        with (
+            patch.object(
+                server.arxiv_searcher,
+                "download_pdf",
+                side_effect=Exception("primary failed"),
+            ),
+            patch(
+                "paper_search_mcp.server._try_repository_fallback",
+                new=AsyncMock(return_value=("/tmp/repo.pdf", "")),
+            ),
+            patch(
+                "paper_search_mcp.server.SciHubFetcher.download_pdf",
+                side_effect=AssertionError("Sci-Hub should not be called"),
+            ),
+        ):
             result = asyncio.run(
                 server.download_with_fallback(
                     source="arxiv",
@@ -43,28 +84,60 @@ class TestDownloadWithFallback(unittest.TestCase):
                     use_scihub=True,
                 )
             )
-            self.assertEqual(result, "/tmp/repo.pdf")
+        self.assertEqual(result, "/tmp/repo.pdf")
 
     def test_unpaywall_fallback_after_repositories(self):
-        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
-             patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=(None, "repo failed"))), \
-             patch.object(server.unpaywall_resolver, "resolve_best_pdf_url", return_value="https://example.org/oa.pdf"), \
-             patch("paper_search_mcp.server._download_from_url", new=AsyncMock(return_value="/tmp/unpaywall.pdf")):
+        with (
+            patch.object(
+                server.arxiv_searcher,
+                "download_pdf",
+                side_effect=Exception("primary failed"),
+            ),
+            patch(
+                "paper_search_mcp.server._try_repository_fallback",
+                new=AsyncMock(return_value=(None, "repo failed")),
+            ),
+            patch.object(
+                server.unpaywall_resolver,
+                "resolve_best_pdf_url",
+                return_value="https://example.org/oa.pdf",
+            ),
+            patch(
+                "paper_search_mcp.server._download_from_url",
+                new=AsyncMock(return_value="/tmp/unpaywall.pdf"),
+            ) as download,
+        ):
             result = asyncio.run(
                 server.download_with_fallback(
                     source="arxiv",
                     paper_id="1234.5678",
                     doi="10.1000/test",
-                    title="test",
+                    title="test title",
                     use_scihub=True,
                 )
             )
-            self.assertEqual(result, "/tmp/unpaywall.pdf")
+
+        self.assertEqual(result, "/tmp/unpaywall.pdf")
+        self.assertEqual(download.await_args.kwargs["expected_title"], "test title")
+        self.assertEqual(download.await_args.kwargs["expected_doi"], "10.1000/test")
 
     def test_no_scihub_returns_oa_chain_error(self):
-        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
-             patch("paper_search_mcp.server._try_repository_fallback", new=AsyncMock(return_value=(None, "repo failed"))), \
-             patch.object(server.unpaywall_resolver, "resolve_best_pdf_url", return_value=None):
+        with (
+            patch.object(
+                server.arxiv_searcher,
+                "download_pdf",
+                side_effect=Exception("primary failed"),
+            ),
+            patch(
+                "paper_search_mcp.server._try_repository_fallback",
+                new=AsyncMock(return_value=(None, "repo failed")),
+            ),
+            patch.object(
+                server.unpaywall_resolver,
+                "resolve_best_pdf_url",
+                return_value=None,
+            ),
+        ):
             result = asyncio.run(
                 server.download_with_fallback(
                     source="arxiv",
@@ -74,297 +147,467 @@ class TestDownloadWithFallback(unittest.TestCase):
                     use_scihub=False,
                 )
             )
-            self.assertIn("OA fallback chain", result)
+        self.assertIn("OA fallback chain", result)
 
-    def test_download_with_fallback_propagates_title_to_repository_fallback(self):
-        """Regression: download_with_fallback must forward the title to
-        _try_repository_fallback so the latter can apply title-match filtering."""
+    def test_title_is_propagated_to_repository_validation(self):
         captured = {}
 
-        async def fake_repo_fallback(doi, title, save_path, expected_title=""):
-            captured["expected_title"] = expected_title
-            captured["title"] = title
-            return None, "intentional fail"
+        async def fake_repository(doi, title, save_path, expected_title=None):
+            captured.update(title=title, expected_title=expected_title)
+            return None, "intentional failure"
 
-        with patch.object(server.arxiv_searcher, "download_pdf", side_effect=Exception("primary failed")), \
-             patch("paper_search_mcp.server._try_repository_fallback", new=fake_repo_fallback), \
-             patch.object(server.unpaywall_resolver, "resolve_best_pdf_url", return_value=None):
+        with (
+            patch.object(
+                server.arxiv_searcher,
+                "download_pdf",
+                side_effect=Exception("primary failed"),
+            ),
+            patch(
+                "paper_search_mcp.server._try_repository_fallback",
+                new=fake_repository,
+            ),
+            patch.object(
+                server.unpaywall_resolver,
+                "resolve_best_pdf_url",
+                return_value=None,
+            ),
+        ):
             asyncio.run(
                 server.download_with_fallback(
                     source="arxiv",
                     paper_id="1234.5678",
                     doi="10.1000/test",
                     title="Myodural bridge and chronic headache",
-                    use_scihub=False,
                 )
             )
-        self.assertEqual(captured.get("expected_title"), "Myodural bridge and chronic headache")
-        self.assertEqual(captured.get("title"), "Myodural bridge and chronic headache")
+
+        self.assertEqual(captured["title"], "Myodural bridge and chronic headache")
+        self.assertEqual(
+            captured["expected_title"],
+            "Myodural bridge and chronic headache",
+        )
+
+    def test_scihub_fallback_rejects_and_removes_mismatched_pdf(self):
+        with tempfile.TemporaryDirectory() as save_path:
+            downloaded_path = os.path.join(save_path, "wrong.pdf")
+            with open(downloaded_path, "wb") as downloaded:
+                downloaded.write(b"%PDF-1.7\nwrong paper")
+
+            with (
+                patch.object(
+                    server.arxiv_searcher,
+                    "download_pdf",
+                    side_effect=Exception("primary failed"),
+                ),
+                patch(
+                    "paper_search_mcp.server._try_repository_fallback",
+                    new=AsyncMock(return_value=(None, "repo failed")),
+                ),
+                patch.object(
+                    server.unpaywall_resolver,
+                    "resolve_best_pdf_url",
+                    return_value=None,
+                ),
+                patch(
+                    "paper_search_mcp.server.SciHubFetcher.download_pdf",
+                    return_value=downloaded_path,
+                ),
+                patch.object(
+                    server,
+                    "_pdf_matches_expected",
+                    return_value=False,
+                ) as verifier,
+            ):
+                result = asyncio.run(
+                    server.download_with_fallback(
+                        source="arxiv",
+                        paper_id="1234.5678",
+                        doi="10.1000/test",
+                        title="Expected paper title",
+                        save_path=save_path,
+                        use_scihub=True,
+                    )
+                )
+
+            self.assertIn("did not match", result)
+            self.assertFalse(os.path.exists(downloaded_path))
+            verifier.assert_called_once_with(
+                downloaded_path,
+                "Expected paper title",
+                "10.1000/test",
+            )
+
+    def test_scihub_fallback_returns_verified_pdf(self):
+        with tempfile.TemporaryDirectory() as save_path:
+            downloaded_path = os.path.join(save_path, "right.pdf")
+            with open(downloaded_path, "wb") as downloaded:
+                downloaded.write(b"%PDF-1.7\nright paper")
+
+            with (
+                patch.object(
+                    server.arxiv_searcher,
+                    "download_pdf",
+                    side_effect=Exception("primary failed"),
+                ),
+                patch(
+                    "paper_search_mcp.server._try_repository_fallback",
+                    new=AsyncMock(return_value=(None, "repo failed")),
+                ),
+                patch.object(
+                    server.unpaywall_resolver,
+                    "resolve_best_pdf_url",
+                    return_value=None,
+                ),
+                patch(
+                    "paper_search_mcp.server.SciHubFetcher.download_pdf",
+                    return_value=downloaded_path,
+                ),
+                patch.object(
+                    server,
+                    "_pdf_matches_expected",
+                    return_value=True,
+                ),
+            ):
+                result = asyncio.run(
+                    server.download_with_fallback(
+                        source="arxiv",
+                        paper_id="1234.5678",
+                        doi="10.1000/test",
+                        title="Expected paper title",
+                        save_path=save_path,
+                        use_scihub=True,
+                    )
+                )
+
+            self.assertEqual(result, downloaded_path)
+            self.assertTrue(os.path.exists(downloaded_path))
 
 
-class TestRepositoryFallbackNumericPaperId(unittest.TestCase):
-    """Regression test for issue #57: _try_repository_fallback crashed when a
-    repository connector returned a Paper whose paper_id was a non-string
-    (int) value, because the code called .strip() on it directly."""
+class TestRepositoryFallback(unittest.TestCase):
+    def _run_with_searcher(self, searcher, *, title, expected_title=None):
+        with (
+            patch.object(server, "openaire_searcher", searcher),
+            patch.object(server, "core_searcher", _empty_searcher()),
+            patch.object(server, "europepmc_searcher", _empty_searcher()),
+            patch.object(server, "pmc_searcher", _empty_searcher()),
+            patch.object(
+                server,
+                "_download_from_url",
+                new=AsyncMock(return_value="/tmp/ok.pdf"),
+            ) as download,
+        ):
+            result = asyncio.run(
+                server._try_repository_fallback(
+                    doi="10.1000/test",
+                    title=title,
+                    save_path="/tmp",
+                    expected_title=expected_title,
+                )
+            )
+        return result, download
 
     def test_numeric_paper_id_does_not_crash(self):
-        class FakePaper:
-            pdf_url = "https://example.org/oa.pdf"
-            paper_id = 12345  # int, not str — caused 'int' object has no attribute 'strip'
-            title = "some title that matches the expected title"
+        paper = SimpleNamespace(
+            pdf_url="https://example.org/oa.pdf",
+            paper_id=12345,
+            title="The requested title",
+            doi="10.1000/test",
+        )
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
 
-        fake_searcher = type(
-            "S", (), {"search": staticmethod(lambda q, max_results=3: [FakePaper()])}
+        (result, error), download = self._run_with_searcher(
+            searcher,
+            title="The requested title",
         )
 
-        # Patch one of the repository searchers to return our FakePaper.
-        with patch.object(server, "openaire_searcher", fake_searcher), \
-             patch("paper_search_mcp.server._download_from_url", new=AsyncMock(return_value="/tmp/ok.pdf")):
-            result, err = asyncio.run(
-                server._try_repository_fallback(
-                    doi="10.1000/test",
-                    title="some title that matches the expected title",
-                    save_path="/tmp",
-                    expected_title="some title that matches the expected title",
-                )
-            )
-            self.assertEqual(result, "/tmp/ok.pdf")
-            self.assertEqual(err, "")
+        self.assertEqual(result, "/tmp/ok.pdf")
+        self.assertEqual(error, "")
+        self.assertIn("12345", download.await_args.args[2])
 
+    def test_dissimilar_title_is_skipped_without_network_fallthrough(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.org/wrong.pdf",
+            paper_id="wrong",
+            title="Solar cells and lead-free perovskite chemistry",
+            doi="10.9999/wrong",
+        )
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
 
-class TestRepositoryFallbackTitleMatching(unittest.TestCase):
-    """Fix 3: when a repository returns a candidate paper whose title is too
-    dissimilar from the expected one, we must skip it instead of blindly
-    downloading — this is the cause of the 'phantom PDF' bug where a search
-    for 'myodural bridge' returned an unrelated chemistry paper's PDF."""
-
-    def _make_fake_paper(self, title, pdf_url="https://example.org/oa.pdf"):
-        class FakePaper:
-            def __init__(self, t, u):
-                self.title = t
-                self.pdf_url = u
-                self.paper_id = "fake-id"
-        return FakePaper(title, pdf_url)
-
-    def test_dissimilar_title_is_skipped(self):
-        """A fallback paper titled 'Solar cells chemistry' must NOT be accepted
-        when we asked for 'Myodural bridge and chronic headache'."""
-        fake_searcher = type(
-            "S", (),
-            {"search": staticmethod(lambda q, max_results=3: [
-                self._make_fake_paper("Solar cells chemistry and lead-free perovskites")
-            ])},
+        (result, error), download = self._run_with_searcher(
+            searcher,
+            title="Myodural bridge and chronic headache",
         )
 
-        download_calls = []
-
-        async def fake_download(pdf_url, save_path, filename_hint, expected_title="", expected_doi=""):
-            download_calls.append((pdf_url, expected_title))
-            return "/tmp/should-not-happen.pdf"
-
-        with patch.object(server, "openaire_searcher", fake_searcher), \
-             patch("paper_search_mcp.server._download_from_url", new=fake_download):
-            result, err = asyncio.run(
-                server._try_repository_fallback(
-                    doi="10.1000/test",
-                    title="Myodural bridge and chronic headache",
-                    save_path="/tmp",
-                    expected_title="Myodural bridge and chronic headache",
-                )
-            )
-        self.assertIsNone(result, "dissimilar title must be skipped, not downloaded")
-        self.assertEqual(download_calls, [], "_download_from_url must not be called for dissimilar title")
+        self.assertIsNone(result)
+        self.assertIn("did not match", error)
+        download.assert_not_awaited()
 
     def test_similar_title_is_downloaded(self):
-        """A fallback paper with a close title (e.g. same paper, slightly
-        different formatting) must still be downloaded."""
-        fake_searcher = type(
-            "S", (),
-            {"search": staticmethod(lambda q, max_results=3: [
-                self._make_fake_paper("The Myodural Bridge and Chronic Headache: An Experimental Study")
-            ])},
+        paper = SimpleNamespace(
+            pdf_url="https://example.org/right.pdf",
+            paper_id="right",
+            title="The Myodural Bridge and Chronic Headache: Experimental Study",
+            doi="",
+        )
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
+
+        (result, error), download = self._run_with_searcher(
+            searcher,
+            title="Myodural bridge and chronic headache",
         )
 
-        with patch.object(server, "openaire_searcher", fake_searcher), \
-             patch("paper_search_mcp.server._download_from_url",
-                   new=AsyncMock(return_value="/tmp/ok.pdf")) as mock_dl:
-            result, err = asyncio.run(
-                server._try_repository_fallback(
-                    doi="10.1000/test",
-                    title="Myodural bridge and chronic headache",
-                    save_path="/tmp",
-                    expected_title="Myodural bridge and chronic headache",
-                )
-            )
         self.assertEqual(result, "/tmp/ok.pdf")
-        mock_dl.assert_awaited_once()
+        self.assertEqual(error, "")
+        download.assert_awaited_once()
 
-    def test_no_expected_title_skips_filter(self):
-        """Backward-compat: when expected_title is empty, no filtering is applied."""
-        fake_searcher = type(
-            "S", (),
-            {"search": staticmethod(lambda q, max_results=3: [
-                self._make_fake_paper("Anything at all")
-            ])},
+    def test_exact_candidate_doi_bypasses_title_prefilter(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.org/right.pdf",
+            paper_id="right",
+            title="Publisher supplied abbreviated title",
+            doi="https://doi.org/10.1000/TEST",
+        )
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
+
+        (result, error), download = self._run_with_searcher(
+            searcher,
+            title="A much longer requested title with different wording",
         )
 
-        with patch.object(server, "openaire_searcher", fake_searcher), \
-             patch("paper_search_mcp.server._download_from_url",
-                   new=AsyncMock(return_value="/tmp/ok.pdf")):
-            result, err = asyncio.run(
+        self.assertEqual(result, "/tmp/ok.pdf")
+        self.assertEqual(error, "")
+        download.assert_awaited_once()
+
+    def test_duplicate_pdf_url_is_attempted_once(self):
+        paper = SimpleNamespace(
+            pdf_url="https://example.org/repeated.pdf",
+            paper_id="same",
+            title="Matching requested paper title",
+            doi="10.1000/test",
+        )
+        searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
+
+        with (
+            patch.object(server, "openaire_searcher", searcher),
+            patch.object(server, "core_searcher", _empty_searcher()),
+            patch.object(server, "europepmc_searcher", _empty_searcher()),
+            patch.object(server, "pmc_searcher", _empty_searcher()),
+            patch.object(
+                server,
+                "_download_from_url",
+                new=AsyncMock(return_value=None),
+            ) as download,
+        ):
+            result, error = asyncio.run(
                 server._try_repository_fallback(
                     doi="10.1000/test",
-                    title="some query",
+                    title="Matching requested paper title",
                     save_path="/tmp",
-                    expected_title="",
                 )
             )
-        self.assertEqual(result, "/tmp/ok.pdf")
+
+        self.assertIsNone(result)
+        self.assertIn("did not match", error)
+        download.assert_awaited_once()
 
 
 class TestTitleSimilarity(unittest.TestCase):
     def test_identical_titles_score_one(self):
-        self.assertAlmostEqual(_title_similarity("Myodural bridge", "Myodural bridge"), 1.0)
-
-    def test_case_insensitive(self):
-        self.assertAlmostEqual(
-            _title_similarity("Myodural Bridge", "myodural bridge"), 1.0
+        self.assertEqual(
+            server._title_similarity("Myodural bridge", "Myodural bridge"),
+            1.0,
         )
 
-    def test_whitespace_normalized(self):
-        self.assertAlmostEqual(
-            _title_similarity("Myodural  bridge", "Myodural bridge"), 1.0
+    def test_word_order_and_case_do_not_matter(self):
+        self.assertEqual(
+            server._title_similarity("Bridge Myodural", "myodural bridge"),
+            1.0,
         )
 
-    def test_clear_mismatch_scores_low(self):
-        sim = _title_similarity(
-            "Myodural bridge and chronic headache",
-            "Solar cells and lead-free perovskite chemistry",
-        )
-        self.assertLess(sim, 0.6, "topically unrelated titles must score < 0.6")
-
-    def test_close_variant_scores_high(self):
-        sim = _title_similarity(
+    def test_subtitle_variant_scores_high(self):
+        score = server._title_similarity(
             "Myodural bridge and chronic headache",
             "The Myodural Bridge and Chronic Headache: An Experimental Study",
         )
-        self.assertGreaterEqual(sim, 0.6, "close title variants must score >= 0.6")
+        self.assertGreaterEqual(score, 0.6)
 
-    def test_empty_strings(self):
-        self.assertEqual(_title_similarity("", "anything"), 0.0)
-        self.assertEqual(_title_similarity("anything", ""), 0.0)
-        self.assertEqual(_title_similarity("", ""), 0.0)
+    def test_unrelated_titles_score_low(self):
+        score = server._title_similarity(
+            "Myodural bridge and chronic headache",
+            "Solar cells and lead-free perovskite chemistry",
+        )
+        self.assertLess(score, 0.6)
+
+    def test_empty_title_scores_zero(self):
+        self.assertEqual(server._title_similarity("", "anything"), 0.0)
 
 
 class TestPdfMatchesExpected(unittest.TestCase):
-    """Fix 1: verify a downloaded PDF's content matches the expected paper title
-    before returning it from a fallback chain.
+    @staticmethod
+    def _reader_with_text(text):
+        page = MagicMock()
+        page.extract_text.return_value = text
+        reader = MagicMock()
+        reader.pages = [page]
+        return reader
 
-    Uses real PDFs from the downloads/ directory as fixtures when available
-    (these reproduce the actual phantom-PDF bug observed in production:
-    a search for a myodural-bridge paper returned a chemistry paper PDF).
-    """
+    def test_matching_title_is_accepted(self):
+        reader = self._reader_with_text(
+            "Evidence for chronic headaches induced by pathological changes "
+            "of myodural bridge complex"
+        )
+        with patch("pypdf.PdfReader", return_value=reader):
+            matched = server._pdf_matches_expected(
+                b"%PDF-1.7",
+                "Evidence for chronic headaches induced by pathological changes "
+                "of myodural bridge complex",
+            )
+        self.assertTrue(matched)
 
-    DOWNLOADS_DIR = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "downloads",
-    )
-    # Real PDFs from a prior search session. If absent, content-level tests
-    # fall back to a synthesized minimal PDF via pypdf, or skip if neither is
-    # possible.
-    REAL_REVIEW_PDF = os.path.join(DOWNLOADS_DIR, "europepmc_PMID_42078436.pdf")  # myodural review
-    REAL_WRONG_PDF = os.path.join(DOWNLOADS_DIR, "europepmc_PMID_39227656.pdf")  # chemistry (phantom)
-    EXPECTED_REVIEW_TITLE = "The myodural bridge complex a comprehensive review"
-    EXPECTED_HEADACHE_TITLE = "Evidence for chronic headaches induced by pathological changes of myodural bridge complex"
+    def test_unrelated_text_is_rejected(self):
+        reader = self._reader_with_text(
+            "Single crystal solar cells and lead-free perovskite chemistry"
+        )
+        with patch("pypdf.PdfReader", return_value=reader):
+            matched = server._pdf_matches_expected(
+                b"%PDF-1.7",
+                "Evidence for chronic headaches induced by pathological changes "
+                "of myodural bridge complex",
+            )
+        self.assertFalse(matched)
 
-    def _write_synthetic_pdf(self, text_content: str) -> str:
-        """Synthesize a minimal one-page PDF whose extracted text contains
-        the given string. Used when real-fixture PDFs aren't available."""
-        try:
-            from reportlab.pdfgen import canvas
-        except ImportError:
-            self.skipTest("reportlab not installed and no real PDF fixtures available")
+    def test_doi_match_accepts_line_wrapped_doi(self):
+        reader = self._reader_with_text(
+            "DOI: https://doi.org/10.1038/s41598-024-\n55069-7"
+        )
+        with patch("pypdf.PdfReader", return_value=reader):
+            matched = server._pdf_matches_expected(
+                b"%PDF-1.7",
+                "Completely different title",
+                "https://doi.org/10.1038/s41598-024-55069-7",
+            )
+        self.assertTrue(matched)
 
-        fd, path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        c = canvas.Canvas(path)
-        for i, line in enumerate(text_content.split("\n")[:30]):
-            c.drawString(80, 750 - i * 12, line)
-        c.save()
-        return path
+    def test_doi_only_identity_is_checked(self):
+        reader = self._reader_with_text("doi: 10.1000/example")
+        with patch("pypdf.PdfReader", return_value=reader):
+            matched = server._pdf_matches_expected(
+                b"%PDF-1.7",
+                "",
+                "10.1000/example",
+            )
+        self.assertTrue(matched)
 
-    def test_matching_real_pdf_accepted(self):
-        """Sanity: the real review PDF must match its own expected title."""
-        if not os.path.exists(self.REAL_REVIEW_PDF):
-            self.skipTest(f"fixture {self.REAL_REVIEW_PDF} not present")
-        self.assertTrue(_pdf_matches_expected(self.REAL_REVIEW_PDF, self.EXPECTED_REVIEW_TITLE))
+    def test_unreadable_pdf_is_rejected_when_identity_is_claimed(self):
+        with patch("pypdf.PdfReader", side_effect=ValueError("broken PDF")):
+            self.assertFalse(
+                server._pdf_matches_expected(b"broken", "Expected paper title")
+            )
 
-    def test_mismatched_real_pdf_rejected(self):
-        """Regression for the bug observed in this session: a PDF about
-        solar cell chemistry (PMID 39227656) was returned when the expected
-        paper was about myodural bridge and headache (PMID 39227656). The
-        content check must reject this mismatch."""
-        if not os.path.exists(self.REAL_WRONG_PDF):
-            self.skipTest(f"fixture {self.REAL_WRONG_PDF} not present")
-        self.assertFalse(
-            _pdf_matches_expected(self.REAL_WRONG_PDF, self.EXPECTED_HEADACHE_TITLE),
-            "chemistry PDF must NOT match expected myodural-bridge title"
+    def test_image_only_pdf_is_rejected_when_identity_is_claimed(self):
+        reader = self._reader_with_text("")
+        with patch("pypdf.PdfReader", return_value=reader):
+            self.assertFalse(
+                server._pdf_matches_expected(b"%PDF-1.7", "Expected paper title")
+            )
+
+    def test_no_identity_hint_preserves_backward_compatibility(self):
+        self.assertTrue(server._pdf_matches_expected(b"anything", "", ""))
+
+
+class TestDownloadFromUrl(unittest.TestCase):
+    @staticmethod
+    def _response(content, content_type="application/pdf", status_code=200):
+        return SimpleNamespace(
+            content=content,
+            headers={"content-type": content_type},
+            status_code=status_code,
         )
 
-    def test_empty_expected_title_accepts(self):
-        # When no title claim is made, accept anything
-        if os.path.exists(self.REAL_REVIEW_PDF):
-            self.assertTrue(_pdf_matches_expected(self.REAL_REVIEW_PDF, ""))
-        else:
-            pdf = self._write_synthetic_pdf("anything at all")
-            try:
-                self.assertTrue(_pdf_matches_expected(pdf, ""))
-            finally:
-                os.remove(pdf)
-
-    def test_doi_in_text_accepts(self):
-        """When the expected DOI appears verbatim in the PDF text, accept
-        regardless of title overlap — strong signal that this is the right PDF.
-
-        Uses a mock PdfReader so we can control extracted text precisely,
-        without depending on whether a real fixture PDF embeds its DOI
-        in a pypdf-extractable form (many do not in the first 3 pages)."""
-        from unittest.mock import patch as _patch, MagicMock as _MagicMock
-
-        fake_page = _MagicMock()
-        fake_page.extract_text.return_value = (
-            "Journal of Something\n"
-            "Some title here\n"
-            "DOI: 10.1038/s41598-024-55069-7\n"
-            "more content"
+    def _patch_client(self, response):
+        return patch.object(
+            server.httpx,
+            "AsyncClient",
+            return_value=_FakeAsyncClient(response),
         )
-        fake_reader = _MagicMock()
-        fake_reader.pages = [fake_page]
 
-        fd, path = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        try:
-            with _patch("pypdf.PdfReader", return_value=fake_reader):
-                self.assertTrue(
-                    _pdf_matches_expected(
-                        path,
-                        "Completely Different Title That Should Not Match",
-                        expected_doi="10.1038/s41598-024-55069-7",
-                    ),
-                    "DOI match in PDF text must accept regardless of title overlap"
+    def test_html_at_pdf_url_is_rejected(self):
+        response = self._response(b"<html>login page</html>", "text/html")
+        with tempfile.TemporaryDirectory() as parent:
+            save_path = os.path.join(parent, "downloads")
+            with self._patch_client(response):
+                result = asyncio.run(
+                    server._download_from_url(
+                        "https://example.org/not-really.pdf",
+                        save_path,
+                    )
                 )
-        finally:
-            os.remove(path)
+            self.assertIsNone(result)
+            self.assertFalse(os.path.exists(save_path))
 
-    def test_unreadable_pdf_accepted(self):
-        """If pypdf can't read the file, don't penalize — could be a legit scanned PDF."""
-        fd, path = tempfile.mkstemp(suffix=".pdf")
-        os.write(fd, b"not a real pdf")
-        os.close(fd)
-        try:
-            self.assertTrue(_pdf_matches_expected(path, "any title"))
-        finally:
-            os.remove(path)
+    def test_identity_mismatch_is_not_written(self):
+        response = self._response(b"%PDF-1.7\nplaceholder")
+        with tempfile.TemporaryDirectory() as parent:
+            save_path = os.path.join(parent, "downloads")
+            with (
+                self._patch_client(response),
+                patch.object(server, "_pdf_matches_expected", return_value=False),
+            ):
+                result = asyncio.run(
+                    server._download_from_url(
+                        "https://example.org/paper.pdf",
+                        save_path,
+                        expected_title="Expected paper",
+                    )
+                )
+            self.assertIsNone(result)
+            self.assertFalse(os.path.exists(save_path))
+
+    def test_verified_pdf_is_atomically_written(self):
+        content = b"%PDF-1.7\nverified content"
+        response = self._response(content)
+        with tempfile.TemporaryDirectory() as save_path:
+            with (
+                self._patch_client(response),
+                patch.object(server, "_pdf_matches_expected", return_value=True),
+            ):
+                result = asyncio.run(
+                    server._download_from_url(
+                        "https://example.org/paper.pdf",
+                        save_path,
+                        filename_hint="verified",
+                        expected_title="Expected paper",
+                    )
+                )
+
+            self.assertEqual(result, os.path.join(save_path, "verified.pdf"))
+            with open(result, "rb") as downloaded:
+                self.assertEqual(downloaded.read(), content)
+            self.assertEqual(
+                [name for name in os.listdir(save_path) if name.endswith(".part")],
+                [],
+            )
+
+    def test_doi_only_triggers_content_validation(self):
+        content = b"%PDF-1.7\nverified content"
+        response = self._response(content)
+        with tempfile.TemporaryDirectory() as save_path:
+            verifier = MagicMock(return_value=True)
+            with self._patch_client(response), patch.object(
+                server,
+                "_pdf_matches_expected",
+                verifier,
+            ):
+                result = asyncio.run(
+                    server._download_from_url(
+                        "https://example.org/paper.pdf",
+                        save_path,
+                        expected_doi="10.1000/example",
+                    )
+                )
+
+        self.assertIsNotNone(result)
+        verifier.assert_called_once_with(content, "", "10.1000/example")
 
 
 if __name__ == "__main__":

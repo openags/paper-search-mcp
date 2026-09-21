@@ -3,7 +3,6 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import requests
 import time
-import random
 from ..paper import Paper
 from .base import PaperSource
 import logging
@@ -18,27 +17,18 @@ class CrossRefSearcher(PaperSource):
     # User agent for polite API usage as per CrossRef etiquette
     USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/Dragonatorul/paper-search-mcp; mailto:paper-search@example.org)"
 
-    # CrossRef "type" values that are NOT standalone papers and should be
-    # filtered out of search results. These are sub-components (figures,
-    # peer-review materials, decision letters, etc.) that pollute search
-    # output with non-citable items.
-    # Ref: https://api.crossref.org/swagger-ui/index.html#/Works/get_works
-    NON_PAPER_TYPES = frozenset({
-        "peer-review",
-        "peer-review-material",
-        "review",  # ambiguous — kept conservative, only filters review sub-types
-        "component",
-        "figure",
-        "dataset",
-        "report",
-        "report-component",
-        "standard",
-        "standard-series",
-    })
-
-    # Default include set when caller does not override. Conservative: keeps
-    # the most common citable types. Set to None to disable filtering.
-    DEFAULT_INCLUDE_TYPES = None  # None => use NON_PAPER_TYPES denylist
+    # Only filter types that unambiguously describe review artifacts or pieces
+    # of another work. Datasets, reports, and standards remain valid citable
+    # research outputs and must not be hidden by a generic paper search.
+    NON_PAPER_TYPES = frozenset(
+        {
+            "peer-review",
+            "peer-review-material",
+            "component",
+            "report-component",
+            "figure",
+        }
+    )
     
     def __init__(self):
         self.session = requests.Session()
@@ -119,7 +109,7 @@ class CrossRefSearcher(PaperSource):
         """
         try:
             # Filter out non-paper types (peer-review material, figures, etc.)
-            item_type = item.get('type', '')
+            item_type = str(item.get('type') or '').strip().lower()
             if item_type in self.NON_PAPER_TYPES:
                 logger.debug("Filtering out non-paper CrossRef item (type=%s, DOI=%s)",
                              item_type, item.get('DOI', 'unknown'))

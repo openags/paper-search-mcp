@@ -1,6 +1,5 @@
 # tests/test_crossref.py
 import unittest
-import os
 import requests
 from paper_search_mcp.academic_platforms.crossref import CrossRefSearcher
 
@@ -107,32 +106,20 @@ class TestCrossRefSearcher(unittest.TestCase):
         results as 'phantom papers' that have a DOI but no citable content.
         Bug observed: search for 'myodural bridge' returned multiple
         'Review for ...' and 'Figure 5: ...' entries as if they were papers."""
-        # peer-review material — must be filtered out
-        peer_review_item = {
-            'DOI': '10.1002/jmor.21431/v1/review1',
-            'type': 'peer-review',
-            'title': ['Review for "The morphology of the suboccipital region"'],
-        }
-        self.assertIsNone(self.searcher._parse_crossref_item(peer_review_item),
-                          "peer-review type must be filtered out")
-
-        # figure component — must be filtered out
-        figure_item = {
-            'DOI': '10.7717/peerj.9716/fig-5',
-            'type': 'figure',
-            'title': ['Figure 5: The myodural bridge.'],
-        }
-        self.assertIsNone(self.searcher._parse_crossref_item(figure_item),
-                          "figure type must be filtered out")
-
-        # dataset — must be filtered out
-        dataset_item = {
-            'DOI': '10.5281/zenodo.123456',
-            'type': 'dataset',
-            'title': ['Dataset: myodural bridge measurements'],
-        }
-        self.assertIsNone(self.searcher._parse_crossref_item(dataset_item),
-                          "dataset type must be filtered out")
+        for item_type in (
+            "peer-review",
+            "peer-review-material",
+            "component",
+            "report-component",
+            "figure",
+        ):
+            with self.subTest(item_type=item_type):
+                item = {
+                    'DOI': f'10.1000/{item_type}',
+                    'type': item_type.upper(),
+                    'title': [f'Artifact of type {item_type}'],
+                }
+                self.assertIsNone(self.searcher._parse_crossref_item(item))
 
     def test_journal_article_passes_filter(self):
         """Sanity check: real journal-article types must still pass through."""
@@ -149,11 +136,17 @@ class TestCrossRefSearcher(unittest.TestCase):
         self.assertTrue(any('Kahkeshani' in a for a in paper.authors),
                         f"authors must contain 'Kahkeshani', got {paper.authors}")
 
-    def test_non_paper_types_constant_covers_observed_phantom_types(self):
-        """Lock the denylist to the types we observed causing phantom results."""
-        required = {"peer-review", "component", "figure", "dataset"}
-        self.assertTrue(required.issubset(CrossRefSearcher.NON_PAPER_TYPES),
-                        f"NON_PAPER_TYPES must include at least {required}")
+    def test_citable_non_article_outputs_are_not_filtered(self):
+        for item_type in ("dataset", "report", "standard", "dissertation"):
+            with self.subTest(item_type=item_type):
+                item = {
+                    'DOI': f'10.1000/{item_type}',
+                    'type': item_type,
+                    'title': [f'Citable output of type {item_type}'],
+                }
+                paper = self.searcher._parse_crossref_item(item)
+                self.assertIsNotNone(paper)
+                self.assertEqual(paper.extra['crossref_type'], item_type)
 
 if __name__ == '__main__':
     unittest.main()

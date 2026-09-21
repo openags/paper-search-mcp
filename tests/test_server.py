@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -8,10 +9,14 @@ from paper_search_mcp import server
 
 class TestPaperSearchServer(unittest.TestCase):
     def test_main_uses_local_stdio_transport(self):
-        with patch.object(server.mcp, "run") as run:
-            server.main()
+        with (
+            patch.object(server.mcp, "run") as run,
+            patch.object(server.threading, "Thread") as thread,
+        ):
+            server.main([])
 
         run.assert_called_once_with(transport="stdio")
+        thread.return_value.start.assert_called_once_with()
 
     def test_all_sources_include_new_platforms(self):
         self.assertIn("dblp", server.ALL_SOURCES)
@@ -88,17 +93,14 @@ class TestPaperSearchServer(unittest.TestCase):
         search_results = asyncio.run(server.search_arxiv("machine learning", max_results=10))
         self.assertEqual(len(search_results), 10, "Search should return 10 results")
 
-        # 下载目录
-        save_path = "./downloads"
-        os.makedirs(save_path, exist_ok=True)  # 确保目录存在
-
-        # 下载每个搜索结果的 PDF
-        for paper in search_results:
-            paper_id = paper['paper_id']
-            result = asyncio.run(server.download_arxiv(paper_id, save_path))
-            self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
-            self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
-            self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
+        # 每次测试使用隔离目录，避免污染仓库或干扰其他下载测试。
+        with tempfile.TemporaryDirectory() as save_path:
+            for paper in search_results:
+                paper_id = paper['paper_id']
+                result = asyncio.run(server.download_arxiv(paper_id, save_path))
+                self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
+                self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
+                self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
 
 if __name__ == "__main__":
     unittest.main()

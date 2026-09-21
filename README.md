@@ -463,6 +463,20 @@ For example, if you cloned to `/Users/mac/Pengsong/paper-search-mcp`:
 
 > `uv run` automatically installs dependencies into an isolated environment on first run — no `pip install` or `venv` needed.
 
+To run one shared network server instead of one stdio process per client:
+
+```bash
+paper-search-mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
+```
+
+The available transports are `stdio`, `sse`, and `streamable-http`. The default
+remains `stdio`. The same network settings can be supplied with
+`PAPER_SEARCH_MCP_TRANSPORT`, `PAPER_SEARCH_MCP_HOST`,
+`PAPER_SEARCH_MCP_PORT`, and `PAPER_SEARCH_MCP_PATH`; command-line options take
+precedence. Binding to a non-loopback host such as `0.0.0.0` exposes an
+unauthenticated server, so place it behind an authenticated gateway rather than
+publishing it directly to the internet.
+
 For active development, optionally install an editable copy:
 
 ```bash

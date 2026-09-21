@@ -1,8 +1,11 @@
 # paper_search_mcp/server.py
+import argparse
 import asyncio
 import logging
 import os
 import re
+import threading
+import time
 from collections.abc import Awaitable
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import BoundedSemaphore
@@ -33,7 +36,7 @@ from .academic_platforms.semantic import SemanticSearcher
 from .academic_platforms.ssrn import SSRNSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
-from .config import get_env
+from .config import get_env, load_env_file
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
@@ -1475,8 +1478,161 @@ if acm_searcher is not None:
         return acm_searcher.read_paper(paper_id, save_path)
 
 
-def main():
-    mcp.run(transport="stdio")
+def _wait_for_windows_process_exit(process_id: int) -> bool:
+    """Wait for a Windows process handle to become signalled."""
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    infinite = 0xFFFFFFFF
+    wait_object_0 = 0x00000000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(synchronize, False, process_id)
+    if not handle:
+        logger.warning(
+            "Could not watch MCP client process %s (Windows error %s)",
+            process_id,
+            ctypes.get_last_error(),
+        )
+        return False
+
+    try:
+        result = kernel32.WaitForSingleObject(handle, infinite)
+    finally:
+        kernel32.CloseHandle(handle)
+
+    if result != wait_object_0:
+        logger.warning(
+            "Waiting for MCP client process %s failed (result %#x)",
+            process_id,
+            result,
+        )
+        return False
+    return True
+
+
+def _exit_when_orphaned(poll_seconds: float = 5.0) -> None:
+    """Exit if the MCP client that spawned this stdio server goes away.
+
+    A stdio server is owned by exactly one client. When that client dies without
+    closing the pipe cleanly, ``mcp.run`` keeps blocking on stdin and the process
+    survives indefinitely, re-adopted by init. They accumulate: nine of these had
+    piled up on one developer machine, the oldest running for over a day.
+
+    Watch for reparenting and leave.
+    """
+    original_ppid = os.getppid()
+    if os.name == "nt":
+        # Windows keeps reporting the original parent PID after that process has
+        # exited, so polling getppid() cannot detect orphaning. A process handle
+        # becomes signalled at termination and works without an extra dependency.
+        if not _wait_for_windows_process_exit(original_ppid):
+            return
+        logger.info("MCP client process %s exited; shutting down", original_ppid)
+        os._exit(0)
+        return
+
+    while True:
+        time.sleep(poll_seconds)
+        ppid = os.getppid()
+        if ppid == 1 or ppid != original_ppid:
+            logger.info(
+                "MCP client gone (ppid %s -> %s); shutting down", original_ppid, ppid
+            )
+            os._exit(0)
+            return
+
+
+def _server_env(name: str, default: str) -> str:
+    """Return a server setting, preferring the repository-wide env prefix."""
+    load_env_file()
+    for key in (f"PAPER_SEARCH_MCP_{name}", f"PAPER_SEARCH_{name}"):
+        value = os.environ.get(key)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
+
+
+def _valid_port(raw: str) -> int:
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "port must be an integer between 1 and 65535"
+        ) from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be an integer between 1 and 65535")
+    return port
+
+
+def _valid_http_path(raw: str) -> str:
+    path = raw.strip()
+    if not path.startswith("/"):
+        raise argparse.ArgumentTypeError("path must start with '/'")
+    return path
+
+
+def _build_server_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Paper Search MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "sse", "streamable-http"),
+        default=_server_env("TRANSPORT", "stdio"),
+        help="MCP transport (default: stdio; env: PAPER_SEARCH_MCP_TRANSPORT)",
+    )
+    parser.add_argument(
+        "--host",
+        default=_server_env("HOST", "127.0.0.1"),
+        help="Network bind host (env: PAPER_SEARCH_MCP_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=_valid_port,
+        default=_server_env("PORT", "8000"),
+        help="Network bind port (env: PAPER_SEARCH_MCP_PORT)",
+    )
+    parser.add_argument(
+        "--path",
+        type=_valid_http_path,
+        default=_server_env("PATH", "/mcp"),
+        help="Streamable HTTP endpoint path (env: PAPER_SEARCH_MCP_PATH)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run over stdio or a shared network transport.
+
+    Command-line arguments override environment settings. ``stdio`` stays the
+    default, so existing MCP client configurations remain compatible. The
+    shorter ``PAPER_SEARCH_*`` names introduced by PR #114 remain accepted as
+    aliases for the preferred ``PAPER_SEARCH_MCP_*`` names.
+    """
+    args = _build_server_parser().parse_args(argv)
+
+    if args.transport == "stdio":
+        # Only meaningful for stdio: an http server has no owning client to outlive.
+        threading.Thread(
+            target=_exit_when_orphaned, name="orphan-watchdog", daemon=True
+        ).start()
+        mcp.run(transport="stdio")
+        return
+
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    if args.transport == "streamable-http":
+        mcp.settings.streamable_http_path = args.path
+    logger.info(
+        "serving %s on %s:%s", args.transport, mcp.settings.host, mcp.settings.port
+    )
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

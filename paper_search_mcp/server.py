@@ -1,15 +1,19 @@
 # paper_search_mcp/server.py
 import argparse
 import asyncio
+import io
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
+import unicodedata
 from collections.abc import Awaitable
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import BoundedSemaphore
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -240,13 +244,20 @@ def _safe_filename(filename_hint: str, default: str = "paper") -> str:
     return safe[:120]
 
 
-async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = "paper") -> Optional[str]:
+async def _download_from_url(
+    pdf_url: str,
+    save_path: str,
+    filename_hint: str = "paper",
+    expected_title: str = "",
+    expected_doi: str = "",
+) -> Optional[str]:
+    """Download and, when identity hints are present, verify a fallback PDF."""
     if not pdf_url:
         return None
 
-    os.makedirs(save_path, exist_ok=True)
     output_name = f"{_safe_filename(filename_hint)}.pdf"
     output_path = os.path.join(save_path, output_name)
+    temporary_path = ""
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
@@ -255,22 +266,182 @@ async def _download_from_url(pdf_url: str, save_path: str, filename_hint: str = 
         if response.status_code >= 400 or not response.content:
             return None
 
+        content = bytes(response.content)
         content_type = (response.headers.get("content-type") or "").lower()
-        is_pdf = "pdf" in content_type or response.content.startswith(b"%PDF") or pdf_url.lower().endswith(".pdf")
-        if not is_pdf:
-            logger.warning("Resolved URL is not a PDF candidate: %s (content-type=%s)", pdf_url, content_type)
+        if not _looks_like_pdf(content):
+            logger.warning(
+                "Resolved URL did not return PDF bytes: %s (content-type=%s)",
+                pdf_url,
+                content_type,
+            )
             return None
 
-        with open(output_path, "wb") as file_obj:
-            file_obj.write(response.content)
+        if expected_title or expected_doi:
+            matches = await asyncio.to_thread(
+                _pdf_matches_expected,
+                content,
+                expected_title,
+                expected_doi,
+            )
+            if not matches:
+                logger.warning(
+                    "Downloaded PDF from %s could not be verified as title=%r DOI=%r",
+                    pdf_url,
+                    expected_title[:120],
+                    expected_doi,
+                )
+                return None
 
+        os.makedirs(save_path, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{output_name}.",
+            suffix=".part",
+            dir=save_path,
+            delete=False,
+        ) as file_obj:
+            temporary_path = file_obj.name
+            file_obj.write(content)
+        os.replace(temporary_path, output_path)
+        temporary_path = ""
         return output_path
     except Exception as exc:
         logger.warning("Direct URL download failed for %s: %s", pdf_url, exc)
         return None
+    finally:
+        if temporary_path:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
 
 
-async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tuple[Optional[str], str]:
+def _looks_like_pdf(content: bytes) -> bool:
+    """Check the PDF header instead of trusting a URL suffix or content type."""
+    return bool(content) and b"%PDF-" in content[:1024]
+
+
+_TITLE_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "among",
+        "based",
+        "between",
+        "from",
+        "into",
+        "study",
+        "that",
+        "their",
+        "through",
+        "using",
+        "with",
+    }
+)
+
+
+def _normalize_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value or "").casefold()
+    normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _title_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[^\W_]+", _normalize_text(value), flags=re.UNICODE)
+        if len(token) >= 4 and token not in _TITLE_STOPWORDS
+    }
+
+
+def _normalize_doi(value: str) -> str:
+    normalized = unquote((value or "").strip()).casefold()
+    normalized = re.sub(
+        r"^(?:doi:\s*|https?://(?:dx\.)?doi\.org/)",
+        "",
+        normalized,
+    )
+    return re.sub(r"\s+", "", normalized).rstrip(".,;)")
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """Return token F1 similarity for two titles, in the range [0, 1]."""
+    if not a or not b:
+        return 0.0
+    tokens_a = _title_tokens(a)
+    tokens_b = _title_tokens(b)
+    if not tokens_a or not tokens_b:
+        return 1.0 if _normalize_text(a) == _normalize_text(b) else 0.0
+    return 2 * len(tokens_a & tokens_b) / (len(tokens_a) + len(tokens_b))
+
+
+def _pdf_matches_expected(
+    pdf_source: str | os.PathLike[str] | bytes,
+    expected_title: str,
+    expected_doi: str = "",
+) -> bool:
+    """Verify fallback PDF identity from its first three extractable pages.
+
+    An unreadable or image-only document is unverifiable and therefore rejected
+    by the fallback chain. Direct source downloads without identity hints are not
+    affected by this conservative rule.
+    """
+    if not expected_title and not expected_doi:
+        return True
+
+    try:
+        from pypdf import PdfReader
+
+        reader_source = io.BytesIO(pdf_source) if isinstance(pdf_source, bytes) else pdf_source
+        reader = PdfReader(reader_source)
+    except Exception as exc:
+        logger.debug("Could not parse fallback PDF for identity verification: %s", exc)
+        return False
+
+    try:
+        text_parts = []
+        for page in reader.pages[:3]:
+            text_parts.append(page.extract_text() or "")
+    except Exception as exc:
+        logger.debug("Fallback PDF text extraction failed: %s", exc)
+        return False
+
+    text = "\n".join(text_parts)
+    if not text.strip():
+        return False
+
+    normalized_text = _normalize_text(text)
+    normalized_doi = _normalize_doi(expected_doi)
+    if normalized_doi:
+        text_without_whitespace = re.sub(r"\s+", "", normalized_text)
+        if normalized_doi in text_without_whitespace:
+            return True
+        doi_alphanumeric = re.sub(r"[^a-z0-9]", "", normalized_doi)
+        text_alphanumeric = re.sub(r"[^a-z0-9]", "", normalized_text)
+        if doi_alphanumeric and doi_alphanumeric in text_alphanumeric:
+            return True
+
+    expected_tokens = _title_tokens(expected_title)
+    if not expected_tokens:
+        return False
+    document_tokens = _title_tokens(text)
+    matching_tokens = expected_tokens & document_tokens
+    return len(matching_tokens) / len(expected_tokens) >= 0.6
+
+
+async def _try_repository_fallback(
+    doi: str,
+    title: str,
+    save_path: str,
+    expected_title: str | None = None,
+) -> tuple[Optional[str], str]:
+    """Search OA repositories for a paper matching the DOI or title, then download.
+
+    When `expected_title` is provided, candidate papers whose titles are too
+    dissimilar are skipped — this prevents the fallback from returning a
+    plausible-but-wrong PDF. The same `expected_title` is propagated to
+    `_download_from_url` so the downloaded PDF's content is also verified.
+    """
     repository_searchers = [
         ("openaire", openaire_searcher),
         ("core", core_searcher),
@@ -278,12 +449,21 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
         ("pmc", pmc_searcher),
     ]
 
-    query_candidates = [(doi or "").strip(), (title or "").strip()]
-    query_candidates = [candidate for candidate in query_candidates if candidate]
+    validation_title = title if expected_title is None else expected_title
+    normalized_expected_doi = _normalize_doi(doi)
+    query_candidates = list(
+        dict.fromkeys(
+            candidate
+            for candidate in ((doi or "").strip(), (title or "").strip())
+            if candidate
+        )
+    )
     if not query_candidates:
         return None, "no DOI/title provided for repository fallback"
 
     repository_errors: List[str] = []
+    rejected_candidates = 0
+    attempted_urls: set[str] = set()
 
     for repo_name, searcher in repository_searchers:
         for query in query_candidates:
@@ -298,15 +478,51 @@ async def _try_repository_fallback(doi: str, title: str, save_path: str) -> tupl
 
             for paper in papers:
                 pdf_url = str(getattr(paper, "pdf_url", "") or "").strip()
-                if not pdf_url:
+                if not pdf_url or pdf_url in attempted_urls:
                     continue
 
+                candidate_doi = _normalize_doi(str(getattr(paper, "doi", "") or ""))
+                doi_matches = bool(
+                    normalized_expected_doi
+                    and candidate_doi
+                    and normalized_expected_doi == candidate_doi
+                )
+                if validation_title and not doi_matches:
+                    candidate_title = str(getattr(paper, "title", "") or "")
+                    if candidate_title:
+                        sim = _title_similarity(candidate_title, validation_title)
+                        if sim < 0.6:
+                            rejected_candidates += 1
+                            logger.warning(
+                                "Repository %s fallback title mismatch (sim=%.2f): "
+                                "'%s' vs expected '%s' — skipping",
+                                repo_name,
+                                sim,
+                                candidate_title[:80],
+                                validation_title[:80],
+                            )
+                            continue
+
+                attempted_urls.add(pdf_url)
                 raw_paper_id = getattr(paper, "paper_id", "")
                 paper_id = str(raw_paper_id or query).strip()
-                downloaded = await _download_from_url(pdf_url, save_path, f"{repo_name}_{paper_id}")
+                downloaded = await _download_from_url(
+                    pdf_url,
+                    save_path,
+                    f"{repo_name}_{paper_id}",
+                    expected_title=validation_title,
+                    expected_doi=doi,
+                )
                 if downloaded:
                     return downloaded, ""
+                rejected_candidates += 1
 
+    if rejected_candidates:
+        repository_errors.append(
+            f"{rejected_candidates} candidate PDF(s) did not match the requested paper"
+        )
+    if not repository_errors:
+        repository_errors.append("no repository PDF candidate found")
     return None, "; ".join(repository_errors)
 
 
@@ -917,7 +1133,9 @@ async def download_with_fallback(
     if primary_error:
         attempt_errors.append(f"primary: {primary_error}")
 
-    repository_result, repository_error = await _try_repository_fallback(doi, title, save_path)
+    repository_result, repository_error = await _try_repository_fallback(
+        doi, title, save_path, expected_title=title,
+    )
     if repository_result:
         return repository_result
     if repository_error:
@@ -927,10 +1145,13 @@ async def download_with_fallback(
     if normalized_doi:
         unpaywall_url = await asyncio.to_thread(unpaywall_resolver.resolve_best_pdf_url, normalized_doi)
         if unpaywall_url:
-            unpaywall_result = await _download_from_url(unpaywall_url, save_path, f"unpaywall_{normalized_doi}")
+            unpaywall_result = await _download_from_url(
+                unpaywall_url, save_path, f"unpaywall_{normalized_doi}",
+                expected_title=title, expected_doi=normalized_doi,
+            )
             if unpaywall_result:
                 return unpaywall_result
-            attempt_errors.append("unpaywall: resolved OA URL but download failed")
+            attempt_errors.append("unpaywall: resolved OA URL but download failed (or content did not match expected title)")
         else:
             attempt_errors.append("unpaywall: no OA URL found (or PAPER_SEARCH_MCP_UNPAYWALL_EMAIL/UNPAYWALL_EMAIL missing)")
     else:
@@ -942,8 +1163,27 @@ async def download_with_fallback(
     fallback_identifier = (doi or "").strip() or (title or "").strip() or paper_id
     fetcher = SciHubFetcher(base_url=scihub_base_url, output_dir=save_path)
     fallback_result = await asyncio.to_thread(fetcher.download_pdf, fallback_identifier)
-    if fallback_result:
-        return fallback_result
+    if fallback_result and os.path.isfile(fallback_result):
+        verified = await asyncio.to_thread(
+            _pdf_matches_expected,
+            fallback_result,
+            title,
+            doi,
+        )
+        if verified:
+            return fallback_result
+
+        attempt_errors.append(
+            "scihub: downloaded PDF content did not match the requested paper"
+        )
+        try:
+            os.remove(fallback_result)
+        except OSError as exc:
+            logger.warning(
+                "Could not remove unverified Sci-Hub download %s: %s",
+                fallback_result,
+                exc,
+            )
 
     return "Download failed after OA fallback chain and Sci-Hub fallback. Details: " + " | ".join(attempt_errors)
 

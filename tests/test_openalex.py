@@ -1,4 +1,5 @@
 import asyncio
+import os
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -8,13 +9,64 @@ from paper_search_mcp.academic_platforms.openalex import OpenAlexSearcher
 
 class TestOpenAlexSearcher(unittest.TestCase):
     def setUp(self):
-        self.searcher = OpenAlexSearcher()
+        self.searcher = OpenAlexSearcher(api_key="")
 
     @staticmethod
     def _response(results=None, status_code=200):
         response = Mock(status_code=status_code)
         response.json.return_value = {"results": results or []}
         return response
+
+    def test_api_key_from_env_uses_authorization_header(self):
+        with patch.dict(
+            os.environ,
+            {
+                "PAPER_SEARCH_MCP_ENV_FILE": "/missing/paper-search-mcp.env",
+                "PAPER_SEARCH_MCP_OPENALEX_API_KEY": " test-openalex-key ",
+            },
+            clear=True,
+        ):
+            searcher = OpenAlexSearcher()
+
+        self.assertEqual(searcher.api_key, "test-openalex-key")
+        self.assertEqual(
+            searcher.session.headers.get("Authorization"),
+            "Bearer test-openalex-key",
+        )
+
+        searcher.session.get = Mock(return_value=self._response())
+        searcher.search("graph neural networks", max_results=7)
+        params = searcher.session.get.call_args.kwargs["params"]
+        self.assertNotIn("api_key", params)
+        self.assertEqual(params["per_page"], 7)
+
+    def test_explicit_api_key_overrides_environment(self):
+        with patch.dict(
+            os.environ,
+            {"PAPER_SEARCH_MCP_OPENALEX_API_KEY": "environment-key"},
+            clear=True,
+        ):
+            searcher = OpenAlexSearcher(api_key=" explicit-key ")
+
+        self.assertEqual(searcher.api_key, "explicit-key")
+        self.assertEqual(
+            searcher.session.headers.get("Authorization"),
+            "Bearer explicit-key",
+        )
+
+    def test_empty_api_key_omits_authorization(self):
+        searcher = OpenAlexSearcher(api_key="")
+
+        self.assertNotIn("Authorization", searcher.session.headers)
+
+    def test_email_customizes_user_agent(self):
+        searcher = OpenAlexSearcher(api_key="", email=" researcher@example.com ")
+
+        self.assertEqual(searcher.email, "researcher@example.com")
+        self.assertIn(
+            "mailto:researcher@example.com",
+            searcher.session.headers["User-Agent"],
+        )
 
     def test_search_passes_filter_and_uses_supported_page_limit(self):
         response = self._response()

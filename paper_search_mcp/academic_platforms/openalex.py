@@ -5,6 +5,7 @@ import logging
 from ..paper import Paper
 from .base import PaperSource
 from ..utils import extract_doi
+from ..config import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -13,13 +14,32 @@ class OpenAlexSearcher(PaperSource):
     """OpenAlex paper search implementation"""
 
     BASE_URL = "https://api.openalex.org/works"
+    DEFAULT_USER_AGENT = "paper-search-mcp/1.0"
+    DEFAULT_EMAIL = "openags@example.com"
 
-    def __init__(self):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        email: str | None = None,
+    ):
         self.session = requests.Session()
-        # OpenAlex encourages providing an email in User-Agent for the "polite pool"
-        self.session.headers.update(
-            {"User-Agent": "paper-search-mcp/1.0 (mailto:openags@example.com)"}
-        )
+        self.api_key = (
+            api_key if api_key is not None else get_env("OPENALEX_API_KEY", "")
+        ).strip()
+        self.email = (
+            email if email is not None else get_env("OPENALEX_EMAIL", self.DEFAULT_EMAIL)
+        ).strip()
+
+        user_agent = self.DEFAULT_USER_AGENT
+        if self.email:
+            user_agent = f"{user_agent} (mailto:{self.email})"
+        self.session.headers.update({"User-Agent": user_agent})
+        if self.api_key:
+            # Keep credentials out of URLs and proxy/access logs. OpenAlex
+            # supports Bearer authentication as an alternative to api_key=.
+            self.session.headers.update(
+                {"Authorization": f"Bearer {self.api_key}"}
+            )
 
     def _reconstruct_abstract(self, inverted_index: dict) -> str:
         """

@@ -1206,16 +1206,29 @@ async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> 
 
 
 @mcp.tool()
-async def search_openalex(query: str, max_results: int = 10) -> List[Dict]:
+async def search_openalex(
+    query: str,
+    max_results: int = 10,
+    filter: str = "",
+) -> List[Dict]:
     """Search academic papers from OpenAlex.
 
     Args:
         query: Search query string (e.g., 'machine learning').
         max_results: Maximum number of papers to return (default: 10).
+        filter: OpenAlex filter string.
+            Examples:
+            - 'open_access.is_oa:true,from_publication_date:2024-01-01'
+            - 'publication_year:2024,type:article'
+            - 'primary_location.source.id:S137773608' for Nature
+            See https://help.openalex.org/api/filtering/
+            for the full list of supported work filters.
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(openalex_searcher, query, max_results)
+    filter_value = (filter or "").strip()
+    extra = {"filter": filter_value} if filter_value else {}
+    papers = await async_search(openalex_searcher, query, max_results, **extra)
     return papers if papers else []
 
 

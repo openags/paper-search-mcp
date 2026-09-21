@@ -2,7 +2,6 @@ from typing import List, Optional
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
@@ -19,6 +18,7 @@ class IACRSearcher(PaperSource):
 
     IACR_SEARCH_URL = "https://eprint.iacr.org/search"
     IACR_BASE_URL = "https://eprint.iacr.org"
+    REQUEST_TIMEOUT_SECONDS = 30
     BROWSERS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -160,7 +160,11 @@ class IACRSearcher(PaperSource):
             params = {"q": query}
 
             # Make request
-            response = self.session.get(self.IACR_SEARCH_URL, params=params)
+            response = self.session.get(
+                self.IACR_SEARCH_URL,
+                params=params,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
 
             if response.status_code != 200:
                 logger.error(f"IACR search failed with status {response.status_code}")
@@ -313,7 +317,10 @@ class IACRSearcher(PaperSource):
                 paper_url = f"{self.IACR_BASE_URL}/{paper_id}"
 
             # Make request
-            response = self.session.get(paper_url)
+            response = self.session.get(
+                paper_url,
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
 
             if response.status_code != 200:
                 logger.error(
@@ -367,7 +374,7 @@ class IACRSearcher(PaperSource):
             try:
                 keyword_elements = soup.select("a.badge.bg-secondary.keyword")
                 keywords = [elem.get_text(strip=True) for elem in keyword_elements]
-            except:
+            except Exception:
                 keywords = []
 
             # Find history entries

@@ -10,13 +10,14 @@ API docs: https://developers.zenodo.org/
 from __future__ import annotations
 
 import logging
-from typing import List, Optional, Dict, Any
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import requests
 
-from .base import PaperSource
-from ..paper import Paper
 from ..config import get_env
+from ..paper import Paper
+from .base import PaperSource
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +121,8 @@ class ZenodoSearcher(PaperSource):
         Returns:
             Absolute path to the saved PDF, or an error message.
         """
-        import re
         import os
+        import re
 
         record_id = self._extract_record_id(paper_id)
         if not record_id:
@@ -232,11 +233,12 @@ class ZenodoSearcher(PaperSource):
                 return None
 
             creators = meta.get("creators", [])
-            authors = ", ".join(
+            authors = [
                 c.get("name", "")
                 or f"{c.get('given_name', '')} {c.get('family_name', '')}".strip()
                 for c in creators
-            )
+            ]
+            authors = [author for author in authors if author]
 
             abstract = (meta.get("description") or "").strip()
             # Zenodo descriptions can contain HTML — strip tags minimally
@@ -245,8 +247,19 @@ class ZenodoSearcher(PaperSource):
             abstract = re.sub(r"<[^>]+>", " ", abstract).strip()
 
             pub_date = meta.get("publication_date", "")
-            if len(pub_date) >= 4:
-                pub_date = pub_date[:10]  # keep YYYY-MM-DD
+            published_date = None
+            if pub_date:
+                pub_date_text = str(pub_date)
+                try:
+                    published_date = datetime.fromisoformat(pub_date_text[:10])
+                except ValueError:
+                    try:
+                        published_date = datetime(int(pub_date_text[:4]), 1, 1)
+                    except (TypeError, ValueError):
+                        logger.debug(
+                            "Zenodo: could not parse publication date %r",
+                            pub_date,
+                        )
 
             # Pick the best available PDF url from top-level links
             pdf_url = ""
@@ -266,7 +279,7 @@ class ZenodoSearcher(PaperSource):
                 authors=authors,
                 abstract=abstract,
                 doi=doi,
-                published_date=pub_date,
+                published_date=published_date,
                 pdf_url=pdf_url,
                 url=record_url,
                 source="zenodo",

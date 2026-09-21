@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 - [Overview](#overview)
 - [Project Principles](#project-principles)
+- [MCP Authorization Compatibility](#mcp-authorization-compatibility)
 - [Features](#features)
 - [Source Strategy](#source-strategy)
 - [Sci-Hub Notice](#sci-hub-notice)
@@ -42,6 +43,14 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Optional API Keys**: API keys are supported only when they improve stability, rate limits, or metadata quality. The MCP should still be usable without them whenever possible.
 - **LLM-Friendly Retrieval**: Search results should be standardized, deduplicated, and as complete as possible for downstream LLM workflows.
 - **Source Transparency**: Different sources have different strengths. The MCP should make those tradeoffs explicit instead of pretending every source supports full-text retrieval.
+
+---
+
+## MCP Authorization Compatibility
+
+The bundled MCP server currently runs locally over `stdio`. It does not implement OAuth 2.1 protected-resource metadata, bearer-token validation, scopes, or HTTP 401/403 authorization responses.
+
+For a remote protected deployment, put the server behind an MCP/HTTP gateway or reverse proxy that enforces OAuth and forwards only authorized requests. Native authenticated HTTP transport requires a separate transport and security design and is intentionally outside this small stabilization batch.
 
 ---
 
@@ -113,7 +122,7 @@ This matrix reflects **verified live-integration results** from functional and e
 
 ## Credential & API Key Requirements
 
-All keys are **optional** unless noted. Configure them in `.env` (preferred) or as shell exports.
+All keys are **optional** unless noted. Configure them in `~/.config/paper-search-mcp/.env` (preferred) or as shell exports.
 
 | Environment Variable | Provider | Required? | How to obtain |
 |---|---|---|---|
@@ -144,7 +153,7 @@ Some search failures are caused by external provider instability, not by bugs in
 | BASE | Search returns 0 results | OAI-PMH endpoint requires institutional IP registration | Register at [base-search.net](https://www.base-search.net/about/en/) for API access; connector returns empty gracefully otherwise |
 | SSRN | HTTP 403 | Bot-detection (Cloudflare) | No workaround; connector tries two endpoints and returns a clear message on failure |
 | PMC / Europe PMC | PDF download ProxyError | Local proxy blocking direct HTTPS PDF download | Disable proxy or use `download_with_fallback` instead |
-| Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `.env` |
+| Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `~/.config/paper-search-mcp/.env` |
 
 ## Optional Paid Platform Connectors (Phase 3)
 
@@ -182,6 +191,7 @@ SSRN integration remains compliance-first: it only attempts direct public PDF li
 
 Sci-Hub support can remain available as an optional connector for users who explicitly choose to enable it, but it should not be treated as the default or recommended full-text path.
 
+- `download_with_fallback` leaves Sci-Hub disabled by default. Pass `use_scihub=true` only when you explicitly choose to use it.
 - Availability is unstable and mirrors change frequently.
 - Legal and policy risks vary by jurisdiction.
 - README and tool descriptions should clearly state that users are responsible for enabling and using it.
@@ -201,26 +211,23 @@ Install as a Claude Code skill instead of an MCP server. This gives Claude autom
 
 **Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
 
-**Step 1 — Clone the repo:**
+**Step 1 — Install the CLI:**
 
 ```bash
-git clone https://github.com/openags/paper-search-mcp.git ~/paper-search-mcp
+uv tool install paper-search-mcp
 ```
 
 **Step 2 — Install the skill:**
 
 ```bash
 mkdir -p ~/.claude/skills/paper-search
-cp ~/paper-search-mcp/claude-code/SKILL.md ~/.claude/skills/paper-search/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/openags/paper-search-mcp/main/claude-code/SKILL.md \
+  -o ~/.claude/skills/paper-search/SKILL.md
 ```
 
-**Step 3 — Update the repo path in the skill:**
+**Step 3 (optional) — Configure API keys:**
 
-Edit `~/.claude/skills/paper-search/SKILL.md` and replace every `<REPO_PATH>` with the absolute path to your clone (e.g. `/Users/yourname/paper-search-mcp`).
-
-**Step 4 (optional) — Configure API keys:**
-
-Create a `.env` file in the repo root for optional API keys (see [Environment Variables](#environment-variables-env-file)).
+Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment Variables](#environment-variables-env-file)).
 
 **That's it.** Next time you start Claude Code, just ask it to find papers — the skill activates automatically. For example:
 
@@ -456,6 +463,20 @@ For example, if you cloned to `/Users/mac/Pengsong/paper-search-mcp`:
 
 > `uv run` automatically installs dependencies into an isolated environment on first run — no `pip install` or `venv` needed.
 
+To run one shared network server instead of one stdio process per client:
+
+```bash
+paper-search-mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
+```
+
+The available transports are `stdio`, `sse`, and `streamable-http`. The default
+remains `stdio`. The same network settings can be supplied with
+`PAPER_SEARCH_MCP_TRANSPORT`, `PAPER_SEARCH_MCP_HOST`,
+`PAPER_SEARCH_MCP_PORT`, and `PAPER_SEARCH_MCP_PATH`; command-line options take
+precedence. Binding to a non-loopback host such as `0.0.0.0` exposes an
+unauthenticated server, so place it behind an authenticated gateway rather than
+publishing it directly to the internet.
+
 For active development, optionally install an editable copy:
 
 ```bash
@@ -467,11 +488,13 @@ uv pip install -e ".[dev]"
 
 ### Environment Variables (`.env` file)
 
-Instead of putting keys directly in the JSON config you can store them in a `.env` file in the project root (auto-loaded on startup):
+Instead of putting keys directly in the JSON config you can store them in the user config file (auto-loaded on startup):
 
 ```bash
-cp .env.example .env   # if running from source
-# or create ~/.paper-search-mcp.env for global use
+mkdir -p ~/.config/paper-search-mcp
+curl -fsSL https://raw.githubusercontent.com/openags/paper-search-mcp/main/.env.example \
+  -o ~/.config/paper-search-mcp/.env
+$EDITOR ~/.config/paper-search-mcp/.env
 ```
 
 ```dotenv
@@ -576,7 +599,7 @@ We welcome contributions! Here's how to get started:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=openags/paper-search-mcp&type=Date)](https://star-history.com/#openags/paper-search-mcp&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=openags/paper-search-mcp&type=Date)](https://star-history.dera.page/#openags/paper-search-mcp&Date)
 
 ---
 

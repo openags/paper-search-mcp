@@ -11,14 +11,14 @@ Search, download, and read academic papers via the `paper-search` CLI.
 
 All commands run via:
 ```bash
-uv run --directory <REPO_PATH> paper-search <command> [args]
+paper-search <command> [args]
 ```
 
-Replace `<REPO_PATH>` with the absolute path to your clone of this repository.
+If `paper-search` is not available, install it with `uv tool install paper-search-mcp`. Optional API keys can be configured in `~/.config/paper-search-mcp/.env`.
 
 ### Search
 ```bash
-uv run --directory <REPO_PATH> paper-search search "<query>" -n <max_per_source> -s <sources> -y <year>
+paper-search search "<query>" -n <max_per_source> -s <sources> -y <year>
 ```
 - `-n`: results per source (default: 5)
 - `-s`: comma-separated sources or "all" (default: all)
@@ -28,17 +28,17 @@ For speed, prefer targeted sources (`-s arxiv,semantic,crossref`) over "all" unl
 
 ### Download PDF
 ```bash
-uv run --directory <REPO_PATH> paper-search download <source> <paper_id> [-o ./downloads]
+paper-search download <source> <paper_id> [-o ./downloads]
 ```
 
 ### Read (extract text)
 ```bash
-uv run --directory <REPO_PATH> paper-search read <source> <paper_id> [-o ./downloads]
+paper-search read <source> <paper_id> [-o ./downloads]
 ```
 
 ### List sources
 ```bash
-uv run --directory <REPO_PATH> paper-search sources
+paper-search sources
 ```
 
 ## Output

@@ -6,12 +6,12 @@ from datetime import datetime
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
-import os
 
 class PubMedSearcher(PaperSource):
     """Searcher for PubMed papers"""
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    REQUEST_TIMEOUT_SECONDS = 30
 
     def search(self, query: str, max_results: int = 10, sort: str = 'relevance') -> List[Paper]:
         search_params = {
@@ -21,7 +21,11 @@ class PubMedSearcher(PaperSource):
             'retmode': 'xml',
             'sort': sort,
         }
-        search_response = requests.get(self.SEARCH_URL, params=search_params)
+        search_response = requests.get(
+            self.SEARCH_URL,
+            params=search_params,
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
         search_root = ET.fromstring(search_response.content)
         ids = [id.text for id in search_root.findall('.//Id') if id.text]
         if not ids:
@@ -32,7 +36,11 @@ class PubMedSearcher(PaperSource):
             'id': ','.join(ids),
             'retmode': 'xml'
         }
-        fetch_response = requests.get(self.FETCH_URL, params=fetch_params)
+        fetch_response = requests.get(
+            self.FETCH_URL,
+            params=fetch_params,
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
         fetch_root = ET.fromstring(fetch_response.content)
         
         papers = []

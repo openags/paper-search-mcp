@@ -2,11 +2,12 @@
 
 Simple wrapper adapted from scihub.py for downloading PDFs via Sci-Hub.
 """
-from pathlib import Path
-import re
 import hashlib
 import logging
+import re
+from pathlib import Path
 from typing import Optional
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -88,6 +89,8 @@ class SciHubFetcher:
             if response.status_code != 200:
                 return None
 
+            effective_url = str(getattr(response, 'url', '') or search_url)
+
             soup = BeautifulSoup(response.content, 'html.parser')
             
             # Check for article not found
@@ -102,29 +105,16 @@ class SciHubFetcher:
                 src = embed.get('src') if hasattr(embed, 'get') else None
                 logging.debug(f"Embed src: {src}")
                 if src and isinstance(src, str):
-                    if src.startswith('//'):
-                        pdf_url = 'https:' + src
-                        logging.debug(f"Returning PDF URL: {pdf_url}")
-                        return pdf_url
-                    elif src.startswith('/'):
-                        pdf_url = self.base_url + src
-                        logging.debug(f"Returning PDF URL: {pdf_url}")
-                        return pdf_url
-                    else:
-                        logging.debug(f"Returning PDF URL: {src}")
-                        return src
+                    pdf_url = urljoin(effective_url, src)
+                    logging.debug(f"Returning PDF URL: {pdf_url}")
+                    return pdf_url
 
             # Look for iframe with PDF (fallback)
             iframe = soup.find('iframe')
             if iframe:
                 src = iframe.get('src') if hasattr(iframe, 'get') else None
                 if src and isinstance(src, str):
-                    if src.startswith('//'):
-                        return 'https:' + src
-                    elif src.startswith('/'):
-                        return self.base_url + src
-                    else:
-                        return src
+                    return urljoin(effective_url, src)
 
             # Look for download button with onclick
             for button in soup.find_all('button'):
@@ -134,23 +124,13 @@ class SciHubFetcher:
                     url_match = re.search(r"location\.href='([^']+)'", onclick)
                     if url_match:
                         url = url_match.group(1)
-                        if url.startswith('//'):
-                            return 'https:' + url
-                        elif url.startswith('/'):
-                            return self.base_url + url
-                        else:
-                            return url
+                        return urljoin(effective_url, url)
 
             # Look for direct download links
             for link in soup.find_all('a'):
                 href = link.get('href', '') if hasattr(link, 'get') else ''
                 if isinstance(href, str) and href and ('pdf' in href.lower() or href.endswith('.pdf')):
-                    if href.startswith('//'):
-                        return 'https:' + href
-                    elif href.startswith('/'):
-                        return self.base_url + href
-                    elif href.startswith('http'):
-                        return href
+                    return urljoin(effective_url, href)
 
             return None
 

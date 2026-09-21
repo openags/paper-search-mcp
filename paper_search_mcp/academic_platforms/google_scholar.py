@@ -17,6 +17,7 @@ class GoogleScholarSearcher(PaperSource):
     """Custom implementation of Google Scholar paper search"""
     
     SCHOLAR_URL = "https://scholar.google.com/scholar"
+    CONSENT_COOKIE_VALUE = "YES+"
     BROWSERS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -37,6 +38,11 @@ class GoogleScholarSearcher(PaperSource):
             'Accept': 'text/html,application/xhtml+xml',
             'Accept-Language': 'en-US,en;q=0.9'
         })
+        self.session.cookies.set(
+            "CONSENT",
+            self.CONSENT_COOKIE_VALUE,
+            domain=".google.com",
+        )
 
         if self.proxy_url:
             self.session.proxies.update({
@@ -48,11 +54,43 @@ class GoogleScholarSearcher(PaperSource):
         self.session.headers.update({'User-Agent': random.choice(self.BROWSERS)})
 
     @staticmethod
-    def _is_captcha_page(soup: BeautifulSoup) -> bool:
+    def _remaining_timeout(deadline: Optional[float], maximum: float) -> Optional[float]:
+        if deadline is None:
+            return maximum
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        return min(maximum, remaining)
+
+    @staticmethod
+    def _sleep_with_deadline(delay: float, deadline: Optional[float]) -> bool:
+        if deadline is None:
+            time.sleep(delay)
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(delay, remaining))
+        return time.monotonic() < deadline
+
+    @staticmethod
+    def _is_captcha_page(soup: BeautifulSoup, page_text: Optional[str] = None) -> bool:
+        if page_text is None:
+            page_text = soup.get_text(' ', strip=True).lower()
         return bool(
             soup.find('form', {'id': 'gs_captcha_f'})
             or soup.find('input', {'name': 'captcha'})
-            or 'please show you\'re not a robot' in soup.get_text(' ', strip=True).lower()
+            or 'please show you\'re not a robot' in page_text
+            or 'unusual traffic from your computer network' in page_text
+        )
+
+    @staticmethod
+    def _is_consent_page(soup: BeautifulSoup, page_text: Optional[str] = None) -> bool:
+        if page_text is None:
+            page_text = soup.get_text(' ', strip=True).lower()
+        return bool(
+            soup.find("form", {"action": re.compile(r"consent\.google", re.IGNORECASE)})
+            or "before you continue to google scholar" in page_text
         )
 
     def _extract_year(self, text: str) -> Optional[int]:
@@ -109,15 +147,29 @@ class GoogleScholarSearcher(PaperSource):
             logger.warning(f"Failed to parse paper: {e}")
             return None
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    def search(
+        self,
+        query: str,
+        max_results: int = 10,
+        timeout_seconds: Optional[float] = None,
+    ) -> List[Paper]:
         """
         Search Google Scholar with custom parameters
         """
         papers = []
         start = 0
         results_per_page = min(10, max_results)
+        consent_retry_attempted = False
+        deadline = (
+            time.monotonic() + max(0.0, timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
 
         while len(papers) < max_results:
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning("Google Scholar search deadline reached")
+                break
             try:
                 # Construct search parameters
                 params = {
@@ -130,9 +182,19 @@ class GoogleScholarSearcher(PaperSource):
                 response = None
                 for attempt in range(self.max_retries):
                     self._rotate_user_agent()
-                    time.sleep(random.uniform(1.0, 2.5))
+                    if not self._sleep_with_deadline(
+                        random.uniform(1.0, 2.5), deadline
+                    ):
+                        break
 
-                    response = self.session.get(self.SCHOLAR_URL, params=params, timeout=30)
+                    request_timeout = self._remaining_timeout(deadline, 30.0)
+                    if request_timeout is None:
+                        break
+                    response = self.session.get(
+                        self.SCHOLAR_URL,
+                        params=params,
+                        timeout=request_timeout,
+                    )
                     if response.status_code == 200:
                         break
 
@@ -146,10 +208,15 @@ class GoogleScholarSearcher(PaperSource):
                             self.max_retries,
                             wait_time,
                         )
-                        time.sleep(wait_time)
+                        if not self._sleep_with_deadline(wait_time, deadline):
+                            break
                         continue
 
                     logger.error("Search failed with non-retryable status %s", response.status_code)
+                    break
+
+                if deadline is not None and time.monotonic() >= deadline:
+                    logger.warning("Google Scholar search deadline reached")
                     break
 
                 if response is None or response.status_code != 200:
@@ -158,8 +225,26 @@ class GoogleScholarSearcher(PaperSource):
 
                 # Parse results
                 soup = BeautifulSoup(response.text, 'html.parser')
+                page_text = soup.get_text(' ', strip=True).lower()
 
-                if self._is_captcha_page(soup):
+                if self._is_consent_page(soup, page_text):
+                    if not consent_retry_attempted:
+                        consent_retry_attempted = True
+                        self.session.cookies.set(
+                            "CONSENT",
+                            self.CONSENT_COOKIE_VALUE,
+                            domain=".google.com",
+                        )
+                        logger.info(
+                            "Google Scholar consent page detected; retrying search"
+                        )
+                        continue
+                    logger.warning(
+                        "Google Scholar returned a consent page after retry"
+                    )
+                    break
+
+                if self._is_captcha_page(soup, page_text):
                     logger.warning(
                         "Google Scholar returned a bot-detection/captcha page. "
                         "Set PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL/GOOGLE_SCHOLAR_PROXY_URL "

@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 - [Overview](#overview)
 - [Project Principles](#project-principles)
+- [MCP Authorization Compatibility](#mcp-authorization-compatibility)
 - [Features](#features)
 - [Source Strategy](#source-strategy)
 - [Sci-Hub Notice](#sci-hub-notice)
@@ -42,6 +43,14 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 - **Optional API Keys**: API keys are supported only when they improve stability, rate limits, or metadata quality. The MCP should still be usable without them whenever possible.
 - **LLM-Friendly Retrieval**: Search results should be standardized, deduplicated, and as complete as possible for downstream LLM workflows.
 - **Source Transparency**: Different sources have different strengths. The MCP should make those tradeoffs explicit instead of pretending every source supports full-text retrieval.
+
+---
+
+## MCP Authorization Compatibility
+
+The bundled MCP server currently runs locally over `stdio`. It does not implement OAuth 2.1 protected-resource metadata, bearer-token validation, scopes, or HTTP 401/403 authorization responses.
+
+For a remote protected deployment, put the server behind an MCP/HTTP gateway or reverse proxy that enforces OAuth and forwards only authorized requests. Native authenticated HTTP transport requires a separate transport and security design and is intentionally outside this small stabilization batch.
 
 ---
 
@@ -120,7 +129,7 @@ All keys are **optional** unless noted. Configure them in `~/.config/paper-searc
 | `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` | Unpaywall | **Yes** (Unpaywall disabled without it) | Any valid email; register at [unpaywall.org](https://unpaywall.org/products/api) |
 | `PAPER_SEARCH_MCP_CORE_API_KEY` | CORE | Recommended | Free at [core.ac.uk/services/api](https://core.ac.uk/services/api) |
 | `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` | Semantic Scholar | Optional | Free at [semanticscholar.org](https://www.semanticscholar.org/product/api) — improves rate limits |
-| `PAPER_SEARCH_MCP_OPENALEX_API_KEY` | OpenAlex | Optional | Free at [docs.openalex.org](https://docs.openalex.org/how-to-use-the-api/api-keys) - improves daily limits |
+| `PAPER_SEARCH_MCP_OPENALEX_API_KEY` | OpenAlex | Optional | Free at [openalex.org/settings/api](https://openalex.org/settings/api); increases the keyless daily budget 10x |
 | `PAPER_SEARCH_MCP_OPENALEX_EMAIL` | OpenAlex | Optional | Contact email used in the OpenAlex `User-Agent` |
 | `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` | Google Scholar | Optional | Your HTTP/HTTPS proxy URL — bypasses bot-detection |
 | `PAPER_SEARCH_MCP_DOAJ_API_KEY` | DOAJ | Optional | Free at [doaj.org](https://doaj.org/apply-for-api-key/) — raises hourly rate limit |
@@ -185,6 +194,7 @@ SSRN integration remains compliance-first: it only attempts direct public PDF li
 
 Sci-Hub support can remain available as an optional connector for users who explicitly choose to enable it, but it should not be treated as the default or recommended full-text path.
 
+- `download_with_fallback` leaves Sci-Hub disabled by default. Pass `use_scihub=true` only when you explicitly choose to use it.
 - Availability is unstable and mirrors change frequently.
 - Legal and policy risks vary by jurisdiction.
 - README and tool descriptions should clearly state that users are responsible for enabling and using it.
@@ -456,6 +466,20 @@ For example, if you cloned to `/Users/mac/Pengsong/paper-search-mcp`:
 
 > `uv run` automatically installs dependencies into an isolated environment on first run — no `pip install` or `venv` needed.
 
+To run one shared network server instead of one stdio process per client:
+
+```bash
+paper-search-mcp --transport streamable-http --host 127.0.0.1 --port 8000 --path /mcp
+```
+
+The available transports are `stdio`, `sse`, and `streamable-http`. The default
+remains `stdio`. The same network settings can be supplied with
+`PAPER_SEARCH_MCP_TRANSPORT`, `PAPER_SEARCH_MCP_HOST`,
+`PAPER_SEARCH_MCP_PORT`, and `PAPER_SEARCH_MCP_PATH`; command-line options take
+precedence. Binding to a non-loopback host such as `0.0.0.0` exposes an
+unauthenticated server, so place it behind an authenticated gateway rather than
+publishing it directly to the internet.
+
 For active development, optionally install an editable copy:
 
 ```bash
@@ -578,7 +602,7 @@ We welcome contributions! Here's how to get started:
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=openags/paper-search-mcp&type=Date)](https://star-history.com/#openags/paper-search-mcp&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=openags/paper-search-mcp&type=Date)](https://star-history.dera.page/#openags/paper-search-mcp&Date)
 
 ---
 

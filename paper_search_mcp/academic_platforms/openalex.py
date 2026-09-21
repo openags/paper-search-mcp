@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 from datetime import datetime
 import requests
 import logging
@@ -17,7 +17,11 @@ class OpenAlexSearcher(PaperSource):
     DEFAULT_USER_AGENT = "paper-search-mcp/1.0"
     DEFAULT_EMAIL = "openags@example.com"
 
-    def __init__(self, api_key: Optional[str] = None, email: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        email: str | None = None,
+    ):
         self.session = requests.Session()
         self.api_key = (
             api_key if api_key is not None else get_env("OPENALEX_API_KEY", "")
@@ -30,6 +34,12 @@ class OpenAlexSearcher(PaperSource):
         if self.email:
             user_agent = f"{user_agent} (mailto:{self.email})"
         self.session.headers.update({"User-Agent": user_agent})
+        if self.api_key:
+            # Keep credentials out of URLs and proxy/access logs. OpenAlex
+            # supports Bearer authentication as an alternative to api_key=.
+            self.session.headers.update(
+                {"Authorization": f"Bearer {self.api_key}"}
+            )
 
     def _reconstruct_abstract(self, inverted_index: dict) -> str:
         """
@@ -50,13 +60,19 @@ class OpenAlexSearcher(PaperSource):
             logger.warning(f"Error reconstructing OpenAlex abstract: {e}")
             return ""
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    def search(
+        self,
+        query: str,
+        max_results: int = 10,
+        filter: str = "",
+    ) -> List[Paper]:
         """
         Search OpenAlex works. Uses the 'search' filter.
 
         Args:
             query: Search query string
-            max_results: Maximum results to return (natively max 200 per page)
+            max_results: Maximum results to return (natively max 100 per page)
+            filter: Optional OpenAlex works filter expression.
 
         Returns:
             List[Paper]: List of found papers with metadata.
@@ -66,10 +82,11 @@ class OpenAlexSearcher(PaperSource):
         try:
             params = {
                 "search": query,
-                "per_page": min(max_results, 200),
+                "per_page": min(max_results, 100),
             }
-            if self.api_key:
-                params["api_key"] = self.api_key
+            filter_value = (filter or "").strip()
+            if filter_value:
+                params["filter"] = filter_value
 
             response = self.session.get(self.BASE_URL, params=params, timeout=30)
             

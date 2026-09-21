@@ -35,7 +35,7 @@ dependencies = [
     "feedparser",
     "fastmcp",
     "pypdf",
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=1.8.0,<2",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
     "httpx[socks]>=0.28.1",
@@ -57,3 +57,6 @@ paper-search = "paper_search_mcp.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["paper_search_mcp"]
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]

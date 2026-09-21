@@ -1,42 +1,86 @@
 # paper_search_mcp/server.py
-from typing import List, Dict, Optional, Any
+import argparse
 import asyncio
-import os
 import logging
+import os
 import re
+import threading
+import time
+from collections.abc import Awaitable
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import BoundedSemaphore
+from typing import Any, Dict, List, Optional
+
 import httpx
 from mcp.server.fastmcp import FastMCP
-from .config import get_env
+
 from .academic_platforms.arxiv import ArxivSearcher
-from .academic_platforms.pubmed import PubMedSearcher
+from .academic_platforms.base_search import BASESearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
-from .academic_platforms.medrxiv import MedRxivSearcher
-from .academic_platforms.google_scholar import GoogleScholarSearcher
-from .academic_platforms.iacr import IACRSearcher
-from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.citeseerx import CiteSeerXSearcher
+from .academic_platforms.core import CORESearcher
 from .academic_platforms.crossref import CrossRefSearcher
+from .academic_platforms.dblp import DBLPSearcher
+from .academic_platforms.doaj import DOAJSearcher
+from .academic_platforms.europepmc import EuropePMCSearcher
+from .academic_platforms.google_scholar import GoogleScholarSearcher
+from .academic_platforms.hal import HALSearcher
+from .academic_platforms.iacr import IACRSearcher
+from .academic_platforms.medrxiv import MedRxivSearcher
+from .academic_platforms.openaire import OpenAiresearcher
 from .academic_platforms.openalex import OpenAlexSearcher
 from .academic_platforms.pmc import PMCSearcher
-from .academic_platforms.core import CORESearcher
-from .academic_platforms.europepmc import EuropePMCSearcher
+from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
-from .academic_platforms.dblp import DBLPSearcher
-from .academic_platforms.openaire import OpenAiresearcher
-from .academic_platforms.citeseerx import CiteSeerXSearcher
-from .academic_platforms.doaj import DOAJSearcher
-from .academic_platforms.base_search import BASESearcher
+from .academic_platforms.semantic import SemanticSearcher
+from .academic_platforms.ssrn import SSRNSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
-from .academic_platforms.hal import HALSearcher
-from .academic_platforms.ssrn import SSRNSearcher
-from .utils import extract_doi
-
-# from .academic_platforms.hub import SciHubSearcher
-from .paper import Paper
+from .config import get_env, load_env_file
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
 logger = logging.getLogger(__name__)
+GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS = 20.0
+SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS = 45.0
+SEARCH_EXECUTOR_MAX_WORKERS = 32
+
+
+class SearchExecutorSaturatedError(RuntimeError):
+    """Raised instead of queuing unbounded work behind blocked providers."""
+
+
+class _BoundedSearchExecutor:
+    """Keep timed-out blocking searches isolated in a fixed-size worker pool."""
+
+    def __init__(self, max_workers: int):
+        self._max_workers = max_workers
+        self._slots = BoundedSemaphore(max_workers)
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="paper-search",
+        )
+
+    def submit(self, function, /, *args, **kwargs) -> Future:
+        if not self._slots.acquire(blocking=False):
+            raise SearchExecutorSaturatedError(
+                "search worker capacity is exhausted by unfinished provider calls"
+            )
+
+        try:
+            future = self._executor.submit(function, *args, **kwargs)
+        except BaseException:
+            self._slots.release()
+            raise
+
+        future.add_done_callback(lambda _future: self._slots.release())
+        return future
+
+    def shutdown(self, wait: bool = True) -> None:
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+
+_SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -67,13 +111,31 @@ ssrn_searcher = SSRNSearcher()
 # Asynchronous helper to adapt synchronous searchers
 # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
-    if 'year' in kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, year=kwargs['year'])
-    elif kwargs:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
-    else:
-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
+    search_future = _SEARCH_EXECUTOR.submit(
+        searcher.search,
+        query,
+        max_results=max_results,
+        **kwargs,
+    )
+    papers = await asyncio.wrap_future(search_future)
     return [paper.to_dict() for paper in papers]
+
+
+async def _run_search_with_timeout(
+    source_name: str,
+    search_task: Awaitable[List[Dict]],
+    timeout_seconds: Optional[float] = None,
+) -> List[Dict]:
+    """Run one source without allowing it to stall a multi-source request."""
+    if timeout_seconds is None:
+        timeout_seconds = SEARCH_PAPERS_SOURCE_TIMEOUT_SECONDS
+
+    try:
+        return await asyncio.wait_for(search_task, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(
+            f"search for source '{source_name}' timed out after {timeout_seconds:g} seconds"
+        ) from exc
 
 
 ALL_SOURCES = [
@@ -132,6 +194,15 @@ def _parse_sources(sources: str) -> List[str]:
 
     normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
     return [source for source in normalized if source in ALL_SOURCES]
+
+
+def _invalid_sources(sources: str) -> List[str]:
+    """Return distinct requested source names that are unknown or unavailable."""
+    if not sources or sources.strip().lower() == "all":
+        return []
+
+    normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
+    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES))
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -379,7 +450,7 @@ async def search_papers(
     query: str,
     max_results_per_source: int = 5,
     sources: str = "all",
-    year: Optional[str] = None,
+    year: str = "",
 ) -> Dict[str, Any]:
     """Unified top-level search across all configured academic platforms.
 
@@ -393,14 +464,19 @@ async def search_papers(
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
     """
     selected_sources = _parse_sources(sources)
+    invalid_sources = _invalid_sources(sources)
+    errors: Dict[str, str] = {
+        source: "Unknown or unavailable source." for source in invalid_sources
+    }
 
     if not selected_sources:
+        errors["sources"] = "No valid sources selected."
         return {
             "query": query,
             "sources_requested": sources,
             "sources_used": [],
             "source_results": {},
-            "errors": {"sources": "No valid sources selected."},
+            "errors": errors,
             "papers": [],
             "total": 0,
         }
@@ -457,10 +533,15 @@ async def search_papers(
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
 
     source_names = list(task_map.keys())
-    source_outputs = await asyncio.gather(*task_map.values(), return_exceptions=True)
+    source_outputs = await asyncio.gather(
+        *(
+            _run_search_with_timeout(source_name, search_task)
+            for source_name, search_task in task_map.items()
+        ),
+        return_exceptions=True,
+    )
 
     source_results: Dict[str, int] = {}
-    errors: Dict[str, str] = {}
     merged_papers: List[Dict[str, Any]] = []
 
     for source_name, output in zip(source_names, source_outputs):
@@ -525,12 +606,12 @@ async def search_pubmed(query: str, max_results: int = 10, sort: str = 'relevanc
 async def search_biorxiv(query: str, max_results: int = 10) -> List[Dict]:
     """Search academic papers from bioRxiv.
 
-    Note: bioRxiv API filters by category name within the last 30 days, not full-text
-    keyword search. Use a category keyword such as 'bioinformatics', 'neuroscience',
-    'cell biology', etc.
+    Note: bioRxiv does not provide full-text keyword search. The query may be a DOI,
+    a date range such as '2024-01-01/2024-01-31', a category such as
+    'bioinformatics', or an empty string for recent papers.
 
     Args:
-        query: Category name to filter by (e.g., 'bioinformatics', 'neuroscience').
+        query: DOI, date range, category name, or an empty string for recent papers.
         max_results: Maximum number of papers to return (default: 10).
     Returns:
         List of paper metadata in dictionary format.
@@ -567,7 +648,24 @@ async def search_google_scholar(query: str, max_results: int = 10) -> List[Dict]
     Returns:
         List of paper metadata in dictionary format.
     """
-    papers = await async_search(google_scholar_searcher, query, max_results)
+    try:
+        papers = await _run_search_with_timeout(
+            "google_scholar",
+            async_search(
+                google_scholar_searcher,
+                query,
+                max_results,
+                timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS - 1.0,
+            ),
+            timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Google Scholar search timed out after %.1fs for query=%r; returning no results.",
+            GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
+            query,
+        )
+        return []
     return papers if papers else []
 
 
@@ -738,7 +836,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
 
 
 @mcp.tool()
-async def search_semantic(query: str, year: Optional[str] = None, max_results: int = 10) -> List[Dict]:
+async def search_semantic(query: str, year: str = "", max_results: int = 10) -> List[Dict]:
     """Search academic papers from Semantic Scholar.
 
     Args:
@@ -749,7 +847,7 @@ async def search_semantic(query: str, year: Optional[str] = None, max_results: i
         List of paper metadata in dictionary format.
     """
     kwargs = {}
-    if year is not None:
+    if year:
         kwargs['year'] = year
     papers = await async_search(semantic_searcher, query, max_results, **kwargs)
     return papers if papers else []
@@ -805,9 +903,9 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
 async def search_crossref(
     query: str,
     max_results: int = 10,
-    filter: Optional[str] = None,
-    sort: Optional[str] = None,
-    order: Optional[str] = None,
+    filter: str = "",
+    sort: str = "",
+    order: str = "",
 ) -> List[Dict]:
     """Search academic papers from CrossRef database.
     
@@ -825,7 +923,11 @@ async def search_crossref(
     Returns:
         List of paper metadata in dictionary format.
     """
-    extra = {k: v for k, v in {'filter': filter, 'sort': sort, 'order': order}.items() if v is not None}
+    extra = {
+        key: value
+        for key, value in {"filter": filter, "sort": sort, "order": order}.items()
+        if value
+    }
     papers = await async_search(crossref_searcher, query, max_results, **extra)
     return papers if papers else []
 
@@ -895,7 +997,7 @@ async def download_with_fallback(
     doi: str = "",
     title: str = "",
     save_path: str = "./downloads",
-    use_scihub: bool = True,
+    use_scihub: bool = False,
     scihub_base_url: str = "https://sci-hub.se",
 ) -> str:
     """Try source-native download, OA repositories, Unpaywall, then optional Sci-Hub.
@@ -906,7 +1008,7 @@ async def download_with_fallback(
         doi: Optional DOI used for repository/unpaywall/Sci-Hub fallback.
         title: Optional title used for repository/Sci-Hub fallback when DOI is unavailable.
         save_path: Directory to save downloaded files.
-        use_scihub: Whether to fallback to Sci-Hub after OA attempts fail.
+        use_scihub: Whether to fallback to Sci-Hub after OA attempts fail. Disabled by default.
         scihub_base_url: Sci-Hub mirror URL for fallback.
     Returns:
         Download path on success or explanatory error message.
@@ -1516,8 +1618,161 @@ if acm_searcher is not None:
         return acm_searcher.read_paper(paper_id, save_path)
 
 
-def main():
-    mcp.run(transport="stdio")
+def _wait_for_windows_process_exit(process_id: int) -> bool:
+    """Wait for a Windows process handle to become signalled."""
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    infinite = 0xFFFFFFFF
+    wait_object_0 = 0x00000000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(synchronize, False, process_id)
+    if not handle:
+        logger.warning(
+            "Could not watch MCP client process %s (Windows error %s)",
+            process_id,
+            ctypes.get_last_error(),
+        )
+        return False
+
+    try:
+        result = kernel32.WaitForSingleObject(handle, infinite)
+    finally:
+        kernel32.CloseHandle(handle)
+
+    if result != wait_object_0:
+        logger.warning(
+            "Waiting for MCP client process %s failed (result %#x)",
+            process_id,
+            result,
+        )
+        return False
+    return True
+
+
+def _exit_when_orphaned(poll_seconds: float = 5.0) -> None:
+    """Exit if the MCP client that spawned this stdio server goes away.
+
+    A stdio server is owned by exactly one client. When that client dies without
+    closing the pipe cleanly, ``mcp.run`` keeps blocking on stdin and the process
+    survives indefinitely, re-adopted by init. They accumulate: nine of these had
+    piled up on one developer machine, the oldest running for over a day.
+
+    Watch for reparenting and leave.
+    """
+    original_ppid = os.getppid()
+    if os.name == "nt":
+        # Windows keeps reporting the original parent PID after that process has
+        # exited, so polling getppid() cannot detect orphaning. A process handle
+        # becomes signalled at termination and works without an extra dependency.
+        if not _wait_for_windows_process_exit(original_ppid):
+            return
+        logger.info("MCP client process %s exited; shutting down", original_ppid)
+        os._exit(0)
+        return
+
+    while True:
+        time.sleep(poll_seconds)
+        ppid = os.getppid()
+        if ppid == 1 or ppid != original_ppid:
+            logger.info(
+                "MCP client gone (ppid %s -> %s); shutting down", original_ppid, ppid
+            )
+            os._exit(0)
+            return
+
+
+def _server_env(name: str, default: str) -> str:
+    """Return a server setting, preferring the repository-wide env prefix."""
+    load_env_file()
+    for key in (f"PAPER_SEARCH_MCP_{name}", f"PAPER_SEARCH_{name}"):
+        value = os.environ.get(key)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
+
+
+def _valid_port(raw: str) -> int:
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "port must be an integer between 1 and 65535"
+        ) from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be an integer between 1 and 65535")
+    return port
+
+
+def _valid_http_path(raw: str) -> str:
+    path = raw.strip()
+    if not path.startswith("/"):
+        raise argparse.ArgumentTypeError("path must start with '/'")
+    return path
+
+
+def _build_server_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Paper Search MCP server")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "sse", "streamable-http"),
+        default=_server_env("TRANSPORT", "stdio"),
+        help="MCP transport (default: stdio; env: PAPER_SEARCH_MCP_TRANSPORT)",
+    )
+    parser.add_argument(
+        "--host",
+        default=_server_env("HOST", "127.0.0.1"),
+        help="Network bind host (env: PAPER_SEARCH_MCP_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=_valid_port,
+        default=_server_env("PORT", "8000"),
+        help="Network bind port (env: PAPER_SEARCH_MCP_PORT)",
+    )
+    parser.add_argument(
+        "--path",
+        type=_valid_http_path,
+        default=_server_env("PATH", "/mcp"),
+        help="Streamable HTTP endpoint path (env: PAPER_SEARCH_MCP_PATH)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Run over stdio or a shared network transport.
+
+    Command-line arguments override environment settings. ``stdio`` stays the
+    default, so existing MCP client configurations remain compatible. The
+    shorter ``PAPER_SEARCH_*`` names introduced by PR #114 remain accepted as
+    aliases for the preferred ``PAPER_SEARCH_MCP_*`` names.
+    """
+    args = _build_server_parser().parse_args(argv)
+
+    if args.transport == "stdio":
+        # Only meaningful for stdio: an http server has no owning client to outlive.
+        threading.Thread(
+            target=_exit_when_orphaned, name="orphan-watchdog", daemon=True
+        ).start()
+        mcp.run(transport="stdio")
+        return
+
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+    if args.transport == "streamable-http":
+        mcp.settings.streamable_http_path = args.path
+    logger.info(
+        "serving %s on %s:%s", args.transport, mcp.settings.host, mcp.settings.port
+    )
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

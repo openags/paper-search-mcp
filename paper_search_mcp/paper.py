@@ -1,7 +1,10 @@
 # paper_search_mcp/paper.py
 from dataclasses import dataclass
-from datetime import datetime
-from typing import List, Dict, Optional
+from datetime import date, datetime
+from typing import List, Dict, Optional, Union
+
+
+DateValue = Optional[Union[date, datetime, str]]
 
 @dataclass
 class Paper:
@@ -12,13 +15,13 @@ class Paper:
     authors: List[str]         # List of author names
     abstract: str              # Abstract text
     doi: str                   # Digital Object Identifier
-    published_date: Optional[datetime]   # Publication date
+    published_date: DateValue            # Publication date
     pdf_url: str               # Direct PDF link
     url: str                   # URL to paper page
     source: str                # Source platform (e.g., 'arxiv', 'pubmed')
 
     # 可选字段
-    updated_date: Optional[datetime] = None        # Last updated date
+    updated_date: DateValue = None                 # Last updated date
     categories: Optional[List[str]] = None         # Subject categories
     keywords: Optional[List[str]] = None           # Keywords
     citations: int = 0                             # Citation count
@@ -43,17 +46,35 @@ class Paper:
         return {
             'paper_id': self.paper_id,
             'title': self.title,
-            'authors': '; '.join(self.authors) if self.authors else '',
+            'authors': self._serialize_list(self.authors),
             'abstract': self.abstract,
             'doi': self.doi,
-            'published_date': self.published_date.isoformat() if self.published_date else '',
+            'published_date': self._serialize_date(self.published_date),
             'pdf_url': self.pdf_url,
             'url': self.url,
             'source': self.source,
-            'updated_date': self.updated_date.isoformat() if self.updated_date else '',
-            'categories': '; '.join(self.categories) if self.categories else '',
-            'keywords': '; '.join(self.keywords) if self.keywords else '',
+            'updated_date': self._serialize_date(self.updated_date),
+            'categories': self._serialize_list(self.categories),
+            'keywords': self._serialize_list(self.keywords),
             'citations': self.citations,
-            'references': '; '.join(self.references) if self.references else '',
+            'references': self._serialize_list(self.references),
             'extra': str(self.extra) if self.extra else ''
         }
+
+    @staticmethod
+    def _serialize_date(value: DateValue) -> str:
+        """Serialize supported date values without assuming connector input types."""
+        if not value:
+            return ''
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def _serialize_list(value) -> str:
+        """Serialize sequences while tolerating an already-serialized string."""
+        if not value:
+            return ''
+        if isinstance(value, str):
+            return value
+        return '; '.join(str(item) for item in value if item is not None)

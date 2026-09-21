@@ -1,18 +1,27 @@
 # paper_search_mcp/sources/arxiv.py
-from typing import List
-from datetime import datetime
-import requests
-import feedparser
+import os
+import re
 import time
+from datetime import datetime
+from typing import List
+
+import feedparser
+import requests
+from pypdf import PdfReader
+
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
-from pypdf import PdfReader
-import os
+
 
 class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers"""
-    BASE_URL = "http://export.arxiv.org/api/query"
+    BASE_URL = "https://export.arxiv.org/api/query"
+    _FIELD_PREFIX_RE = re.compile(
+        r"(?:^|\s)(ti|au|abs|co|jr|cat|rn|id|all):",
+        re.IGNORECASE,
+    )
+    _BOOLEAN_OP_RE = re.compile(r"(?:^|\s)(AND|OR|ANDNOT)(?:\s|$)")
 
     def __init__(self):
         self.session = requests.Session()
@@ -21,9 +30,23 @@ class ArxivSearcher(PaperSource):
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
 
+    @staticmethod
+    def _build_search_query(query: str) -> str:
+        """Quote plain phrases while preserving arXiv's structured query syntax."""
+        normalized = " ".join((query or "").split())
+        if (
+            '"' in normalized
+            or ArxivSearcher._FIELD_PREFIX_RE.search(normalized)
+            or ArxivSearcher._BOOLEAN_OP_RE.search(normalized)
+        ):
+            return normalized
+        if re.search(r"\s", normalized):
+            return f'all:"{normalized}"'
+        return f'all:{normalized}'
+
     def search(self, query: str, max_results: int = 10, sort_by: str = 'relevance', sort_order: str = 'descending') -> List[Paper]:
         params = {
-            'search_query': f'all:{query}',
+            'search_query': self._build_search_query(query),
             'max_results': max_results,
             'sortBy': sort_by,
             'sortOrder': sort_order,

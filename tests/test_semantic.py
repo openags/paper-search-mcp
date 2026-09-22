@@ -64,6 +64,18 @@ class TestSemanticSearcher(unittest.TestCase):
         self.assertIsNotNone(paper)
         self.assertIsNone(paper.published_date)
 
+    def test_anonymous_rate_limit_fails_fast(self):
+        response = Mock()
+        response.status_code = 429
+        response.headers = {}
+
+        with patch.object(self.searcher, "get_api_key", return_value=None), \
+             patch.object(self.searcher.session, "get", return_value=response) as get:
+            result = self.searcher.request_api("paper/search", {"query": "test"})
+
+        self.assertEqual(result["error"], "rate_limited")
+        self.assertEqual(get.call_count, 1)
+
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_basic(self):
         """Test basic search functionality"""

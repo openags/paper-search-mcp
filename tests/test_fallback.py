@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from paper_search_mcp import server
+from paper_search_mcp import cli
 
 
 class _FakeAsyncClient:
@@ -609,6 +610,28 @@ class TestDownloadFromUrl(unittest.TestCase):
         self.assertIsNotNone(result)
         verifier.assert_called_once_with(content, "", "10.1000/example")
 
+    def test_parse_sources_defaults_to_fast_set(self):
+        cli.SEARCHERS.clear()
+        selected = cli._parse_sources("fast")
+        self.assertEqual(selected, [s for s in cli._fast_sources() if s in cli._available_sources()])
+        self.assertEqual(cli.SEARCHERS, {})
+
+        fastest = cli._parse_sources("fastest")
+        self.assertEqual(fastest, [s for s in cli.FASTEST_SOURCES if s in cli._available_sources()])
+        self.assertLess(len(fastest), len(selected))
+
+        selected_from_all = cli._parse_sources("all")
+        self.assertEqual(selected_from_all, selected)
+
+        exhaustive = cli._parse_sources("all", exhaustive=True)
+        self.assertIn("google_scholar", exhaustive)
+        self.assertGreater(len(exhaustive), len(selected))
+
+    def test_fast_sources_include_semantic_when_key_is_configured(self):
+        with patch.dict("os.environ", {"PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "test-key"}):
+            selected = cli._parse_sources("fast")
+
+        self.assertIn("semantic", selected)
 
 if __name__ == "__main__":
     unittest.main()

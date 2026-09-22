@@ -767,7 +767,7 @@ async def search_iacr(
     return [paper.to_dict() for paper in papers] if papers else []
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF of an arXiv paper.
 
@@ -780,7 +780,7 @@ async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
     return await asyncio.to_thread(arxiv_searcher.download_pdf, paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
     """Attempt to download PDF of a PubMed paper.
 
@@ -796,7 +796,7 @@ async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
         return str(e)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF of a bioRxiv paper.
 
@@ -809,7 +809,7 @@ async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str
     return biorxiv_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF of a medRxiv paper.
 
@@ -822,7 +822,7 @@ async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str
     return medrxiv_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF of an IACR ePrint paper.
 
@@ -835,7 +835,7 @@ async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
     return iacr_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from an arXiv paper PDF.
 
@@ -865,7 +865,7 @@ async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> st
     return pubmed_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a bioRxiv paper PDF.
 
@@ -882,7 +882,7 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
         return ""
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a medRxiv paper PDF.
 
@@ -899,7 +899,7 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
         return ""
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from an IACR ePrint paper PDF.
 
@@ -934,7 +934,7 @@ async def search_semantic(query: str, year: str = "", max_results: int = 10) -> 
     return papers if papers else []
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_semantic(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF of a Semantic Scholar paper.    
 
@@ -955,7 +955,7 @@ async def download_semantic(paper_id: str, save_path: str = "./downloads") -> st
     return semantic_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a Semantic Scholar paper. 
 
@@ -1029,7 +1029,7 @@ async def get_crossref_paper_by_doi(doi: str) -> Dict:
     return paper.to_dict() if paper else {}
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_crossref(paper_id: str, save_path: str = "./downloads") -> str:
     """Attempt to download PDF of a CrossRef paper.
 
@@ -1049,7 +1049,7 @@ async def download_crossref(paper_id: str, save_path: str = "./downloads") -> st
         return str(e)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_scihub(
     identifier: str,
     save_path: str = "./downloads",
@@ -1071,7 +1071,7 @@ async def download_scihub(
     return "Sci-Hub download failed. Try DOI first, then title, or change mirror URL."
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_with_fallback(
     source: str,
     paper_id: str,
@@ -1421,7 +1421,7 @@ async def read_dblp_paper(paper_id: str, save_path: str = "./downloads") -> str:
     return dblp_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_dblp(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from dblp.
 
@@ -1450,7 +1450,7 @@ async def read_openaire_paper(paper_id: str, save_path: str = "./downloads") -> 
     return openaire_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_openaire(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from OpenAIRE.
 
@@ -1463,7 +1463,7 @@ async def download_openaire(paper_id: str, save_path: str = "./downloads") -> st
     return openaire_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_citeseerx_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a CiteSeerX paper.
 
@@ -1476,7 +1476,7 @@ async def read_citeseerx_paper(paper_id: str, save_path: str = "./downloads") ->
     return citeseerx_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_citeseerx(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from CiteSeerX.
 
@@ -1489,7 +1489,7 @@ async def download_citeseerx(paper_id: str, save_path: str = "./downloads") -> s
     return citeseerx_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_doaj_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a DOAJ paper.
 
@@ -1502,7 +1502,7 @@ async def read_doaj_paper(paper_id: str, save_path: str = "./downloads") -> str:
     return doaj_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_doaj(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from DOAJ.
 
@@ -1528,7 +1528,7 @@ async def read_base_paper(paper_id: str, save_path: str = "./downloads") -> str:
     return base_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_base(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from BASE.
 
@@ -1541,7 +1541,7 @@ async def download_base(paper_id: str, save_path: str = "./downloads") -> str:
     return base_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_zenodo_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a Zenodo paper.
 
@@ -1554,7 +1554,7 @@ async def read_zenodo_paper(paper_id: str, save_path: str = "./downloads") -> st
     return zenodo_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_zenodo(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from Zenodo.
 
@@ -1567,7 +1567,7 @@ async def download_zenodo(paper_id: str, save_path: str = "./downloads") -> str:
     return zenodo_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_hal_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read and extract text content from a HAL paper.
 
@@ -1580,7 +1580,7 @@ async def read_hal_paper(paper_id: str, save_path: str = "./downloads") -> str:
     return hal_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_hal(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from HAL.
 
@@ -1593,7 +1593,7 @@ async def download_hal(paper_id: str, save_path: str = "./downloads") -> str:
     return hal_searcher.download_pdf(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_ssrn_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Read paper content from SSRN.
 
@@ -1608,7 +1608,7 @@ async def read_ssrn_paper(paper_id: str, save_path: str = "./downloads") -> str:
     return ssrn_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_ssrn(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from SSRN.
 
@@ -1636,7 +1636,7 @@ async def read_openalex_paper(paper_id: str, save_path: str = "./downloads") -> 
     return openalex_searcher.read_paper(paper_id, save_path)
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def download_openalex(paper_id: str, save_path: str = "./downloads") -> str:
     """Download PDF for a paper from OpenAlex.
 
@@ -1665,7 +1665,7 @@ if ieee_searcher is not None:
         """
         return await async_search(ieee_searcher, query, max_results)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
     async def download_ieee(paper_id: str, save_path: str = "./downloads") -> str:
         """Download a PDF from IEEE Xplore.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY) and institutional access.
 
@@ -1706,7 +1706,7 @@ if acm_searcher is not None:
         """
         return await async_search(acm_searcher, query, max_results)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
     async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
         """Download a PDF from ACM Digital Library.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY) and institutional access.
 

@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from threading import Lock
 from typing import List
 
 import feedparser
@@ -18,14 +19,17 @@ class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers.
 
     arXiv TOU requires no more than 1 request per 3 seconds with a single
-    concurrent connection (https://info.arxiv.org/help/api/tou.html). We
-    enforce this with an instance-level last-call timestamp; bulk runs from
-    saturate.py serialize correctly because they reuse the same searcher.
-    Cross-process pacing is the user's responsibility (don't run two saturates
-    in parallel).
+    concurrent connection (https://info.arxiv.org/help/api/tou.html). A shared
+    lock and timestamp enforce that policy across all instances in this Python
+    process. Cross-process and cross-machine pacing remain the caller's
+    responsibility.
     """
     BASE_URL = "https://export.arxiv.org/api/query"
     MIN_INTERVAL_SEC = 3.0  # arXiv TOU minimum
+    MAX_ATTEMPTS = 3
+    RETRYABLE_STATUS_CODES = frozenset((429, 500, 502, 503, 504))
+    _request_lock = Lock()
+    _last_request_at = 0.0
     _FIELD_PREFIX_RE = re.compile(
         r"(?:^|\s)(ti|au|abs|co|jr|cat|rn|id|all):",
         re.IGNORECASE,
@@ -38,15 +42,64 @@ class ArxivSearcher(PaperSource):
             'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
-        self._last_call_at = 0.0  # monotonic seconds; 0 = never
 
-    def _pace(self):
-        """Sleep just long enough to respect the arXiv TOU rate-limit."""
+    @classmethod
+    def _pace_locked(cls):
+        """Pace a request while the process-wide request lock is held."""
         now = time.monotonic()
-        elapsed = now - self._last_call_at
-        if self._last_call_at > 0 and elapsed < self.MIN_INTERVAL_SEC:
-            time.sleep(self.MIN_INTERVAL_SEC - elapsed)
-        self._last_call_at = time.monotonic()
+        elapsed = now - cls._last_request_at
+        if cls._last_request_at > 0 and elapsed < cls.MIN_INTERVAL_SEC:
+            time.sleep(cls.MIN_INTERVAL_SEC - elapsed)
+        cls._last_request_at = time.monotonic()
+
+    @staticmethod
+    def _is_soft_rate_limit(response: requests.Response) -> bool:
+        """Detect arXiv's HTTP-200 ``Rate exceeded.`` response."""
+        body_head = (response.content or b"")[:64]
+        if isinstance(body_head, str):
+            body_head = body_head.encode("utf-8", errors="ignore")
+        return body_head.strip().lower().startswith(b"rate exceeded")
+
+    def _request_with_retries(self, params):
+        """Issue one serialized, paced arXiv request sequence."""
+        response = None
+        with self._request_lock:
+            for attempt in range(self.MAX_ATTEMPTS):
+                self._pace_locked()
+                try:
+                    response = self.session.get(
+                        self.BASE_URL,
+                        params=params,
+                        timeout=30,
+                    )
+                except requests.RequestException:
+                    response = None
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 1.5)
+                    continue
+
+                if response.status_code == 200:
+                    if not self._is_soft_rate_limit(response):
+                        return response
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 5.0)
+                        continue
+                    raise requests.RequestException(
+                        "arxiv rate-limited: 'Rate exceeded.' body persisted "
+                        f"across {self.MAX_ATTEMPTS} attempts"
+                    )
+
+                if response.status_code in self.RETRYABLE_STATUS_CODES:
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 1.5)
+                        continue
+                    if response.status_code == 429:
+                        raise requests.RequestException(
+                            "arxiv rate-limited: HTTP 429 persisted "
+                            f"across {self.MAX_ATTEMPTS} attempts"
+                        )
+                return response
+        return response
 
     @staticmethod
     def _build_search_query(query: str) -> str:
@@ -69,41 +122,10 @@ class ArxivSearcher(PaperSource):
             'sortBy': sort_by,
             'sortOrder': sort_order,
         }
-        response = None
-        for attempt in range(3):
-            self._pace()
-            try:
-                response = self.session.get(self.BASE_URL, params=params, timeout=30)
-            except requests.RequestException:
-                time.sleep((attempt + 1) * 1.5)
-                continue
-            if response.status_code == 200:
-                # arxiv.org rate-limits with HTTP 200 + body 'Rate exceeded.'
-                # rather than a proper 429, so a status check alone misses it.
-                # Treat the soft-rate-limit response as a retryable error.
-                body_head = (response.text or "")[:64].strip().lower()
-                if body_head.startswith("rate exceeded") or body_head == "rate exceeded.":
-                    time.sleep((attempt + 1) * 5.0)  # arxiv asks for slower cadence
-                    continue
-                break
-            if response.status_code in (429, 500, 502, 503, 504):
-                time.sleep((attempt + 1) * 1.5)
-                continue
-            break
+        response = self._request_with_retries(params)
 
         if response is None or response.status_code != 200:
             return []
-        # Final safety: if we ended on a soft-rate-limit body, raise so the
-        # upstream harness records it in source_results.errors. Returning []
-        # silently is indistinguishable from "0 actual hits" — and bulk
-        # consumers (lit-review skill) need to tell those apart to know
-        # whether to retry-with-backoff or accept the result. This is the
-        # `Rate exceeded.` HTTP-200 body documented in PR #81.
-        body_head = (response.text or "")[:64].strip().lower()
-        if body_head.startswith("rate exceeded"):
-            raise requests.RequestException(
-                "arxiv rate-limited: 'Rate exceeded.' body persisted across 3 retries"
-            )
 
         feed = feedparser.parse(response.content)
         papers = []

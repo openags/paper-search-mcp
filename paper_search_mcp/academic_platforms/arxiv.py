@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from threading import Lock
 from typing import List
 
 import feedparser
@@ -15,8 +16,20 @@ from .base import PaperSource
 
 
 class ArxivSearcher(PaperSource):
-    """Searcher for arXiv papers"""
+    """Searcher for arXiv papers.
+
+    arXiv TOU requires no more than 1 request per 3 seconds with a single
+    concurrent connection (https://info.arxiv.org/help/api/tou.html). A shared
+    lock and timestamp enforce that policy across all instances in this Python
+    process. Cross-process and cross-machine pacing remain the caller's
+    responsibility.
+    """
     BASE_URL = "https://export.arxiv.org/api/query"
+    MIN_INTERVAL_SEC = 3.0  # arXiv TOU minimum
+    MAX_ATTEMPTS = 3
+    RETRYABLE_STATUS_CODES = frozenset((429, 500, 502, 503, 504))
+    _request_lock = Lock()
+    _last_request_at = 0.0
     _FIELD_PREFIX_RE = re.compile(
         r"(?:^|\s)(ti|au|abs|co|jr|cat|rn|id|all):",
         re.IGNORECASE,
@@ -29,6 +42,64 @@ class ArxivSearcher(PaperSource):
             'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
             'Accept': 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
         })
+
+    @classmethod
+    def _pace_locked(cls):
+        """Pace a request while the process-wide request lock is held."""
+        now = time.monotonic()
+        elapsed = now - cls._last_request_at
+        if cls._last_request_at > 0 and elapsed < cls.MIN_INTERVAL_SEC:
+            time.sleep(cls.MIN_INTERVAL_SEC - elapsed)
+        cls._last_request_at = time.monotonic()
+
+    @staticmethod
+    def _is_soft_rate_limit(response: requests.Response) -> bool:
+        """Detect arXiv's HTTP-200 ``Rate exceeded.`` response."""
+        body_head = (response.content or b"")[:64]
+        if isinstance(body_head, str):
+            body_head = body_head.encode("utf-8", errors="ignore")
+        return body_head.strip().lower().startswith(b"rate exceeded")
+
+    def _request_with_retries(self, params):
+        """Issue one serialized, paced arXiv request sequence."""
+        response = None
+        with self._request_lock:
+            for attempt in range(self.MAX_ATTEMPTS):
+                self._pace_locked()
+                try:
+                    response = self.session.get(
+                        self.BASE_URL,
+                        params=params,
+                        timeout=30,
+                    )
+                except requests.RequestException:
+                    response = None
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 1.5)
+                    continue
+
+                if response.status_code == 200:
+                    if not self._is_soft_rate_limit(response):
+                        return response
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 5.0)
+                        continue
+                    raise requests.RequestException(
+                        "arxiv rate-limited: 'Rate exceeded.' body persisted "
+                        f"across {self.MAX_ATTEMPTS} attempts"
+                    )
+
+                if response.status_code in self.RETRYABLE_STATUS_CODES:
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 1.5)
+                        continue
+                    if response.status_code == 429:
+                        raise requests.RequestException(
+                            "arxiv rate-limited: HTTP 429 persisted "
+                            f"across {self.MAX_ATTEMPTS} attempts"
+                        )
+                return response
+        return response
 
     @staticmethod
     def _build_search_query(query: str) -> str:
@@ -51,19 +122,7 @@ class ArxivSearcher(PaperSource):
             'sortBy': sort_by,
             'sortOrder': sort_order,
         }
-        response = None
-        for attempt in range(3):
-            try:
-                response = self.session.get(self.BASE_URL, params=params, timeout=30)
-            except requests.RequestException:
-                time.sleep((attempt + 1) * 1.5)
-                continue
-            if response.status_code == 200:
-                break
-            if response.status_code in (429, 500, 502, 503, 504):
-                time.sleep((attempt + 1) * 1.5)
-                continue
-            break
+        response = self._request_with_retries(params)
 
         if response is None or response.status_code != 200:
             return []

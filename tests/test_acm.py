@@ -1,73 +1,86 @@
-"""Tests for ACM Digital Library optional skeleton connector."""
-import os
+"""Tests for the keyless ACM Digital Library connector (Crossref prefix 10.1145)."""
 import unittest
 import unittest.mock
 
+from paper_search_mcp.academic_platforms.acm import ACMSearcher
 
-class TestACMDisabledByDefault(unittest.TestCase):
-    """Verify ACM DL skeleton is disabled when ACM_API_KEY is not set."""
+CROSSREF_ITEM = {
+    "DOI": "10.1145/3654522.3654560",
+    "title": ["DATransformer: Deep Attention Transformer"],
+    "author": [{"given": "Ada", "family": "Lovelace"}],
+    "type": "proceedings-article",
+    "published": {"date-parts": [[2024, 2, 23]]},
+    "URL": "https://doi.org/10.1145/3654522.3654560",
+}
 
-    def setUp(self):
-        self._original = os.environ.pop("ACM_API_KEY", None)
 
-    def tearDown(self):
-        if self._original is not None:
-            os.environ["ACM_API_KEY"] = self._original
-        else:
-            os.environ.pop("ACM_API_KEY", None)
+def _crossref_response(items):
+    response = unittest.mock.Mock(status_code=200)
+    response.json.return_value = {"message": {"items": items}}
+    response.raise_for_status.return_value = None
+    return response
 
-    def test_is_not_configured_without_key(self):
-        from paper_search_mcp.academic_platforms.acm import ACMSearcher
+
+class TestACMSearch(unittest.TestCase):
+    def test_search_restricts_to_acm_prefix_and_relabels(self):
         searcher = ACMSearcher()
-        self.assertFalse(searcher.is_configured())
+        with unittest.mock.patch.object(
+            searcher.session, "get", return_value=_crossref_response([CROSSREF_ITEM])
+        ) as get:
+            papers = searcher.search("transformer", max_results=1)
 
-    def test_search_raises_not_implemented_without_key(self):
-        from paper_search_mcp.academic_platforms.acm import ACMSearcher
+        self.assertEqual(get.call_args.kwargs["params"]["filter"], "prefix:10.1145")
+        self.assertEqual(len(papers), 1)
+        paper = papers[0]
+        self.assertEqual(paper.source, "acm")
+        self.assertEqual(paper.url, "https://dl.acm.org/doi/10.1145/3654522.3654560")
+        self.assertEqual(paper.pdf_url, "https://dl.acm.org/doi/pdf/10.1145/3654522.3654560")
+
+    def test_search_merges_extra_filter(self):
         searcher = ACMSearcher()
-        with self.assertRaises(NotImplementedError) as ctx:
-            searcher.search("distributed systems")
-        self.assertIn("ACM_API_KEY", str(ctx.exception))
+        with unittest.mock.patch.object(
+            searcher.session, "get", return_value=_crossref_response([])
+        ) as get:
+            searcher.search("x", filter="from-pub-date:2020")
+        self.assertEqual(
+            get.call_args.kwargs["params"]["filter"], "prefix:10.1145,from-pub-date:2020"
+        )
 
-    def test_download_raises_not_implemented_without_key(self):
-        from paper_search_mcp.academic_platforms.acm import ACMSearcher
-        searcher = ACMSearcher()
-        with self.assertRaises(NotImplementedError) as ctx:
-            searcher.download_pdf("3458817.3476175")
-        self.assertIn("ACM_API_KEY", str(ctx.exception))
 
-    def test_read_raises_not_implemented_without_key(self):
-        from paper_search_mcp.academic_platforms.acm import ACMSearcher
-        searcher = ACMSearcher()
-        with self.assertRaises(NotImplementedError) as ctx:
-            searcher.read_paper("3458817.3476175")
-        self.assertIn("ACM_API_KEY", str(ctx.exception))
+class TestACMDownload(unittest.TestCase):
+    def test_rejects_non_acm_doi(self):
+        with self.assertRaises(ValueError):
+            ACMSearcher().download_pdf("10.1109/5.771073")
 
-    def test_not_in_all_sources_without_key(self):
-        """acm must NOT appear in ALL_SOURCES when the key is absent."""
+    def test_blocked_download_points_to_browser_and_fallback(self):
+        blocked = unittest.mock.Mock(status_code=403, content=b"<!DOCTYPE html>")
+        with unittest.mock.patch(
+            "paper_search_mcp.academic_platforms.acm.requests.get", return_value=blocked
+        ):
+            with self.assertRaises(IOError) as ctx:
+                ACMSearcher().download_pdf("10.1145/3292500.3330701")
+        message = str(ctx.exception)
+        self.assertIn("https://dl.acm.org/doi/pdf/10.1145/3292500.3330701", message)
+        self.assertIn("download_with_fallback", message)
+
+    def test_successful_download_writes_pdf(self):
+        import tempfile, os
+        ok = unittest.mock.Mock(status_code=200, content=b"%PDF-1.7 test")
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch(
+            "paper_search_mcp.academic_platforms.acm.requests.get", return_value=ok
+        ):
+            path = ACMSearcher().download_pdf("10.1145/3292500.3330701", tmp)
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"%PDF-1.7 test")
+            self.assertEqual(os.path.basename(path), "acm_10.1145_3292500.3330701.pdf")
+
+
+class TestACMAlwaysEnabled(unittest.TestCase):
+    def test_in_all_sources_without_key(self):
         import importlib
         import paper_search_mcp.server as srv_module
         importlib.reload(srv_module)
-        self.assertNotIn("acm", srv_module.ALL_SOURCES)
-
-
-class TestACMIsConfiguredWithKey(unittest.TestCase):
-    """Verify ACM DL skeleton reports configured when ACM_API_KEY is present."""
-
-    def test_is_configured_with_key(self):
-        # Use the prefixed key so it takes priority over any empty value loaded from .env
-        with unittest.mock.patch.dict(os.environ, {"PAPER_SEARCH_MCP_ACM_API_KEY": "dummy_test_key"}):
-            from paper_search_mcp.academic_platforms.acm import ACMSearcher
-            searcher = ACMSearcher()
-            self.assertTrue(searcher.is_configured())
-
-    def test_search_raises_not_implemented_even_with_key(self):
-        """Real search logic is ToD; should still raise NotImplementedError."""
-        with unittest.mock.patch.dict(os.environ, {"PAPER_SEARCH_MCP_ACM_API_KEY": "dummy_test_key"}):
-            from paper_search_mcp.academic_platforms.acm import ACMSearcher
-            searcher = ACMSearcher()
-            with self.assertRaises(NotImplementedError) as ctx:
-                searcher.search("consensus algorithms")
-            self.assertNotIn("ACM_API_KEY", str(ctx.exception))
+        self.assertIn("acm", srv_module.ALL_SOURCES)
 
 
 if __name__ == "__main__":

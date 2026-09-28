@@ -103,6 +103,7 @@ def test_non_writing_read_tools_are_annotated_read_only():
     ]
 
     assert {tool.name for tool in read_only_read_tools} == {
+        "read_acm_paper",
         "read_base_paper",
         "read_crossref_paper",
         "read_dblp_paper",

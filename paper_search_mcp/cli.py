@@ -73,10 +73,10 @@ def _init_searchers() -> None:
         from .academic_platforms.ieee import IEEESearcher
         SEARCHERS["ieee"] = IEEESearcher()
 
-    acm_key = get_env("ACM_API_KEY", "")
-    if acm_key:
-        from .academic_platforms.acm import ACMSearcher
-        SEARCHERS["acm"] = ACMSearcher()
+    # ACM Digital Library is keyless (open access since 2026-01-01, served via
+    # Crossref) and always registered.
+    from .academic_platforms.acm import ACMSearcher
+    SEARCHERS["acm"] = ACMSearcher()
 
 
 ALL_SOURCES = [

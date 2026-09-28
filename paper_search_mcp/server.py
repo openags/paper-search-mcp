@@ -169,11 +169,10 @@ ALL_SOURCES = [
 
 # ---------------------------------------------------------------------------
 # Optional paid-platform connectors (disabled by default)
-# Set PAPER_SEARCH_MCP_IEEE_API_KEY / PAPER_SEARCH_MCP_ACM_API_KEY to activate
-# (legacy IEEE_API_KEY / ACM_API_KEY are also supported).
+# Set PAPER_SEARCH_MCP_IEEE_API_KEY to activate IEEE Xplore
+# (legacy IEEE_API_KEY is also supported).
 # ---------------------------------------------------------------------------
 _ieee_api_key = get_env("IEEE_API_KEY", "")
-_acm_api_key = get_env("ACM_API_KEY", "")
 
 if _ieee_api_key:
     from .academic_platforms.ieee import IEEESearcher
@@ -183,13 +182,12 @@ if _ieee_api_key:
 else:
     ieee_searcher = None
 
-if _acm_api_key:
-    from .academic_platforms.acm import ACMSearcher
-    acm_searcher = ACMSearcher()
-    ALL_SOURCES.append("acm")
-    logger.info("ACM Digital Library enabled via configured environment key.")
-else:
-    acm_searcher = None
+# ACM Digital Library has been open access since 2026-01-01 and has no public
+# search API, so it is served from Crossref (no key required) and enabled by
+# default.
+from .academic_platforms.acm import ACMSearcher
+acm_searcher = ACMSearcher()
+ALL_SOURCES.append("acm")
 
 
 def _parse_sources(sources: str) -> List[str]:
@@ -1691,44 +1689,45 @@ if ieee_searcher is not None:
 
 
 # ---------------------------------------------------------------------------
-# Optional ACM Digital Library tools — registered only when API key is set
+# ACM Digital Library tools — keyless, served via Crossref (see acm.py)
 # ---------------------------------------------------------------------------
-if acm_searcher is not None:
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-    async def search_acm(query: str, max_results: int = 10) -> List[Dict]:
-        """Search ACM Digital Library for papers.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_acm(query: str, max_results: int = 10) -> List[Dict]:
+    """Search ACM Digital Library for papers.
 
-        Args:
-            query: Search query string.
-            max_results: Maximum number of results (default: 10).
-        Returns:
-            List of paper dicts from ACM DL.
-        """
-        return await async_search(acm_searcher, query, max_results)
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results (default: 10).
+    Returns:
+        List of paper dicts from ACM DL.
+    """
+    return await async_search(acm_searcher, query, max_results)
 
-    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
-    async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from ACM Digital Library.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY) and institutional access.
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download a PDF from ACM Digital Library.  dl.acm.org sits behind a
+    Cloudflare browser challenge that blocks scripted downloads; on a block,
+    raises with the browser URL and a download_with_fallback suggestion.
 
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory to save the PDF (default: './downloads').
-        Returns:
-            str: Path to saved PDF or error message.
-        """
-        return await asyncio.to_thread(acm_searcher.download_pdf, paper_id, save_path)
+    Args:
+        paper_id: ACM DOI (e.g. '10.1145/...').
+        save_path: Directory to save the PDF (default: './downloads').
+    Returns:
+        str: Path to saved PDF or error message.
+    """
+    return await asyncio.to_thread(acm_searcher.download_pdf, paper_id, save_path)
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-    async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an ACM Digital Library paper.  Requires PAPER_SEARCH_MCP_ACM_API_KEY (or ACM_API_KEY).
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download and read an ACM Digital Library paper.
 
-        Args:
-            paper_id: ACM DL paper identifier.
-            save_path: Directory where the PDF is/will be saved (default: './downloads').
-        Returns:
-            str: Extracted text content.
-        """
-        return acm_searcher.read_paper(paper_id, save_path)
+    Args:
+        paper_id: ACM DOI (e.g. '10.1145/...').
+        save_path: Directory where the PDF is/will be saved (default: './downloads').
+    Returns:
+        str: Extracted text content.
+    """
+    return acm_searcher.read_paper(paper_id, save_path)
 
 
 def _wait_for_windows_process_exit(process_id: int) -> bool:

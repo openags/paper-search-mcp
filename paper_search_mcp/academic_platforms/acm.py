@@ -1,113 +1,95 @@
-"""ACM Digital Library connector — optional, requires API key env.
+"""ACM Digital Library connector — keyless.
 
-This module is a **skeleton only**.  No real ACM DL API requests are made
-unless the ``PAPER_SEARCH_MCP_ACM_API_KEY`` (or legacy ``ACM_API_KEY``)
-environment variable is configured.  All methods
-raise :class:`NotImplementedError` with a descriptive message when accessed
-without a valid key so that the rest of the platform continues to work without
-any paid credentials.
+Since 1 January 2026 the entire ACM Digital Library is open access, and ACM
+does not offer a public search API, so no API key exists for this source.
+Search is served from Crossref restricted to ACM's DOI prefix (``10.1145``),
+which covers every ACM-published work with full bibliographic metadata.
 
-Enable usage::
-
-    export PAPER_SEARCH_MCP_ACM_API_KEY=<your_acm_api_key>
-
-.. note::
-    ACM recently opened a limited metadata API.  Check
-    https://libraries.acm.org/digital-library/acm-open for Open Access content
-    that does NOT require a key.  Full-text/PDF download requires ACM membership
-    or institutional access.
+PDFs live at ``https://dl.acm.org/doi/pdf/<doi>`` and are free to read, but
+dl.acm.org sits behind a Cloudflare browser challenge that rejects scripted
+clients.  ``download_pdf`` tries the direct link first and, when blocked,
+raises with the browser URL so the user (or ``download_with_fallback``) can
+take over.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import List
+import os
+from typing import List, Optional
 
-from .base import PaperSource
+import requests
+
+from .crossref import CrossRefSearcher
 from ..paper import Paper
-from ..config import get_env
 
 logger = logging.getLogger(__name__)
 
-_NOT_CONFIGURED_MSG = (
-    "ACM Digital Library is not configured.  Set PAPER_SEARCH_MCP_ACM_API_KEY "
-    "(or legacy ACM_API_KEY) environment "
-    "variable to enable ACM DL search.  "
-    "See https://libraries.acm.org/digital-library/acm-open for access options."
-)
+ACM_DOI_PREFIX = "10.1145"
 
 
-class ACMSearcher(PaperSource):
-    """Skeleton connector for ACM Digital Library.
+class ACMSearcher(CrossRefSearcher):
+    """ACM Digital Library search via Crossref's ACM DOI prefix."""
 
-    Instantiating this class without ``PAPER_SEARCH_MCP_ACM_API_KEY``
-    (or ``ACM_API_KEY``) set will log a warning
-    but will NOT raise an error.  All actual operations raise
-    :class:`NotImplementedError` with a clear message directing the user to
-    configure their API key.
-    """
+    PDF_URL_TEMPLATE = "https://dl.acm.org/doi/pdf/{doi}"
+    PAGE_URL_TEMPLATE = "https://dl.acm.org/doi/{doi}"
 
-    # ACM DL base URL (placeholder — real endpoint TBD once API key is available)
-    BASE_URL = "https://dl.acm.org/action/doSearch"
+    def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:
+        prefix_filter = f"prefix:{ACM_DOI_PREFIX}"
+        extra_filter = kwargs.pop("filter", "")
+        kwargs["filter"] = f"{prefix_filter},{extra_filter}" if extra_filter else prefix_filter
 
-    def __init__(self) -> None:
-        self.api_key: str = get_env("ACM_API_KEY", "")
-        if not self.api_key:
-            logger.warning(
-                "ACMSearcher initialised without PAPER_SEARCH_MCP_ACM_API_KEY/ACM_API_KEY.  "
-                "All calls will raise NotImplementedError until the key is set."
-            )
+        papers = super().search(query, max_results=max_results, **kwargs)
+        for paper in papers:
+            self._to_acm(paper)
+        return papers
 
-    # ------------------------------------------------------------------
-    # Public helpers
-    # ------------------------------------------------------------------
+    def get_paper_by_doi(self, doi: str) -> Optional[Paper]:
+        paper = super().get_paper_by_doi(doi)
+        if paper is not None:
+            self._to_acm(paper)
+        return paper
 
-    def is_configured(self) -> bool:
-        """Return True only when a non-empty ACM API key is available."""
-        return bool(self.api_key)
-
-    # ------------------------------------------------------------------
-    # PaperSource interface
-    # ------------------------------------------------------------------
-
-    def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:  # type: ignore[override]
-        """Search ACM Digital Library — requires PAPER_SEARCH_MCP_ACM_API_KEY or ACM_API_KEY.
-
-        Raises:
-            NotImplementedError: Always, when ACM API key env is not set.
-        """
-        if not self.is_configured():
-            raise NotImplementedError(_NOT_CONFIGURED_MSG)
-
-        # TODO: implement real ACM DL API call here once key is available
-        raise NotImplementedError(
-            "ACM DL search is not yet implemented.  "
-            "Contribute at https://github.com/your-repo/paper-search-mcp."
-        )
+    def _to_acm(self, paper: Paper) -> None:
+        paper.source = "acm"
+        if paper.doi:
+            paper.url = self.PAGE_URL_TEMPLATE.format(doi=paper.doi)
+            paper.pdf_url = self.PDF_URL_TEMPLATE.format(doi=paper.doi)
 
     def download_pdf(self, paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from ACM DL — requires ACM API key env and institutional access.
+        """Download an ACM PDF by DOI (``10.1145/...``).
 
         Raises:
-            NotImplementedError: Always, until key + download logic are implemented.
+            ValueError: If ``paper_id`` is not an ACM DOI.
+            IOError: If dl.acm.org blocks the scripted request.
         """
-        if not self.is_configured():
-            raise NotImplementedError(_NOT_CONFIGURED_MSG)
+        doi = paper_id.strip().removeprefix("https://doi.org/")
+        if not doi.startswith(f"{ACM_DOI_PREFIX}/"):
+            raise ValueError(f"Not an ACM DOI (expected {ACM_DOI_PREFIX}/...): {paper_id}")
 
-        raise NotImplementedError(
-            "ACM DL PDF download is not yet implemented.  "
-            "Note: full-text access also requires ACM membership or institutional access."
+        pdf_url = self.PDF_URL_TEMPLATE.format(doi=doi)
+        response = requests.get(
+            pdf_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=30,
         )
+        if response.status_code != 200 or not response.content.startswith(b"%PDF"):
+            raise IOError(
+                f"dl.acm.org blocked the automated download (HTTP {response.status_code}, "
+                f"Cloudflare browser check). The paper is free to read: open {pdf_url} in a "
+                f"browser, or call download_with_fallback(source='acm', paper_id='{doi}', "
+                f"doi='{doi}') to try open repositories (arXiv, OpenAIRE, CORE, Unpaywall)."
+            )
+
+        os.makedirs(save_path, exist_ok=True)
+        output_path = os.path.join(save_path, f"acm_{doi.replace('/', '_')}.pdf")
+        with open(output_path, "wb") as file_obj:
+            file_obj.write(response.content)
+        return output_path
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
-        """Read paper content from ACM DL — requires ACM API key env.
+        from pypdf import PdfReader
 
-        Raises:
-            NotImplementedError: Always, until download + extraction are implemented.
-        """
-        if not self.is_configured():
-            raise NotImplementedError(_NOT_CONFIGURED_MSG)
-
-        raise NotImplementedError(
-            "ACM DL paper reading is not yet implemented."
-        )
+        pdf_path = self.download_pdf(paper_id, save_path)
+        reader = PdfReader(pdf_path)
+        return "\n".join(page.extract_text() or "" for page in reader.pages).strip()

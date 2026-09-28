@@ -286,6 +286,7 @@ class TestDownloadWithFallback(unittest.TestCase):
 class TestRepositoryFallback(unittest.TestCase):
     def _run_with_searcher(self, searcher, *, title, expected_title=None):
         with (
+            patch.object(server, "arxiv_searcher", _empty_searcher()),
             patch.object(server, "openaire_searcher", searcher),
             patch.object(server, "core_searcher", _empty_searcher()),
             patch.object(server, "europepmc_searcher", _empty_searcher()),
@@ -388,6 +389,7 @@ class TestRepositoryFallback(unittest.TestCase):
         searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
 
         with (
+            patch.object(server, "arxiv_searcher", _empty_searcher()),
             patch.object(server, "openaire_searcher", searcher),
             patch.object(server, "core_searcher", _empty_searcher()),
             patch.object(server, "europepmc_searcher", _empty_searcher()),
@@ -408,6 +410,44 @@ class TestRepositoryFallback(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertIn("did not match", error)
+        download.assert_awaited_once()
+
+    def test_arxiv_is_tried_before_other_repositories(self):
+        paper = SimpleNamespace(
+            pdf_url="https://arxiv.org/pdf/1234.5678",
+            paper_id="1234.5678",
+            title="Matching requested paper title",
+            doi="",
+        )
+        arxiv_searcher = SimpleNamespace(search=lambda query, max_results=3: [paper])
+        other_repo = SimpleNamespace(
+            search=lambda query, max_results=3: (_ for _ in ()).throw(
+                AssertionError("openaire should not be reached once arXiv matches")
+            )
+        )
+
+        with (
+            patch.object(server, "arxiv_searcher", arxiv_searcher),
+            patch.object(server, "openaire_searcher", other_repo),
+            patch.object(server, "core_searcher", _empty_searcher()),
+            patch.object(server, "europepmc_searcher", _empty_searcher()),
+            patch.object(server, "pmc_searcher", _empty_searcher()),
+            patch.object(
+                server,
+                "_download_from_url",
+                new=AsyncMock(return_value="/tmp/ok.pdf"),
+            ) as download,
+        ):
+            result, error = asyncio.run(
+                server._try_repository_fallback(
+                    doi="10.1000/test",
+                    title="Matching requested paper title",
+                    save_path="/tmp",
+                )
+            )
+
+        self.assertEqual(result, "/tmp/ok.pdf")
+        self.assertEqual(error, "")
         download.assert_awaited_once()
 
 

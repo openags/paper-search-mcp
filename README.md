@@ -48,9 +48,9 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## MCP Authorization Compatibility
 
-The bundled MCP server currently runs locally over `stdio`. It does not implement OAuth 2.1 protected-resource metadata, bearer-token validation, scopes, or HTTP 401/403 authorization responses.
+The bundled MCP server supports `stdio` (the default), `sse`, and `streamable-http`. Network transports bind to `127.0.0.1` by default. Transport support does **not** make the server an OAuth 2.1 protected resource: it does not implement protected-resource metadata, bearer-token validation, scopes, or OAuth authorization responses.
 
-For a remote protected deployment, put the server behind an MCP/HTTP gateway or reverse proxy that enforces OAuth and forwards only authorized requests. Native authenticated HTTP transport requires a separate transport and security design and is intentionally outside this small stabilization batch.
+For a remote protected deployment, keep the backend private and put it behind an MCP/HTTP gateway that implements the [MCP authorization and discovery requirements](https://modelcontextprotocol.io/specification/latest/basic/authorization), forwarding only authorized requests. A generic reverse proxy alone does not establish MCP OAuth compliance. Do not expose the unauthenticated backend directly to the internet. Native protected-resource support remains tracked in [#25](https://github.com/openags/paper-search-mcp/issues/25).
 
 ---
 
@@ -256,6 +256,28 @@ invalid values sort last; numeric citation strings are supported. Dates accept
 ISO dates/timestamps, with naive timestamps and date-only values treated as UTC.
 The default JSON output and selected sources are unchanged.
 
+#### Skill ZIP uploads and other Claude runtimes
+
+The steps above install a **local Claude Code skill** at `~/.claude/skills/paper-search/SKILL.md`, following the [Claude Code skill layout](https://code.claude.com/docs/en/skills). They do not require a ZIP upload.
+
+GitHub's **Download ZIP** contains the entire repository, with the skill nested under `paper-search-mcp-main/claude-code/`. It is not a standalone skill archive. If an uploader reports that `SKILL.md` is nested too deeply, check the archive layout first. Anthropic's [custom-skill packaging guide](https://support.claude.com/en/articles/12512198-how-to-create-custom-skills) specifies a single skill folder at the archive root, with the skill file directly inside it:
+
+```text
+paper-search-skill.zip
+└── paper-search/
+    └── SKILL.md
+```
+
+To create that layout for inspection or adaptation, run this from a repository checkout (requires Python 3; overwrites `paper-search-skill.zip`):
+
+```python
+from zipfile import ZIP_DEFLATED, ZipFile
+
+with ZipFile("paper-search-skill.zip", "w", compression=ZIP_DEFLATED) as archive:
+    archive.write("claude-code/SKILL.md", arcname="paper-search/SKILL.md")
+```
+
+This only packages the instructions; it does not bundle Python dependencies, install `paper-search`, or configure an MCP connection. The bundled skill expects a runtime that can execute the CLI and reach the academic services. Upload acceptance and execution in Claude web or another runtime have **not been validated by this project**. Check that runtime's current metadata, package-installation, network-access, and code-execution requirements before adapting the skill. If you want to use an MCP client instead, follow the MCP installation methods below; uploading a skill ZIP does not start or connect an external MCP server.
 
 ---
 

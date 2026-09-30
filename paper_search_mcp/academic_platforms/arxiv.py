@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from threading import Lock
 from typing import List
+from xml.etree import ElementTree
 
 import feedparser
 import requests
@@ -60,9 +61,50 @@ class ArxivSearcher(PaperSource):
             body_head = body_head.encode("utf-8", errors="ignore")
         return body_head.strip().lower().startswith(b"rate exceeded")
 
+    @classmethod
+    def _is_usable_406_feed(cls, response: requests.Response) -> bool:
+        """Only recover nonempty, well-formed arXiv results behind a bad status.
+
+        feedparser intentionally tolerates malformed XML and HTML, so parsing
+        alone is not enough. Empty feeds and arXiv API error entries cannot
+        establish that a 406 was a successful search.
+        """
+        try:
+            root = ElementTree.fromstring(response.content)
+            if root.tag != "{http://www.w3.org/2005/Atom}feed":
+                return False
+            feed = feedparser.parse(response.content)
+            if feed.bozo or feed.version != "atom10" or not feed.entries:
+                return False
+            if not re.fullmatch(
+                r"https?://arxiv\.org/api/[^\s]+", feed.feed.get("id", "")
+            ):
+                return False
+            total = int(feed.feed.get("opensearch_totalresults", "0"))
+            if total < len(feed.entries):
+                return False
+            for entry in feed.entries:
+                if not re.fullmatch(
+                    r"https?://arxiv\.org/abs/(?:[0-9]{4}\.[0-9]{4,5}|"
+                    r"[a-z-]+(?:\.[A-Z]{2})?/[0-9]{7})(?:v[0-9]+)?",
+                    entry.get("id", ""),
+                ):
+                    return False
+                if not all(entry.get(field, "").strip() for field in ("title", "summary")):
+                    return False
+                if not entry.get("authors") or not entry.get("tags"):
+                    return False
+                # Verify every entry can actually be consumed, rather than
+                # accepting a feed whose entries search() would silently skip.
+                cls._paper_from_entry(entry)
+            return True
+        except (ElementTree.ParseError, ValueError, TypeError, AttributeError, KeyError):
+            return False
+
     def _request_with_retries(self, params):
         """Issue one serialized, paced arXiv request sequence."""
         response = None
+        saw_unusable_406 = False
         with self._request_lock:
             for attempt in range(self.MAX_ATTEMPTS):
                 self._pace_locked()
@@ -89,6 +131,14 @@ class ArxivSearcher(PaperSource):
                         f"across {self.MAX_ATTEMPTS} attempts"
                     )
 
+                if response.status_code == 406:
+                    if self._is_usable_406_feed(response):
+                        return response
+                    saw_unusable_406 = True
+                    if attempt < self.MAX_ATTEMPTS - 1:
+                        time.sleep((attempt + 1) * 1.5)
+                    continue
+
                 if response.status_code in self.RETRYABLE_STATUS_CODES:
                     if attempt < self.MAX_ATTEMPTS - 1:
                         time.sleep((attempt + 1) * 1.5)
@@ -98,7 +148,12 @@ class ArxivSearcher(PaperSource):
                             "arxiv rate-limited: HTTP 429 persisted "
                             f"across {self.MAX_ATTEMPTS} attempts"
                         )
-                return response
+                break
+        if saw_unusable_406:
+            raise requests.RequestException(
+                "arxiv search failed: HTTP 406 without a usable arXiv Atom feed; "
+                f"no successful response within {self.MAX_ATTEMPTS} attempts"
+            )
         return response
 
     @staticmethod
@@ -124,41 +179,45 @@ class ArxivSearcher(PaperSource):
         }
         response = self._request_with_retries(params)
 
-        if response is None or response.status_code != 200:
+        if response is None or response.status_code not in (200, 406):
             return []
 
         feed = feedparser.parse(response.content)
         papers = []
         for entry in feed.entries:
             try:
-                authors = [author.name for author in entry.authors]
-                published = datetime.strptime(entry.published, '%Y-%m-%dT%H:%M:%SZ')
-                updated = datetime.strptime(entry.updated, '%Y-%m-%dT%H:%M:%SZ')
-                pdf_url = next((link.href for link in entry.links if link.type == 'application/pdf'), '')
-                
-                # Try to extract DOI from entry.doi or links or summary
-                doi = entry.get('doi', '') or extract_doi(entry.summary) or extract_doi(entry.id)
-                for link in entry.links:
-                    if link.get('title') == 'doi':
-                        doi = doi or extract_doi(link.href)
-
-                papers.append(Paper(
-                    paper_id=entry.id.split('/')[-1],
-                    title=entry.title,
-                    authors=authors,
-                    abstract=entry.summary,
-                    url=entry.id,
-                    pdf_url=pdf_url,
-                    published_date=published,
-                    updated_date=updated,
-                    source='arxiv',
-                    categories=[tag.term for tag in entry.tags],
-                    keywords=[],
-                    doi=doi
-                ))
+                papers.append(self._paper_from_entry(entry))
             except Exception as e:
                 print(f"Error parsing arXiv entry: {e}")
         return papers
+
+    @staticmethod
+    def _paper_from_entry(entry) -> Paper:
+        authors = [author.name for author in entry.authors]
+        published = datetime.strptime(entry.published, '%Y-%m-%dT%H:%M:%SZ')
+        updated = datetime.strptime(entry.updated, '%Y-%m-%dT%H:%M:%SZ')
+        pdf_url = next((link.href for link in entry.links if link.type == 'application/pdf'), '')
+
+        # Try to extract DOI from entry.doi or links or summary
+        doi = entry.get('doi', '') or extract_doi(entry.summary) or extract_doi(entry.id)
+        for link in entry.links:
+            if link.get('title') == 'doi':
+                doi = doi or extract_doi(link.href)
+
+        return Paper(
+            paper_id=entry.id.split('/')[-1],
+            title=entry.title,
+            authors=authors,
+            abstract=entry.summary,
+            url=entry.id,
+            pdf_url=pdf_url,
+            published_date=published,
+            updated_date=updated,
+            source='arxiv',
+            categories=[tag.term for tag in entry.tags],
+            keywords=[],
+            doi=doi
+        )
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"

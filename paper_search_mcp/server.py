@@ -443,6 +443,7 @@ async def _try_repository_fallback(
     `_download_from_url` so the downloaded PDF's content is also verified.
     """
     repository_searchers = [
+        ("arxiv", arxiv_searcher),
         ("openaire", openaire_searcher),
         ("core", core_searcher),
         ("europepmc", europepmc_searcher),

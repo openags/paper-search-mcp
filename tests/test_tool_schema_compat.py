@@ -62,6 +62,7 @@ def test_search_and_lookup_tools_are_annotated_read_only():
 def test_file_writing_tools_disclose_destructive_local_updates():
     tools = asyncio.run(server.mcp.list_tools())
     side_effecting_read_tools = {
+        "read_acm_paper",
         "read_arxiv_paper",
         "read_biorxiv_paper",
         "read_citeseerx_paper",
@@ -103,7 +104,6 @@ def test_non_writing_read_tools_are_annotated_read_only():
     ]
 
     assert {tool.name for tool in read_only_read_tools} == {
-        "read_acm_paper",
         "read_base_paper",
         "read_crossref_paper",
         "read_dblp_paper",
@@ -155,10 +155,10 @@ print(json.dumps({
         "download_acm",
         "read_acm_paper",
     }
-    for name in ("search_ieee", "read_ieee_paper", "search_acm", "read_acm_paper"):
+    for name in ("search_ieee", "read_ieee_paper", "search_acm"):
         assert annotations[name]["readOnlyHint"] is True
         assert annotations[name]["openWorldHint"] is True
-    for name in ("download_ieee", "download_acm"):
+    for name in ("download_ieee", "download_acm", "read_acm_paper"):
         assert annotations[name]["readOnlyHint"] is False
         assert annotations[name]["destructiveHint"] is True
         assert annotations[name]["openWorldHint"] is True

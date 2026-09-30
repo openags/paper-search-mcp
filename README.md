@@ -114,7 +114,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | Unpaywall | ✅ (DOI lookup) | ❌ | ❌ | **Requires** `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` |
 | Sci-Hub (optional) | ⚠️ fallback-only | ✅ | ❌ | Optional; unstable mirrors; user responsibility |
 | **IEEE Xplore** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_IEEE_API_KEY` to activate |
-| **ACM DL** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_ACM_API_KEY` to activate |
+| **ACM DL** | ✅ (Crossref metadata) | ⚠️ | ⚠️ | Keyless search; direct PDF/read may be blocked by browser challenges; use OA fallback |
 
 > ✅ = reliable in live tests.  ⚠️ = works but subject to upstream instability or access restrictions.  ❌ = not supported.  🔑 = key required.  🚧 = skeleton only.
 
@@ -135,7 +135,6 @@ All keys are **optional** unless noted. Configure them in `~/.config/paper-searc
 | `PAPER_SEARCH_MCP_DOAJ_API_KEY` | DOAJ | Optional | Free at [doaj.org](https://doaj.org/apply-for-api-key/) — raises hourly rate limit |
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
-| `PAPER_SEARCH_MCP_ACM_API_KEY` | ACM DL | **Required to activate** | See [libraries.acm.org/digital-library/acm-open](https://libraries.acm.org/digital-library/acm-open) |
 
 All variables follow the `PAPER_SEARCH_MCP_<NAME>` prefix scheme. Legacy names without the prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
@@ -160,24 +159,23 @@ Some search failures are caused by external provider instability, not by bugs in
 
 ## Optional Paid Platform Connectors (Phase 3)
 
-IEEE Xplore and ACM Digital Library connectors are included as **opt-in skeletons**.
-They are **disabled by default** — no API calls are made unless you explicitly configure the corresponding keys.
+IEEE Xplore is an **opt-in skeleton**, disabled until its API key is configured.
+ACM Digital Library search is **keyless and enabled by default**, using Crossref metadata restricted to ACM DOI prefix `10.1145`.
 
 | Platform | Env Var | Status |
 |---|---|---|
 | IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
-| ACM Digital Library | `PAPER_SEARCH_MCP_ACM_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
+| ACM Digital Library | None | Crossref-backed search; PDF download/read depend on publisher access |
 
 **How to enable:**
 
 ```bash
 export PAPER_SEARCH_MCP_IEEE_API_KEY=<your_ieee_key>       # free key at https://developer.ieee.org/
-export PAPER_SEARCH_MCP_ACM_API_KEY=<your_acm_key>         # see https://libraries.acm.org/digital-library
 ```
 
-Once a key is set, the corresponding source is automatically added to `ALL_SOURCES` and its MCP tools (`search_ieee` / `search_acm`, `download_ieee` / `download_acm`, `read_ieee_paper` / `read_acm_paper`) are registered at server startup.
+With an IEEE key, `ieee` and its tools are registered at startup. ACM (`acm`, `search_acm`, `download_acm`, and `read_acm_paper`) is always available. Legacy `PAPER_SEARCH_MCP_ACM_API_KEY` / `ACM_API_KEY` settings are no longer used and can be removed.
 
-Without a key the connectors log a startup warning only — the rest of the server is unaffected.
+ACM downloads require an ACM DOI such as `10.1145/...`. Publisher browser challenges may block scripted access; use `download_with_fallback(source="acm", paper_id="10.1145/...", doi="10.1145/...")` to try open repositories. `read_acm_paper` downloads a PDF into `save_path` before extracting text and can overwrite that file.
 
 ## Free Source Expansion (Phase 4)
 
@@ -284,8 +282,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
         "PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "",
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
-        "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_IEEE_API_KEY": ""
       }
     }
   }
@@ -314,8 +311,7 @@ uv tool install paper-search-mcp
         "PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "",
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
-        "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_IEEE_API_KEY": ""
       }
     }
   }
@@ -344,8 +340,7 @@ pip install paper-search-mcp
         "PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "",
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
-        "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_IEEE_API_KEY": ""
       }
     }
   }
@@ -406,8 +401,7 @@ docker run --rm -i \
         "PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "",
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
-        "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_IEEE_API_KEY": ""
       }
     }
   }
@@ -450,8 +444,7 @@ uv run -m paper_search_mcp.server
         "PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY": "",
         "PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN": "",
         "PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL": "",
-        "PAPER_SEARCH_MCP_IEEE_API_KEY": "",
-        "PAPER_SEARCH_MCP_ACM_API_KEY": ""
+        "PAPER_SEARCH_MCP_IEEE_API_KEY": ""
       }
     }
   }
@@ -507,7 +500,6 @@ PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY=
 PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN=
 PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL=
 PAPER_SEARCH_MCP_IEEE_API_KEY=
-PAPER_SEARCH_MCP_ACM_API_KEY=
 ```
 
 To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
@@ -594,7 +586,7 @@ We welcome contributions! Here's how to get started:
 - [ ] ScienceDirect
 - [ ] Springer Link
 - [√] IEEE Xplore (optional skeleton — activate with `IEEE_API_KEY`)
-- [√] ACM Digital Library (optional skeleton — activate with `ACM_API_KEY`)
+- [√] ACM Digital Library (keyless Crossref search; publisher PDF access varies)
 - [ ] Web of Science
 - [ ] Scopus
 

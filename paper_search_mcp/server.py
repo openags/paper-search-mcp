@@ -1717,7 +1717,7 @@ async def download_acm(paper_id: str, save_path: str = "./downloads") -> str:
     """
     return await asyncio.to_thread(acm_searcher.download_pdf, paper_id, save_path)
 
-@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
 async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
     """Download and read an ACM Digital Library paper.
 
@@ -1727,7 +1727,7 @@ async def read_acm_paper(paper_id: str, save_path: str = "./downloads") -> str:
     Returns:
         str: Extracted text content.
     """
-    return acm_searcher.read_paper(paper_id, save_path)
+    return await asyncio.to_thread(acm_searcher.read_paper, paper_id, save_path)
 
 
 def _wait_for_windows_process_exit(process_id: int) -> bool:

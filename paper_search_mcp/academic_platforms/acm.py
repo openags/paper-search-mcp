@@ -45,6 +45,7 @@ class ACMSearcher(CrossRefSearcher):
         return papers
 
     def get_paper_by_doi(self, doi: str) -> Optional[Paper]:
+        doi = self._validate_acm_doi(doi)
         paper = super().get_paper_by_doi(doi)
         if paper is not None:
             self._to_acm(paper)
@@ -56,6 +57,17 @@ class ACMSearcher(CrossRefSearcher):
             paper.url = self.PAGE_URL_TEMPLATE.format(doi=paper.doi)
             paper.pdf_url = self.PDF_URL_TEMPLATE.format(doi=paper.doi)
 
+    @staticmethod
+    def _validate_acm_doi(paper_id: str) -> str:
+        doi = paper_id.strip()
+        for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+            if doi.lower().startswith(prefix):
+                doi = doi[len(prefix):].strip()
+                break
+        if not doi.startswith(f"{ACM_DOI_PREFIX}/") or not doi[len(ACM_DOI_PREFIX) + 1:]:
+            raise ValueError(f"Not an ACM DOI (expected {ACM_DOI_PREFIX}/...): {paper_id}")
+        return doi
+
     def download_pdf(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Download an ACM PDF by DOI (``10.1145/...``).
 
@@ -63,9 +75,7 @@ class ACMSearcher(CrossRefSearcher):
             ValueError: If ``paper_id`` is not an ACM DOI.
             IOError: If dl.acm.org blocks the scripted request.
         """
-        doi = paper_id.strip().removeprefix("https://doi.org/")
-        if not doi.startswith(f"{ACM_DOI_PREFIX}/"):
-            raise ValueError(f"Not an ACM DOI (expected {ACM_DOI_PREFIX}/...): {paper_id}")
+        doi = self._validate_acm_doi(paper_id)
 
         pdf_url = self.PDF_URL_TEMPLATE.format(doi=doi)
         response = requests.get(

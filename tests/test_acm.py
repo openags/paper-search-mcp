@@ -1,4 +1,6 @@
 """Tests for the keyless ACM Digital Library connector (Crossref prefix 10.1145)."""
+import asyncio
+import threading
 import unittest
 import unittest.mock
 
@@ -35,6 +37,23 @@ class TestACMSearch(unittest.TestCase):
         self.assertEqual(paper.source, "acm")
         self.assertEqual(paper.url, "https://dl.acm.org/doi/10.1145/3654522.3654560")
         self.assertEqual(paper.pdf_url, "https://dl.acm.org/doi/pdf/10.1145/3654522.3654560")
+
+    def test_lookup_rejects_non_acm_doi_before_request(self):
+        searcher = ACMSearcher()
+        with unittest.mock.patch.object(searcher.session, "get") as get:
+            for doi in ("10.1109/5.771073", "https://doi.org/10.1000/test", "10.1145/"):
+                with self.subTest(doi=doi), self.assertRaises(ValueError):
+                    searcher.get_paper_by_doi(doi)
+            get.assert_not_called()
+
+    def test_lookup_normalizes_acm_doi(self):
+        searcher = ACMSearcher()
+        response = _crossref_response([])
+        response.json.return_value = {"message": CROSSREF_ITEM}
+        with unittest.mock.patch.object(searcher.session, "get", return_value=response) as get:
+            paper = searcher.get_paper_by_doi("https://doi.org/10.1145/3654522.3654560")
+        self.assertEqual(paper.source, "acm")
+        self.assertTrue(get.call_args.args[0].endswith("/10.1145/3654522.3654560"))
 
     def test_search_merges_extra_filter(self):
         searcher = ACMSearcher()
@@ -73,6 +92,19 @@ class TestACMDownload(unittest.TestCase):
             with open(path, "rb") as f:
                 self.assertEqual(f.read(), b"%PDF-1.7 test")
             self.assertEqual(os.path.basename(path), "acm_10.1145_3292500.3330701.pdf")
+
+
+class TestACMReadTool(unittest.TestCase):
+    def test_read_runs_off_event_loop_thread(self):
+        from paper_search_mcp import server
+        caller_thread = threading.get_ident()
+        def read(paper_id, save_path):
+            self.assertNotEqual(threading.get_ident(), caller_thread)
+            self.assertEqual((paper_id, save_path), ("10.1145/example", "/tmp/acm-test"))
+            return "paper text"
+        with unittest.mock.patch.object(server.acm_searcher, "read_paper", side_effect=read):
+            result = asyncio.run(server.read_acm_paper("10.1145/example", "/tmp/acm-test"))
+        self.assertEqual(result, "paper text")
 
 
 class TestACMAlwaysEnabled(unittest.TestCase):

@@ -95,7 +95,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | PubMed | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
 | bioRxiv | ✅ | ✅ | ✅ | Open API; reliable |
 | medRxiv | ✅ | ✅ | ✅ | Open API; reliable |
-| Google Scholar | ⚠️ | ❌ | ❌ | Bot-detection active; set `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` |
+| Google Scholar | ⚠️ | ❌ | ❌ | Upstream bot-detection/rate limits can prevent search; reported as source errors |
 | IACR | ✅ | ✅ | ✅ | Open API; reliable |
 | Semantic Scholar | ✅ | ✅ (OA) | ✅ (OA) | Works without key (rate-limited); key improves limits; key rejection (403) retried automatically without key |
 | Crossref | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
@@ -131,7 +131,7 @@ All keys are **optional** unless noted. Configure them in `~/.config/paper-searc
 | `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` | Semantic Scholar | Optional | Free at [semanticscholar.org](https://www.semanticscholar.org/product/api) — improves rate limits |
 | `PAPER_SEARCH_MCP_OPENALEX_API_KEY` | OpenAlex | Optional | Free at [openalex.org/settings/api](https://openalex.org/settings/api); increases the keyless daily budget 10x |
 | `PAPER_SEARCH_MCP_OPENALEX_EMAIL` | OpenAlex | Optional | Contact email used in the OpenAlex `User-Agent` |
-| `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` | Google Scholar | Optional | Your HTTP/HTTPS proxy URL — bypasses bot-detection |
+| `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` | Google Scholar | Optional | Your HTTP/HTTPS proxy URL; does not guarantee access or remove provider limits |
 | `PAPER_SEARCH_MCP_DOAJ_API_KEY` | DOAJ | Optional | Free at [doaj.org](https://doaj.org/apply-for-api-key/) — raises hourly rate limit |
 | `PAPER_SEARCH_MCP_ZENODO_ACCESS_TOKEN` | Zenodo | Optional | Free at [zenodo.org](https://zenodo.org/account/settings/applications/) — required for private records |
 | `PAPER_SEARCH_MCP_IEEE_API_KEY` | IEEE Xplore | **Required to activate** | Free at [developer.ieee.org](https://developer.ieee.org/) |
@@ -146,7 +146,7 @@ Some search failures are caused by external provider instability, not by bugs in
 
 | Source | Symptom | Cause | Workaround |
 |---|---|---|---|
-| Google Scholar | Returns 0 results / empty HTML | Bot-detection (CAPTCHA) | Set `PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL` to a proxy |
+| Google Scholar | Source error for HTTP/network failures, CAPTCHA, or persistent consent pages | Upstream rate limits, access checks, or connectivity | Reduce request frequency or use another public source; CAPTCHA is not solved automatically |
 | Semantic Scholar | 429 rate-limited responses | Anonymous access rate limit | Set `PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY`; if key is rejected (403) connector automatically retries without key |
 | OpenAlex | 403/429 or daily quota errors | Anonymous access daily limit | Set `PAPER_SEARCH_MCP_OPENALEX_API_KEY` |
 | CORE | 500 / timeout errors | Unauthenticated rate limiting | Set `PAPER_SEARCH_MCP_CORE_API_KEY` (free); connector retries with exponential backoff and falls back to key-less on 401/403 |
@@ -156,6 +156,14 @@ Some search failures are caused by external provider instability, not by bugs in
 | SSRN | HTTP 403 | Bot-detection (Cloudflare) | No workaround; connector tries two endpoints and returns a clear message on failure |
 | PMC / Europe PMC | PDF download ProxyError | Local proxy blocking direct HTTPS PDF download | Disable proxy or use `download_with_fallback` instead |
 | Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `~/.config/paper-search-mcp/.env` |
+
+Google Scholar failures are exposed in `errors.google_scholar` by unified MCP
+and CLI search, while successful sources still return their papers. Direct
+Scholar searches raise `GoogleScholarSearchError` for those failures. A normal
+empty result page still returns an empty list. If a later page fails, the source
+is reported as failed rather than returning its earlier pages as complete.
+Existing tool/deadline timeout behavior is unchanged. These diagnostics do not
+guarantee access to Scholar or a fixed number of queries per session.
 
 ## Optional Paid Platform Connectors (Phase 3)
 

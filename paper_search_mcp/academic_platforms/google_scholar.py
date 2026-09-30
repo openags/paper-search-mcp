@@ -13,6 +13,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+class GoogleScholarSearchError(RuntimeError):
+    """An upstream failure must not be mistaken for a successful empty search."""
+
+
 class GoogleScholarSearcher(PaperSource):
     """Custom implementation of Google Scholar paper search"""
     
@@ -155,6 +160,11 @@ class GoogleScholarSearcher(PaperSource):
     ) -> List[Paper]:
         """
         Search Google Scholar with custom parameters
+
+        Raises:
+            GoogleScholarSearchError: HTTP/network failure, CAPTCHA, or a
+                persistent consent interstitial prevents a successful search.
+                Already fetched pages are not returned as a complete result.
         """
         papers = []
         start = 0
@@ -199,6 +209,8 @@ class GoogleScholarSearcher(PaperSource):
                         break
 
                     if response.status_code in (403, 429, 503):
+                        if attempt == self.max_retries - 1:
+                            break
                         wait_time = self.retry_delay * (2 ** attempt)
                         wait_time += random.uniform(0, 0.5)
                         logger.warning(
@@ -215,12 +227,19 @@ class GoogleScholarSearcher(PaperSource):
                     logger.error("Search failed with non-retryable status %s", response.status_code)
                     break
 
+                # Check a known upstream failure before the deadline: running
+                # out of time during backoff must not turn a 429 into success.
+                if response is not None and response.status_code != 200:
+                    raise GoogleScholarSearchError(
+                        f"Google Scholar search failed: HTTP {response.status_code}; "
+                        "reduce request frequency or use another source."
+                    )
+
                 if deadline is not None and time.monotonic() >= deadline:
                     logger.warning("Google Scholar search deadline reached")
                     break
 
-                if response is None or response.status_code != 200:
-                    logger.error("Google Scholar search aborted after retries")
+                if response is None:
                     break
 
                 # Parse results
@@ -239,18 +258,16 @@ class GoogleScholarSearcher(PaperSource):
                             "Google Scholar consent page detected; retrying search"
                         )
                         continue
-                    logger.warning(
-                        "Google Scholar returned a consent page after retry"
+                    raise GoogleScholarSearchError(
+                        "Google Scholar returned a consent page after retry; "
+                        "use another source until Scholar is accessible."
                     )
-                    break
 
                 if self._is_captcha_page(soup, page_text):
-                    logger.warning(
+                    raise GoogleScholarSearchError(
                         "Google Scholar returned a bot-detection/captcha page. "
-                        "Set PAPER_SEARCH_MCP_GOOGLE_SCHOLAR_PROXY_URL/GOOGLE_SCHOLAR_PROXY_URL "
-                        "or reduce request frequency."
+                        "Reduce request frequency or use another source."
                     )
-                    break
 
                 results = soup.find_all('div', class_='gs_ri')
 
@@ -268,6 +285,14 @@ class GoogleScholarSearcher(PaperSource):
 
                 start += results_per_page
 
+            except GoogleScholarSearchError:
+                raise
+            except requests.RequestException as e:
+                # Do not include request/proxy URLs or response bodies in the
+                # error presented to MCP clients and CLI consumers.
+                raise GoogleScholarSearchError(
+                    "Google Scholar request failed; check connectivity or use another source."
+                ) from e
             except Exception as e:
                 logger.error(f"Search error: {e}")
                 break

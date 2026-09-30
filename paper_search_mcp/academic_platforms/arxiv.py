@@ -1,4 +1,5 @@
 # paper_search_mcp/sources/arxiv.py
+import logging
 import os
 import re
 import time
@@ -14,6 +15,9 @@ from pypdf import PdfReader
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
+
+
+logger = logging.getLogger(__name__)
 
 
 class ArxivSearcher(PaperSource):
@@ -188,7 +192,7 @@ class ArxivSearcher(PaperSource):
             try:
                 papers.append(self._paper_from_entry(entry))
             except Exception as e:
-                print(f"Error parsing arXiv entry: {e}")
+                logger.warning("Error parsing arXiv entry: %s", e)
         return papers
 
     @staticmethod
@@ -254,7 +258,7 @@ class ArxivSearcher(PaperSource):
             
             return text.strip()
         except Exception as e:
-            print(f"Error reading PDF for paper {paper_id}: {e}")
+            logger.error("Error reading PDF for paper %s: %s", paper_id, e)
             return ""
 
 if __name__ == "__main__":

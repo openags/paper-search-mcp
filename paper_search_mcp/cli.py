@@ -7,6 +7,8 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
 
 from .config import get_env
@@ -116,6 +118,46 @@ def _dedupe(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _citation_sort_key(paper: Dict[str, Any]) -> tuple[bool, Decimal]:
+    """Put valid nonnegative counts first, including numeric strings."""
+    value = paper.get("citations")
+    try:
+        count = Decimal(str(value))
+    except InvalidOperation:
+        return False, Decimal(0)
+    if not count.is_finite() or count < 0:
+        return False, Decimal(0)
+    return True, count
+
+
+def _date_sort_key(paper: Dict[str, Any]) -> tuple[bool, datetime]:
+    """Compare ISO dates/timestamps consistently; treat naive values as UTC."""
+    value = paper.get("published_date")
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, date):
+            parsed = datetime.combine(value, datetime.min.time())
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        else:
+            raise ValueError("Missing or unsupported date")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return True, parsed
+    except ValueError:
+        return False, datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _sort_papers(papers: List[Dict[str, Any]], order: str) -> List[Dict[str, Any]]:
+    """Sort retrieved papers stably, without changing connector queries."""
+    if order == "citations":
+        return sorted(papers, key=_citation_sort_key, reverse=True)
+    if order == "date":
+        return sorted(papers, key=_date_sort_key, reverse=True)
+    return papers
+
+
 # ---------------------------------------------------------------------------
 # Async helpers
 # ---------------------------------------------------------------------------
@@ -165,7 +207,7 @@ async def cmd_search(args: argparse.Namespace) -> int:
                     p["source"] = name
                 merged.append(p)
 
-    deduped = _dedupe(merged)
+    deduped = _sort_papers(_dedupe(merged), getattr(args, "sort", "relevance"))
 
     output = {
         "query": args.query,
@@ -240,6 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Comma-separated sources or 'all' (default: all)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
+
+    p_search.add_argument("--sort", choices=("relevance", "citations", "date"),
+                          default="relevance",
+                          help="Order retrieved results: relevance preserves source order (default); "
+                               "citations sorts highest first; date sorts newest first")
 
     # download
     p_dl = sub.add_parser("download", help="Download a paper PDF")

@@ -240,6 +240,25 @@ Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
 
+Sort search results by citation count or publication date:
+
+```bash
+paper-search search "transformer attention" --sources arxiv,semantic --sort citations
+paper-search search "CRISPR" --sort date
+```
+
+`--sort relevance` (the default) preserves the existing order: selected sources
+in order, with each source's returned order unchanged. It does not compute a
+cross-source relevance score. `--sort citations` orders highest counts first;
+`--sort date` orders newest publication dates first. Sorting is client-side,
+after deduplication, and only covers retrieved results (`--max-results` is per
+source); it does not change source queries or search the full source collection
+for its most-cited/newest papers. Ties retain their original order. Missing or
+invalid values sort last; numeric citation strings are supported. Dates accept
+ISO dates/timestamps, with naive timestamps and date-only values treated as UTC.
+The default JSON output and selected sources are unchanged.
+
+
 ---
 
 > **MCP Server Config file locations** (for methods below)

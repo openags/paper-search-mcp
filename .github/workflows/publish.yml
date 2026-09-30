@@ -33,6 +33,7 @@ jobs:
         run: >
           python -m pytest
           tests/test_package_entrypoints.py
+          tests/test_cli_sort.py
           tests/test_config_env.py
           tests/test_unpaywall.py
           tests/test_unpaywall_source.py

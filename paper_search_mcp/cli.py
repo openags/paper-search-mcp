@@ -47,7 +47,7 @@ def _available_sources() -> list[str]:
         sources.append("ieee")
     # Preserve main's keyless ACM availability, without broadening presets.
     sources.append("acm")
-    sources.append("wos")
+    sources.extend(["wos", "scopus"])
     return sources
 
 
@@ -84,6 +84,9 @@ def _get_searcher(source: str) -> Any:
     elif source == "ieee" and get_env("IEEE_API_KEY", ""):
         from .academic_platforms.ieee import IEEESearcher
         searcher = IEEESearcher()
+    elif source == "scopus":
+        from .academic_platforms.scopus import ScopusSearcher
+        searcher = ScopusSearcher()
     elif source == "wos":
         from .academic_platforms.wos import WebOfScienceSearcher
         searcher = WebOfScienceSearcher()
@@ -230,6 +233,11 @@ async def cmd_search(args: argparse.Namespace) -> int:
             extra["db"] = getattr(args, "wos_db", "WOS")
         if src == "semantic" and args.year:
             extra["year"] = args.year
+        if src == "scopus":
+            extra = {"view": getattr(args, "scopus_view", "STANDARD"),
+                     "sort": getattr(args, "scopus_sort", "relevance"),
+                     "field": getattr(args, "scopus_field", ""),
+                     "date": getattr(args, "scopus_date", "")}
         tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
 
     names = list(tasks.keys())
@@ -283,6 +291,9 @@ async def cmd_download(args: argparse.Namespace) -> int:
 
 async def cmd_read(args: argparse.Namespace) -> int:
     source = args.source.strip().lower()
+    if getattr(args, "full_text", False) and source != "scopus":
+        print(json.dumps({"status": "error", "message": "--full-text is supported only for Scopus"}))
+        return 1
 
     if source not in _available_sources():
         print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
@@ -290,6 +301,13 @@ async def cmd_read(args: argparse.Namespace) -> int:
 
     searcher = _get_searcher(source)
     try:
+        if source == "scopus":
+            result = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path,
+                                             full_text=getattr(args, "full_text", False))
+            print(json.dumps(result, indent=2))
+            if result["status"] == "unavailable":
+                return 1
+            return 2 if getattr(args, "full_text", False) and result["status"] != "full_text" else 0
         text = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path)
         print(text)
         return 0
@@ -331,6 +349,12 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Order retrieved results: relevance preserves source order (default); "
                                "citations sorts highest first; date sorts newest first")
 
+    p_search.add_argument("--scopus-view", choices=("STANDARD", "COMPLETE"), default="STANDARD",
+                          help="Scopus metadata view (COMPLETE may require institutional entitlement)")
+    p_search.add_argument("--scopus-sort", choices=("relevance", "coverDate", "citedby-count", "creator"), default="relevance")
+    p_search.add_argument("--scopus-field", choices=("", "TITLE", "ABS", "KEY", "AUTH", "AFFILORG"), default="")
+    p_search.add_argument("--scopus-date", default="", help="Scopus YYYY or YYYY-YYYY date filter")
+
     p_search.add_argument("--wos-db", default="WOS",
                           choices=("BCI", "BIOABS", "BIOSIS", "CCC", "DIIDW", "DRCI", "MEDLINE", "PPRN", "RC", "WOK", "WOS", "ZOOREC"),
                           help="Web of Science database (default: WOS)")
@@ -346,6 +370,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_read.add_argument("source", help="Source platform (e.g. arxiv, semantic)")
     p_read.add_argument("paper_id", help="Paper identifier")
     p_read.add_argument("-o", "--save-path", default="./downloads", help="Save directory (default: ./downloads)")
+
+    p_read.add_argument("--full-text", action="store_true",
+                        help="For Scopus only: explicitly try identity-verified ScienceDirect full text")
 
     # sources
     sub.add_parser("sources", help="List available sources")

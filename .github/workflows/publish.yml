@@ -36,6 +36,7 @@ jobs:
           tests/test_cli_sort.py
           tests/test_cli_sources.py
           tests/test_wos.py
+          tests/test_scopus.py
           tests/test_institutional_http.py
           tests/test_semantic_rate_limits.py
           tests/test_cli_diagnostics.py

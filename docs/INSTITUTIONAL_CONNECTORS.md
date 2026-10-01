@@ -56,3 +56,91 @@ schema mapping, pagination, and swallowed provider errors.
 Official references checked on 2026-10-01:
 - [Clarivate Starter API](https://developer.clarivate.com/apis/wos-starter)
 - [Starter OpenAPI schema](https://developer.clarivate.com/apis/wos-starter/swagger)
+
+## Scopus and optional ScienceDirect text
+
+Scopus is also explicit-only: `paper-search search 'TITLE(machine learning)' -s
+scopus`, MCP `search_scopus`, or `search_papers` with `sources="scopus"`. Supplying
+`PAPER_SEARCH_MCP_SCOPUS_API_KEY` (legacy `SCOPUS_API_KEY`) never adds it to a
+preset. An already-issued institution token can optionally be supplied as
+`PAPER_SEARCH_MCP_SCOPUS_INST_TOKEN` (legacy `SCOPUS_INST_TOKEN`); neither is
+stored by the connector. Institutional access is determined by Elsevier, not
+by whether a key exists. Users remain responsible for their API agreement,
+permissions, quotas, and institutional network requirements.
+
+Search uses `STANDARD` metadata by default. `COMPLETE` is explicitly selected
+and may require additional entitlement. Metadata availability varies by view;
+search does not promise abstracts or full text. No per-result detail requests
+are made. Limits are 0..100 results and at most four pages of 25 records, without
+retries or cursor harvesting. Invalid inputs fail before a request. The native
+query syntax passes through. Supported options are identical in MCP and CLI:
+
+| MCP `search_scopus` argument | Ordinary CLI search flag |
+| --- | --- |
+| `view` (`STANDARD`, `COMPLETE`) | `--scopus-view` |
+| `sort` (`relevance`, `coverDate`, `citedby-count`, `creator`) | `--scopus-sort` |
+| `field` (empty, `TITLE`, `ABS`, `KEY`, `AUTH`, `AFFILORG`) | `--scopus-field` |
+| `date` (`YYYY`, `YYYY-YYYY`, `YYYY-`, `-YYYY`) | `--scopus-date` |
+
+Open-ended dates are converted to closed ranges (1788 or next year as the
+missing bound). `relevance` maps to the official `relevancy` sort parameter.
+The existing CLI `--sort` remains local merged-result ordering and is separate
+from `--scopus-sort`. The existing `--year` continues to apply to Semantic only.
+
+`read_scopus_paper(paper_id)` or `paper-search read scopus ID` requests Scopus
+abstract metadata only. Set MCP `full_text=true` or CLI `--full-text` to make at
+most one additional ScienceDirect Article Retrieval request:
+
+1. Validate the numeric Scopus ID before constructing a URL
+2. Confirm the Abstract Retrieval response returns that exact Scopus ID
+3. Retrieve directly by that record's DOI (or PII if no DOI); no title search
+4. Confirm the article's own core metadata contains a matching DOI/PII and no
+   conflicting target identifiers; reference-list DOI mentions do not count
+5. Extract only a structured XML article body. Abstracts, raw `originalText`,
+   metadata, HTML/error pages, and plain text are never labeled full text
+
+The read response is JSON with `status`, `abstract`, `full_text`,
+`full_text_requested`, and `reason`:
+
+- `full_text`: identity verified and a structured article body was present
+- `abstract_only`: an abstract is present, but no qualifying full text
+- `unavailable`: neither requested article body nor an abstract is available
+
+Article 401/403/404 responses preserve a `full_text_error` with a typed code and
+HTTP status alongside any available abstract. Quota/timeouts/malformed responses
+and identity failures raise typed errors, not success-shaped content. A matched
+article may lack a structured body even when some formats are entitled; this is
+reported as unavailable body, not a promise that no full text exists elsewhere.
+No PDF tool is advertised and CLI download reports unsupported. Reads do not
+write files. XML DTDs/entities are not loaded, and documents over 8 MiB are not
+parsed. Caller-supplied API headers are never forwarded through redirects.
+
+CLI read exits 0 for an available requested representation, 2 if full text was
+requested but only an abstract was retrieved, and 1 for unavailable/error.
+Callers should always inspect the JSON status and reason as well.
+
+### Scopus validation and attribution
+
+Search, pagination, dates, credential precedence, 401/403/429/timeouts, abstract
+identity, DOI/PII article identity, malformed XML, wrong-title-like content,
+and abstract-only/full-text distinctions have deterministic synthetic tests.
+These are **not live entitlement validation**. No authorized Scopus key,
+institutional token, or per-article ScienceDirect entitlement was supplied.
+The public Elsevier XML example endpoint also returned a site-unavailable page
+in this environment; the conservative XML route therefore remains fixture-only.
+An authorized maintainer must validate an actual entitled XML article response,
+STANDARD/COMPLETE search, abstract retrieval and quota behavior before calling
+this live support verified. Earlier PR author live reports do not validate this
+changed implementation.
+
+Adapted from [PR #89](https://github.com/openags/paper-search-mcp/pull/89), source
+head `81e46d7e45c0abaa4a40f515c581baf66ceaac24`. Its Git author is
+`guokaichen <mildwall@users.noreply.github.com>` and its existing co-author trailer
+is `Claude Fable 5 <noreply@anthropic.com>`; both are retained in the integration.
+The source history is retained as a parent while the unsafe first title-hit
+retrieval and default-key-triggered fan-out are deliberately not adopted.
+
+Official references checked on 2026-10-01:
+- [Scopus Search API](https://dev.elsevier.com/documentation/SCOPUSSearchAPI.wadl)
+- [Abstract Retrieval API](https://dev.elsevier.com/documentation/AbstractRetrievalAPI.wadl)
+- [Article Retrieval API](https://dev.elsevier.com/documentation/ArticleRetrievalAPI.wadl)

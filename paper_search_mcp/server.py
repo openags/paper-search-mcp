@@ -191,7 +191,7 @@ ALL_SOURCES.append("acm")
 
 
 # Explicit-only institutional sources never consume quota via sources="all".
-EXPLICIT_ONLY_SOURCES = ["wos"]
+EXPLICIT_ONLY_SOURCES = ["wos", "scopus"]
 
 
 def _parse_sources(sources: str) -> List[str]:
@@ -612,6 +612,8 @@ async def search_papers(
         elif source == "ieee":
             if ieee_searcher is not None:
                 task_map[source] = async_search(ieee_searcher, query, max_results_per_source)
+        elif source == "scopus":
+            task_map[source] = search_scopus(query, max_results_per_source)
         elif source == "wos":
             task_map[source] = search_wos(query, max_results_per_source)
         elif source == "acm":
@@ -666,6 +668,33 @@ async def search_wos(query: str, max_results: int = 10, db: str = "WOS") -> List
     """
     from .academic_platforms.wos import WebOfScienceSearcher
     return await async_search(WebOfScienceSearcher(), query, max_results, db=db)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_scopus(query: str, max_results: int = 10, view: str = "STANDARD",
+                        sort: str = "relevance", field: str = "", date: str = "") -> List[Dict]:
+    """Explicit Scopus metadata search, never part of 'all'.
+
+    Requires runtime SCOPUS_API_KEY (PAPER_SEARCH_MCP_ prefix supported).
+    max_results 0..100; at most four pages. COMPLETE requires extra entitlement.
+    sort: relevance, coverDate, citedby-count, creator; date: YYYY or YYYY-YYYY.
+    Field: TITLE, ABS, KEY, AUTH, AFFILORG, or empty for native query syntax.
+    """
+    from .academic_platforms.scopus import ScopusSearcher
+    return await async_search(ScopusSearcher(), query, max_results,
+                              view=view, sort=sort, field=field, date=date)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def read_scopus_paper(paper_id: str, full_text: bool = False) -> Dict[str, Any]:
+    """Retrieve Scopus abstract metadata, with explicit ScienceDirect opt-in.
+
+    full_text=True attempts one article retrieval by a verified DOI/PII.
+    Returns status full_text, abstract_only, or unavailable, plus reason.
+    Never guesses by title or writes PDFs; typed API failures are not empty text.
+    """
+    from .academic_platforms.scopus import ScopusSearcher
+    return await asyncio.to_thread(ScopusSearcher().read_paper, paper_id, full_text=full_text)
 
 
 # Tool definitions

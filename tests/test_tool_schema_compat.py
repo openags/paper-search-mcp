@@ -110,6 +110,7 @@ def test_non_writing_read_tools_are_annotated_read_only():
         "read_openalex_paper",
         "read_openaire_paper",
         "read_pubmed_paper",
+        "read_scopus_paper",
     }
 
 

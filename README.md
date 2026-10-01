@@ -693,3 +693,11 @@ key does **not** add it to default, `all`, `fast`, or `fastest` searches. Supply
 connector does not create accounts or persist credentials. See
 [the institutional connector guide](docs/INSTITUTIONAL_CONNECTORS.md) for limits,
 errors, capability boundaries, and validation status.
+
+Scopus is likewise explicit-only (`-s scopus` or MCP `search_scopus`), using
+`PAPER_SEARCH_MCP_SCOPUS_API_KEY` (legacy `SCOPUS_API_KEY`). Metadata search defaults
+to `STANDARD`. Abstract retrieval is available via `paper-search read scopus ID`
+or MCP `read_scopus_paper`; ScienceDirect article retrieval requires explicit
+`--full-text` / `full_text=true` and a verified DOI/PII match. The response labels
+`full_text`, `abstract_only`, and `unavailable` separately. Neither connector's
+live institutional entitlement has been validated by these fixture tests.

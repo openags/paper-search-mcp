@@ -47,6 +47,7 @@ def _available_sources() -> list[str]:
         sources.append("ieee")
     # Preserve main's keyless ACM availability, without broadening presets.
     sources.append("acm")
+    sources.append("wos")
     return sources
 
 
@@ -83,6 +84,9 @@ def _get_searcher(source: str) -> Any:
     elif source == "ieee" and get_env("IEEE_API_KEY", ""):
         from .academic_platforms.ieee import IEEESearcher
         searcher = IEEESearcher()
+    elif source == "wos":
+        from .academic_platforms.wos import WebOfScienceSearcher
+        searcher = WebOfScienceSearcher()
     elif source == "acm":
         from .academic_platforms.acm import ACMSearcher
         searcher = ACMSearcher()
@@ -222,6 +226,8 @@ async def cmd_search(args: argparse.Namespace) -> int:
     for src in selected:
         searcher = _get_searcher(src)
         extra = {}
+        if src == "wos":
+            extra["db"] = getattr(args, "wos_db", "WOS")
         if src == "semantic" and args.year:
             extra["year"] = args.year
         tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
@@ -324,6 +330,10 @@ def build_parser() -> argparse.ArgumentParser:
                           default="relevance",
                           help="Order retrieved results: relevance preserves source order (default); "
                                "citations sorts highest first; date sorts newest first")
+
+    p_search.add_argument("--wos-db", default="WOS",
+                          choices=("BCI", "BIOABS", "BIOSIS", "CCC", "DIIDW", "DRCI", "MEDLINE", "PPRN", "RC", "WOK", "WOS", "ZOOREC"),
+                          help="Web of Science database (default: WOS)")
 
     # download
     p_dl = sub.add_parser("download", help="Download a paper PDF")

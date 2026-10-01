@@ -683,3 +683,13 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ---
 
 Happy researching with `paper-search-mcp`! If you encounter issues, open a GitHub issue.
+
+### Explicit institutional metadata connectors
+
+Web of Science Starter is available only through `search_wos` or an explicit
+`wos` source (`paper-search search 'TI=(machine learning)' -s wos`). Supplying a
+key does **not** add it to default, `all`, `fast`, or `fastest` searches. Supply
+`PAPER_SEARCH_MCP_WOS_API_KEY` (legacy `WOS_API_KEY` also works) at runtime; the
+connector does not create accounts or persist credentials. See
+[the institutional connector guide](docs/INSTITUTIONAL_CONNECTORS.md) for limits,
+errors, capability boundaries, and validation status.

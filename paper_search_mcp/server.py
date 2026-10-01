@@ -190,12 +190,16 @@ acm_searcher = ACMSearcher()
 ALL_SOURCES.append("acm")
 
 
+# Explicit-only institutional sources never consume quota via sources="all".
+EXPLICIT_ONLY_SOURCES = ["wos"]
+
+
 def _parse_sources(sources: str) -> List[str]:
     if not sources or sources.strip().lower() == "all":
         return ALL_SOURCES
 
     normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
-    return [source for source in normalized if source in ALL_SOURCES]
+    return [source for source in normalized if source in ALL_SOURCES + EXPLICIT_ONLY_SOURCES]
 
 
 def _invalid_sources(sources: str) -> List[str]:
@@ -204,7 +208,7 @@ def _invalid_sources(sources: str) -> List[str]:
         return []
 
     normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
-    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES))
+    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES + EXPLICIT_ONLY_SOURCES))
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -608,6 +612,8 @@ async def search_papers(
         elif source == "ieee":
             if ieee_searcher is not None:
                 task_map[source] = async_search(ieee_searcher, query, max_results_per_source)
+        elif source == "wos":
+            task_map[source] = search_wos(query, max_results_per_source)
         elif source == "acm":
             if acm_searcher is not None:
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
@@ -648,6 +654,18 @@ async def search_papers(
         "total": len(deduped_papers),
         "raw_total": len(merged_papers),
     }
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_wos(query: str, max_results: int = 10, db: str = "WOS") -> List[Dict]:
+    """Explicit Web of Science Starter metadata search; never part of 'all'.
+
+    Requires a runtime WOS_API_KEY (PAPER_SEARCH_MCP_ prefix supported).
+    Native WoS query syntax, max_results 0..100 (at most two requests).
+    No PDF, abstract, or full-text capability. API errors are not empty results.
+    """
+    from .academic_platforms.wos import WebOfScienceSearcher
+    return await async_search(WebOfScienceSearcher(), query, max_results, db=db)
 
 
 # Tool definitions

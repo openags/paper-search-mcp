@@ -35,6 +35,8 @@ jobs:
           tests/test_package_entrypoints.py
           tests/test_cli_sort.py
           tests/test_cli_sources.py
+          tests/test_wos.py
+          tests/test_institutional_http.py
           tests/test_semantic_rate_limits.py
           tests/test_cli_diagnostics.py
           tests/test_config_env.py

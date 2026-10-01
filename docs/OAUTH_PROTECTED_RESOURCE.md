@@ -46,12 +46,15 @@ configuration comes from the environment.
 | `OAUTH_ALGORITHM` | Optional; defaults to `RS256`; supported values: `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512` |
 
 URLs must be canonical, without user information, query strings or fragments.
-Origin-only URLs include the trailing slash, for example
-`https://login.example.org/`. This avoids silently changing the issuer string
-between JWT validation and SDK-generated metadata. If an issuer actually uses a
-non-canonical identifier, this version deliberately rejects that configuration;
-do not change the issuer claim yourself to work around it. Use a compatible
-issuer configuration or a separately reviewed adapter.
+Issuer identifiers are preserved exactly, including whether an origin-only URL
+has a trailing slash. For example, `https://accounts.google.com` and
+`https://accounts.google.com/` are distinct issuers. Set `OAUTH_ISSUER` to the exact
+identifier published by your authorization server; never add a slash to make a
+token match. The same exact value is advertised in protected-resource metadata.
+This uses Pydantic 2.12's empty-path preservation, with an explicit dependency
+minimum. Other URL canonicalization rules and exact resource/audience matching
+remain unchanged. A syntactically accepted issuer does not establish that it
+supports the required MCP access-token audience and client-registration flow.
 
 HTTP is accepted only for a loopback **resource URL** during local development.
 Issuer and JWKS URLs always require HTTPS. Neither `none` nor shared-secret HS*

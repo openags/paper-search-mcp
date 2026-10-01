@@ -12,6 +12,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from typing import Annotated
 from urllib.parse import urlsplit
 
 import httpx
@@ -26,7 +27,7 @@ from mcp.server.auth.routes import (
 )
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, TypeAdapter, UrlConstraints
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
@@ -43,18 +44,27 @@ _ALGORITHMS = frozenset({
     "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512",
 })
 _SCOPE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]+\Z")
+# An issuer is an exact identifier: https://issuer.example and its slash-suffixed
+# variant must not be conflated by URL validation or SDK metadata serialization.
+_ISSUER_URL = TypeAdapter(Annotated[AnyHttpUrl, UrlConstraints(preserve_empty_path=True)])
 
 
 class AuthConfigurationError(ValueError):
     """An unsafe or incomplete HTTP auth configuration; never fall back to open."""
 
 
-def _public_url(value: str, name: str, *, loopback_http: bool = False) -> str:
+def _public_url(
+    value: str, name: str, *, loopback_http: bool = False,
+    preserve_empty_path: bool = False,
+) -> str:
     """Validate operator-supplied URLs without network lookups or normalization."""
     try:
         parsed = urlsplit(value)
         # Do not silently rewrite the audience/resource/issuer identity.
-        if str(AnyHttpUrl(value)) != value:
+        validated = (
+            _ISSUER_URL.validate_python(value) if preserve_empty_path else AnyHttpUrl(value)
+        )
+        if str(validated) != value:
             raise ValueError("URL is not canonical")
         loopback = parsed.hostname == "localhost"
         if parsed.hostname and not loopback:
@@ -76,7 +86,7 @@ def _public_url(value: str, name: str, *, loopback_http: bool = False) -> str:
         suffix = " (HTTP is allowed only for a loopback resource)" if loopback_http else ""
         raise AuthConfigurationError(
             f"{_PREFIX}{name} must be a canonical HTTPS URL without credentials, "
-            f"query or fragment{suffix}; origin-only URLs must end with '/'"
+            f"query or fragment{suffix}"
         ) from exc
     return value
 
@@ -110,7 +120,9 @@ def load_http_auth_config(auth_mode: str | None, endpoint_path: str) -> OAuthCon
         raise AuthConfigurationError(
             "Missing OAuth settings: " + ", ".join(_PREFIX + name for name in missing)
         )
-    issuer = _public_url(configured["OAUTH_ISSUER"], "OAUTH_ISSUER")
+    issuer = _public_url(
+        configured["OAUTH_ISSUER"], "OAUTH_ISSUER", preserve_empty_path=True
+    )
     jwks_uri = _public_url(configured["OAUTH_JWKS_URI"], "OAUTH_JWKS_URI")
     resource_url = _public_url(
         configured["OAUTH_RESOURCE_URL"], "OAUTH_RESOURCE_URL", loopback_http=True
@@ -255,7 +267,7 @@ def create_protected_http_app(server: FastMCP, transport: str, config: OAuthConf
     return Starlette(
         routes=[
             *create_protected_resource_routes(
-                resource_url=resource, authorization_servers=[AnyHttpUrl(config.issuer)],
+                resource_url=resource, authorization_servers=[_ISSUER_URL.validate_python(config.issuer)],
                 scopes_supported=list(config.scopes), resource_name="Paper Search MCP",
             ),
             Mount("/", app=protected),

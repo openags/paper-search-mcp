@@ -114,7 +114,7 @@ def test_config_default_is_open_and_complete_oauth_is_opt_in(monkeypatch):
     {"AUTH": "oath"}, {"AUTH": "none"}, {"OAUTH_ISSUER": None},
     {"OAUTH_JWKS_URI": ""}, {"OAUTH_AUDIENCE": None}, {"OAUTH_RESOURCE_URL": None},
     {"OAUTH_SCOPES": ""}, {"OAUTH_AUDIENCE": "https://another-api.example/"},
-    {"OAUTH_ISSUER": "http://issuer.example/"}, {"OAUTH_ISSUER": "https://issuer.example"},
+    {"OAUTH_ISSUER": "http://issuer.example/"},
     {"OAUTH_ISSUER": "https://user:password@issuer.example/"},
     {"OAUTH_JWKS_URI": "https://issuer.example/jwks?key=secret"},
     {"OAUTH_JWKS_URI": "https://issuer.example/jwks#fragment"},
@@ -437,3 +437,38 @@ def test_jwks_without_token_kid_requires_one_key_and_past_nbf_is_allowed(keys):
             verifier._jwks_cache_time = 0
             assert await verifier.verify_token(credential) is None
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("issuer", [
+    "https://accounts.google.com", "https://accounts.google.com/",
+    "https://issuer.example/tenant", "https://issuer.example/tenant/",
+])
+@pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+def test_issuer_identifier_is_preserved_in_config_metadata_and_token_validation(
+    keys, monkeypatch, issuer, transport,
+):
+    path = "/sse" if transport == "sse" else "/mcp"
+    resource = "https://papers.example" + path
+    configure_env(monkeypatch, OAUTH_ISSUER=issuer, OAUTH_RESOURCE_URL=resource,
+                  OAUTH_AUDIENCE=resource)
+    cfg = load_http_auth_config(None, path)
+    assert cfg.issuer == issuer
+    with app_fixture(keys, monkeypatch, transport, cfg=cfg) as (app, _, _, _):
+        with TestClient(app, base_url="https://papers.example") as client:
+            metadata = client.get("/.well-known/oauth-protected-resource" + path)
+            assert metadata.status_code == 200
+            assert metadata.json()["authorization_servers"] == [issuer]
+            assert metadata.json()["resource"] == resource
+            valid = token(keys, cfg=cfg)
+            altered_issuer = issuer.rstrip("/") if issuer.endswith("/") else issuer + "/"
+            wrong = token(keys, cfg=cfg, changes={"iss": altered_issuer})
+            endpoint = "/messages/?session_id=00000000000000000000000000000000" if transport == "sse" else path
+            request = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                       "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                                  "clientInfo": {"name": "test", "version": "1"}}}
+            for credential, status in [(valid, 404 if transport == "sse" else 200), (wrong, 401)]:
+                response = client.post(endpoint, json=request, headers={
+                    "Authorization": "Bearer " + credential,
+                    "Accept": "application/json, text/event-stream",
+                })
+                assert response.status_code == status, response.text

@@ -1004,6 +1004,7 @@ dependencies = [
     { name = "joserfc" },
     { name = "lxml" },
     { name = "mcp", extra = ["cli"] },
+    { name = "pydantic" },
     { name = "pypdf" },
     { name = "requests" },
 ]
@@ -1022,6 +1023,7 @@ requires-dist = [
     { name = "joserfc", specifier = ">=1.6,<2" },
     { name = "lxml", specifier = ">=4.9.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27.2,<2" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pypdf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "requests" },

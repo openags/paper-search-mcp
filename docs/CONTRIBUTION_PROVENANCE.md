@@ -40,6 +40,20 @@ the default branch for repository contributor statistics.
 These source pull requests were bot-authored, so no missing human contributor
 credit needed to be repaired for PR #116.
 
+## Packaging entrypoint test from PR #47
+
+| Source PR | Contributor | Incorporated contribution |
+| --- | --- | --- |
+| [#47](https://github.com/openags/paper-search-mcp/pull/47) | `@Copilot` (bot), with `@universea` as human co-author | The complete 25-line `tests/test_package_entrypoints.py` regression test for both console scripts, incorporated verbatim. |
+
+The test was incorporated in
+[commit `c8b6421`](https://github.com/openags/paper-search-mcp/commit/c8b642183bb725f0a7faec89e58b558df09079d1),
+authored by `@universea`. The
+[source commit `e3a5da0`](https://github.com/openags/paper-search-mcp/commit/e3a5da0480013d4bbac8cff1774e3a5687015028)
+records `Co-authored-by: universea <13444641+universea@users.noreply.github.com>`.
+This entry restores the source-PR link without changing code or rewriting
+published history.
+
 ## MCP dependency refresh from PR #87
 
 The FastMCP 3.4.2 and MCP Python SDK 1.27.2 minimum versions originate in

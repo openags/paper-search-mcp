@@ -41,44 +41,58 @@ from .academic_platforms.ssrn import SSRNSearcher
 SEARCHERS: Dict[str, Any] = {}
 
 
-def _init_searchers() -> None:
-    """Lazily initialize searcher instances."""
-    if SEARCHERS:
-        return
+def _available_sources() -> list[str]:
+    sources = list(ALL_SOURCES)
+    if get_env("IEEE_API_KEY", ""):
+        sources.append("ieee")
+    # Preserve main's keyless ACM availability, without broadening presets.
+    sources.append("acm")
+    return sources
 
-    SEARCHERS["arxiv"] = ArxivSearcher()
-    SEARCHERS["pubmed"] = PubMedSearcher()
-    SEARCHERS["biorxiv"] = BioRxivSearcher()
-    SEARCHERS["medrxiv"] = MedRxivSearcher()
-    SEARCHERS["google_scholar"] = GoogleScholarSearcher()
-    SEARCHERS["iacr"] = IACRSearcher()
-    SEARCHERS["semantic"] = SemanticSearcher()
-    SEARCHERS["crossref"] = CrossRefSearcher()
-    SEARCHERS["openalex"] = OpenAlexSearcher()
-    SEARCHERS["pmc"] = PMCSearcher()
-    SEARCHERS["core"] = CORESearcher()
-    SEARCHERS["europepmc"] = EuropePMCSearcher()
-    SEARCHERS["dblp"] = DBLPSearcher()
-    SEARCHERS["openaire"] = OpenAiresearcher()
-    SEARCHERS["citeseerx"] = CiteSeerXSearcher()
-    SEARCHERS["doaj"] = DOAJSearcher()
-    SEARCHERS["base"] = BASESearcher()
-    unpaywall_resolver = UnpaywallResolver()
-    SEARCHERS["unpaywall"] = UnpaywallSearcher(resolver=unpaywall_resolver)
-    SEARCHERS["zenodo"] = ZenodoSearcher()
-    SEARCHERS["hal"] = HALSearcher()
-    SEARCHERS["ssrn"] = SSRNSearcher()
 
-    # Optional paid connectors
-    ieee_key = get_env("IEEE_API_KEY", "")
-    if ieee_key:
+def _get_searcher(source: str) -> Any:
+    """Initialize only the searcher requested by the current command."""
+    if source in SEARCHERS:
+        return SEARCHERS[source]
+
+    factories = {
+        "arxiv": ArxivSearcher,
+        "pubmed": PubMedSearcher,
+        "biorxiv": BioRxivSearcher,
+        "medrxiv": MedRxivSearcher,
+        "google_scholar": GoogleScholarSearcher,
+        "iacr": IACRSearcher,
+        "semantic": SemanticSearcher,
+        "crossref": CrossRefSearcher,
+        "openalex": OpenAlexSearcher,
+        "pmc": PMCSearcher,
+        "core": CORESearcher,
+        "europepmc": EuropePMCSearcher,
+        "dblp": DBLPSearcher,
+        "openaire": OpenAiresearcher,
+        "citeseerx": CiteSeerXSearcher,
+        "doaj": DOAJSearcher,
+        "base": BASESearcher,
+        "zenodo": ZenodoSearcher,
+        "hal": HALSearcher,
+        "ssrn": SSRNSearcher,
+    }
+
+    if source == "unpaywall":
+        searcher = UnpaywallSearcher(resolver=UnpaywallResolver())
+    elif source == "ieee" and get_env("IEEE_API_KEY", ""):
         from .academic_platforms.ieee import IEEESearcher
-        SEARCHERS["ieee"] = IEEESearcher()
+        searcher = IEEESearcher()
+    elif source == "acm":
+        from .academic_platforms.acm import ACMSearcher
+        searcher = ACMSearcher()
+    elif source in factories:
+        searcher = factories[source]()
+    else:
+        raise KeyError(source)
 
-    # ACM Digital Library is keyless (open access since 2026-01-01, served via
-    # Crossref) and always registered.
-    from .academic_platforms.acm import ACMSearcher
-    SEARCHERS["acm"] = ACMSearcher()
+    SEARCHERS[source] = searcher
+    return searcher
 
 
 ALL_SOURCES = [
@@ -88,12 +102,36 @@ ALL_SOURCES = [
     "ssrn", "unpaywall",
 ]
 
+FASTEST_SOURCES = [
+    "openalex", "crossref",
+]
+
+FAST_SOURCES = [
+    "openalex", "crossref", "arxiv", "pubmed", "europepmc",
+]
+
+
+def _fast_sources() -> list[str]:
+    sources = list(FAST_SOURCES)
+    if get_env("SEMANTIC_SCHOLAR_API_KEY", "").strip():
+        sources.insert(2, "semantic")
+    return sources
+
 
 def _parse_sources(sources: str) -> List[str]:
-    if not sources or sources.strip().lower() == "all":
-        return [s for s in ALL_SOURCES if s in SEARCHERS]
-    normalized = [p.strip().lower() for p in sources.split(",") if p.strip()]
-    return [s for s in normalized if s in SEARCHERS]
+    """Resolve presets without narrowing or extending an explicit selection."""
+    preset = sources.strip().lower() if sources else "all"
+    if preset == "all":
+        source_names = ALL_SOURCES
+    elif preset == "fast":
+        source_names = _fast_sources()
+    elif preset == "fastest":
+        source_names = FASTEST_SOURCES
+    else:
+        source_names = [part.strip() for part in preset.split(",") if part.strip()]
+    available = set(_available_sources())
+    # Avoid replacing an unawaited coroutine when the same source is repeated.
+    return list(dict.fromkeys(source for source in source_names if source in available))
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -175,15 +213,14 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
 # ---------------------------------------------------------------------------
 
 async def cmd_search(args: argparse.Namespace) -> int:
-    _init_searchers()
     selected = _parse_sources(args.sources)
     if not selected:
-        print(json.dumps({"error": "No valid sources selected", "available": sorted(SEARCHERS.keys())}))
+        print(json.dumps({"error": "No valid sources selected", "available": sorted(_available_sources())}))
         return 1
 
     tasks = {}
     for src in selected:
-        searcher = SEARCHERS[src]
+        searcher = _get_searcher(src)
         extra = {}
         if src == "semantic" and args.year:
             extra["year"] = args.year
@@ -222,14 +259,13 @@ async def cmd_search(args: argparse.Namespace) -> int:
 
 
 async def cmd_download(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
 
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
         return 1
 
-    searcher = SEARCHERS[source]
+    searcher = _get_searcher(source)
     try:
         result = await asyncio.to_thread(searcher.download_pdf, args.paper_id, args.save_path)
         print(json.dumps({"status": "ok", "path": result}))
@@ -240,14 +276,13 @@ async def cmd_download(args: argparse.Namespace) -> int:
 
 
 async def cmd_read(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
 
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
         return 1
 
-    searcher = SEARCHERS[source]
+    searcher = _get_searcher(source)
     try:
         text = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path)
         print(text)
@@ -258,8 +293,7 @@ async def cmd_read(args: argparse.Namespace) -> int:
 
 
 async def cmd_sources(args: argparse.Namespace) -> int:
-    _init_searchers()
-    print(json.dumps({"sources": sorted(SEARCHERS.keys())}, indent=2))
+    print(json.dumps({"sources": sorted(_available_sources())}, indent=2))
     return 0
 
 
@@ -279,9 +313,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("-n", "--max-results", type=int, default=5, help="Max results per source (default: 5)")
     p_search.add_argument("-s", "--sources", default="all",
-                          help="Comma-separated sources or 'all' (default: all)")
+                          help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: all)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
+    p_search.add_argument("--exhaustive", action="store_true",
+                          help="Compatibility no-op: broad search is already the default; "
+                               "explicit --sources always takes precedence")
 
     p_search.add_argument("--sort", choices=("relevance", "citations", "date"),
                           default="relevance",

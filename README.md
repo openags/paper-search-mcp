@@ -24,6 +24,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - [Method 5 — npx](#method-5--npx-via-smithery-cli-no-local-python-needed)
   - [Method 6 — Docker](#method-6--docker)
   - [Method 7 — Clone & run from source](#method-7--clone--run-from-source-development--recommended-for-macos-local)
+  - [DeepSeek Harness (DSH)](#deepseek-harness-dsh)
   - [Environment Variables](#environment-variables-env-file)
 - [Contributing](#contributing)
 - [Demo](#demo)
@@ -48,9 +49,9 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## MCP Authorization Compatibility
 
-The bundled MCP server supports `stdio` (the default), `sse`, and `streamable-http`. Network transports bind to `127.0.0.1` by default. Transport support does **not** make the server an OAuth 2.1 protected resource: it does not implement protected-resource metadata, bearer-token validation, scopes, or OAuth authorization responses.
+The bundled MCP server supports `stdio` (the default), `sse`, and `streamable-http`. Network transports bind to `127.0.0.1` by default. Optional OAuth protected-resource mode adds standard discovery, JWT bearer-token validation and required scopes to both HTTP transports, using an external authorization server.
 
-For a remote protected deployment, keep the backend private and put it behind an MCP/HTTP gateway that implements the [MCP authorization and discovery requirements](https://modelcontextprotocol.io/specification/latest/basic/authorization), forwarding only authorized requests. A generic reverse proxy alone does not establish MCP OAuth compliance. Do not expose the unauthenticated backend directly to the internet. Native protected-resource support remains tracked in [#25](https://github.com/openags/paper-search-mcp/issues/25).
+Enable it with `--auth oauth` or `PAPER_SEARCH_MCP_AUTH=oauth` and the explicit issuer/JWKS/resource/audience/scope configuration in [OAuth protected-resource setup](docs/OAUTH_PROTECTED_RESOURCE.md). Invalid or incomplete HTTP auth settings fail startup. stdio remains independent of HTTP authentication. Local HTTP without OAuth configuration remains open; do not publish that listener directly. A protected remote deployment still needs TLS, rate limits and filesystem isolation. This feature does not host login/accounts or replace the external issuer's OAuth flow; live identity-provider interoperability must be validated for your deployment.
 
 ---
 
@@ -59,14 +60,16 @@ For a remote protected deployment, keep the backend private and put it behind an
 - **Two-Layer Architecture**:
   - **Layer 1 (Unified Tooling)**: High-level `search_papers` for multi-source concurrent search & deduplication, and `download_with_fallback` relying on publisher open access links with sequential fallbacks.
   - **Layer 2 (Platform Connectors)**: Modular connectors for specific academic platforms (arXiv, PubMed, bioRxiv, Semantic Scholar, etc.) equipped with intelligent DOI extraction via regex text analysis or API fields.
-- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
+- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, OpenReview, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
 - **Opt-in Fast Search**: CLI search keeps broad coverage by default. Use `-s fast` (OpenAlex, Crossref, arXiv, PubMed, Europe PMC) or `-s fastest` (OpenAlex and Crossref) when lower latency matters more than coverage.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
 - **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
+- **Bounded reference lookups**: [OpenAlex references and citing papers](docs/OPENALEX_RELATIONSHIPS.md) from a DOI or OpenAlex ID, with explicit budgets and truncation metadata.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
+- **DeepSeek Harness (DSH) Integration**: A dsh profile bundle (clone the repo, `npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add link:./dsh`) exposing every tool as `mcp__paper-search__*`, with an optional guidance skill.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
 ## Source Strategy
@@ -111,10 +114,11 @@ This matrix reflects **verified live-integration results** from functional and e
 | BASE | ⚠️ | ✅ (record-dependent) | ✅ (record-dependent) | OAI-PMH endpoint requires institutional IP registration; returns empty gracefully otherwise |
 | Zenodo | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Open API; reliable |
 | HAL | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Open API; reliable |
-| SSRN | ⚠️ | ⚠️ best-effort | ⚠️ best-effort | 403 bot-detection active; public PDF only |
+| SSRN | ✅ (OpenAlex metadata) | ⚠️ best-effort | ⚠️ best-effort | Public discovery verified; SSRN page/PDF identity must be verified separately |
+| OpenReview | ✅ (anonymous API v2) | ⚠️ public-only | ⚠️ public-only | Search verified; exact-note lookup returned 403 in live PDF check; PDF success is mock-tested only |
 | Unpaywall | ✅ (DOI lookup) | ❌ | ❌ | **Requires** `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` |
 | Sci-Hub (optional) | ⚠️ fallback-only | ✅ | ❌ | Optional; unstable mirrors; user responsibility |
-| **IEEE Xplore** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_IEEE_API_KEY` to activate |
+| **IEEE Xplore** 🔑 | ⚠️ configured metadata | ❌ | ❌ | Deterministic tests only; no live key-authenticated validation; metadata key does not grant full text |
 | **ACM DL** | ✅ (Crossref metadata) | ⚠️ | ⚠️ | Keyless search; direct PDF/read may be blocked by browser challenges; use OA fallback |
 
 > ✅ = reliable in live tests.  ⚠️ = works but subject to upstream instability or access restrictions.  ❌ = not supported.  🔑 = key required.  🚧 = skeleton only.
@@ -154,7 +158,7 @@ Some search failures are caused by external provider instability, not by bugs in
 | OpenAIRE | Transient 403 responses | IP-based session rate limiting | Connector retries 3× per profile, escalating: plain session → XML Accept header → raw `requests.get` with Mozilla UA |
 | CiteSeerX | 404 via web archive redirect | PSU endpoint intermittently redirects to archive | No workaround; connector returns empty gracefully |
 | BASE | Search returns 0 results | OAI-PMH endpoint requires institutional IP registration | Register at [base-search.net](https://www.base-search.net/about/en/) for API access; connector returns empty gracefully otherwise |
-| SSRN | HTTP 403 | Bot-detection (Cloudflare) | No workaround; connector tries two endpoints and returns a clear message on failure |
+| SSRN full text | HTTP 403 or identity unavailable | Public page/PDF delivery may be restricted | Search uses OpenAlex; download reports failure without login, redirects or HTML search fallback |
 | PMC / Europe PMC | PDF download ProxyError | Local proxy blocking direct HTTPS PDF download | Disable proxy or use `download_with_fallback` instead |
 | Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `~/.config/paper-search-mcp/.env` |
 
@@ -168,12 +172,12 @@ guarantee access to Scholar or a fixed number of queries per session.
 
 ## Optional Paid Platform Connectors (Phase 3)
 
-IEEE Xplore is an **opt-in skeleton**, disabled until its API key is configured.
+IEEE Xplore provides **opt-in metadata search**, disabled until an existing API key is configured.
 ACM Digital Library search is **keyless and enabled by default**, using Crossref metadata restricted to ACM DOI prefix `10.1145`.
 
 | Platform | Env Var | Status |
 |---|---|---|
-| IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
+| IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | Metadata search with pagination; direct download/read remain unsupported |
 | ACM Digital Library | None | Crossref-backed search; PDF download/read depend on publisher access |
 
 **How to enable:**
@@ -182,17 +186,18 @@ ACM Digital Library search is **keyless and enabled by default**, using Crossref
 export PAPER_SEARCH_MCP_IEEE_API_KEY=<your_ieee_key>       # free key at https://developer.ieee.org/
 ```
 
-With an IEEE key, `ieee` and its tools are registered at startup. ACM (`acm`, `search_acm`, `download_acm`, and `read_acm_paper`) is always available. Legacy `PAPER_SEARCH_MCP_ACM_API_KEY` / `ACM_API_KEY` settings are no longer used and can be removed.
+With an IEEE key, `ieee` and its tools are registered at startup. See [IEEE metadata limits and full-text boundaries](docs/IEEE_METADATA.md). ACM (`acm`, `search_acm`, `download_acm`, and `read_acm_paper`) is always available. Legacy `PAPER_SEARCH_MCP_ACM_API_KEY` / `ACM_API_KEY` settings are no longer used and can be removed.
 
 ACM downloads require an ACM DOI such as `10.1145/...`. Publisher browser challenges may block scripted access; use `download_with_fallback(source="acm", paper_id="10.1145/...", doi="10.1145/...")` to try open repositories. `read_acm_paper` downloads a PDF into `save_path` before extracting text and can overwrite that file.
 
 ## Free Source Expansion (Phase 4)
 
-Three additional free-source connectors are now integrated into the MCP server:
+Additional public-source connectors are integrated into the MCP server:
 
 - `zenodo`: Official Zenodo REST API connector (search + record-dependent PDF/read support).
 - `hal`: HAL public API connector (search + record-dependent PDF/read support).
-- `ssrn`: Discovery-first connector with hardened parser and best-effort download/read when a direct public PDF link is available.
+- `ssrn`: [OpenAlex-backed discovery](docs/SSRN_OPENALEX.md) with strict SSRN identity and validated best-effort public downloads.
+- `openreview`: [Anonymous public API v2 papers](docs/OPENREVIEW.md), excluding reviews/private notes; verified OpenReview-hosted PDF download/read.
 - `unpaywall`: DOI-centric OA metadata source for standalone lookup (`search_unpaywall`) and fallback URL resolution.
 
 SSRN integration remains compliance-first: it only attempts direct public PDF links exposed by SSRN pages. If login/restricted delivery is required, the connector returns a clear message instead of bypassing access controls.
@@ -259,7 +264,7 @@ paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
 The CLI keeps `-s all` as its default broad source set. `--exhaustive` is an
 accepted compatibility no-op because broad search is already the default.
 Explicit `-s` selections always take precedence, including `-s fast` and
-`-s fastest`. The broad set is unchanged;
+`-s fastest`. The broad preset includes the supported public sources;
 optional paid sources are never added to these presets.
 
 `-s fast` selects OpenAlex, Crossref, arXiv, PubMed, and Europe PMC. A nonblank
@@ -293,6 +298,31 @@ invalid values sort last; numeric citation strings are supported. Dates accept
 ISO dates/timestamps, with naive timestamps and date-only values treated as UTC.
 The default JSON output and selected sources are unchanged.
 
+#### MCP tools from the CLI
+
+`paper-search tool` calls the same registered tools as the MCP server, including
+source-specific options and DOI lookup. Required arguments are positional;
+optional arguments use kebab-case flags. Boolean flags use `--flag` and
+`--no-flag`; omitted options retain their MCP defaults.
+
+```bash
+paper-search tool --help
+paper-search tool --list  # JSON tool list, schemas, and annotations
+paper-search tool search_crossref --help
+paper-search tool search_crossref "transformer attention" --filter from-pub-date:2024-01-01 --sort published --order desc --max-results 2
+paper-search tool get_crossref_paper_by_doi 10.1038/nature12373
+paper-search tool search_iacr "cryptography" --no-fetch-details
+```
+
+Objects and lists return JSON; text and download paths return plain text. An
+exception returns a JSON error with exit code 1; invalid CLI syntax exits with
+code 2. A normal MCP result retains its original meaning, including error or
+partial-result fields returned by the tool itself. `--list` shows only tools
+enabled by the current configuration, so IEEE tools still require their API
+key. The existing `search`, `download`, `read`, and `sources` commands are
+unchanged. Tool calls keep the MCP tools' source selection and timeout behavior;
+Sci-Hub fallback remains opt-in through `--use-scihub`.
+
 #### Skill ZIP uploads and other Claude runtimes
 
 The steps above install a **local Claude Code skill** at `~/.claude/skills/paper-search/SKILL.md`, following the [Claude Code skill layout](https://code.claude.com/docs/en/skills). They do not require a ZIP upload.
@@ -313,6 +343,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 with ZipFile("paper-search-skill.zip", "w", compression=ZIP_DEFLATED) as archive:
     archive.write("claude-code/SKILL.md", arcname="paper-search/SKILL.md")
 ```
+
+A reusable builder is also available: `python scripts/build_skill_zip.py --output paper-search-skill.zip`. It refuses to overwrite an existing file unless `--force` is supplied. Its archive layout, frontmatter, and byte-for-byte instruction contents are covered by offline tests.
 
 This only packages the instructions; it does not bundle Python dependencies, install `paper-search`, or configure an MCP connection. The bundled skill expects a runtime that can execute the CLI and reach the academic services. Upload acceptance and execution in Claude web or another runtime have **not been validated by this project**. Check that runtime's current metadata, package-installation, network-access, and code-execution requirements before adapting the skill. If you want to use an MCP client instead, follow the MCP installation methods below; uploading a skill ZIP does not start or connect an external MCP server.
 
@@ -547,9 +579,10 @@ The available transports are `stdio`, `sse`, and `streamable-http`. The default
 remains `stdio`. The same network settings can be supplied with
 `PAPER_SEARCH_MCP_TRANSPORT`, `PAPER_SEARCH_MCP_HOST`,
 `PAPER_SEARCH_MCP_PORT`, and `PAPER_SEARCH_MCP_PATH`; command-line options take
-precedence. Binding to a non-loopback host such as `0.0.0.0` exposes an
-unauthenticated server, so place it behind an authenticated gateway rather than
-publishing it directly to the internet.
+precedence. With the default `--auth none`, binding to a non-loopback host such
+as `0.0.0.0` exposes an unauthenticated server. For protected HTTP, configure
+[optional OAuth mode](docs/OAUTH_PROTECTED_RESOURCE.md) and keep the backend behind
+TLS and appropriate deployment controls; otherwise use an authenticated gateway.
 
 For active development, optionally install an editable copy:
 
@@ -557,6 +590,41 @@ For active development, optionally install an editable copy:
 uv venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 ```
+
+---
+
+### DeepSeek Harness (DSH)
+
+Paper search is available inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) as a profile bundle: it boots the MCP server and registers all its tools in any dsh profile as `mcp__paper-search__*`. The bundle only mounts a composition row — the MCP server itself is untouched.
+
+**Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) (the default launcher is `uvx`) and [pnpm](https://pnpm.io/installation) (`dsh plugin` forwards to pnpm). Commands below use the `npx @deepseek-ai/dsh` launcher (no global install needed); with a global dsh install, drop the prefix.
+
+```bash
+git clone https://github.com/openags/paper-search-mcp.git
+cd paper-search-mcp
+npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add link:./dsh
+```
+
+`link:` updates the bundle configuration from the checkout. `git pull` does not update the separately launched PyPI server; see `dsh/README.md` for a source-checkout launcher and reproducible version selection. Replace `web` with your profile name; a missing profile is initialized automatically. Restart the profile (`npx @deepseek-ai/dsh@0.2.0-rc.2 web`, or relaunch) and the tools appear — e.g. `mcp__paper-search__search_papers`, `mcp__paper-search__download_with_fallback`, `mcp__paper-search__search_arxiv`.
+
+**API keys**: just follow [Environment Variables](#environment-variables-env-file) — the server auto-loads `~/.config/paper-search-mcp/.env`. DSH deliberately scrubs credential-shaped ambient env vars from spawned processes, so shell exports do not reach the server; to forward variables explicitly, override the `mcp-paper-search` row in `~/.dsh/profiles/<name>/cordis.patch.yml` (a config override replaces the whole object — see `dsh/README.md` for a complete example).
+
+**Optional skill** with usage guidance (workflow, source table, tool mapping):
+
+```bash
+mkdir -p ~/.dsh/skills && cp -r dsh/skills/paper-search ~/.dsh/skills/
+```
+
+**Uninstall**:
+
+```bash
+npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web remove paper-search-mcp-dsh
+rm -rf ~/.dsh/skills/paper-search
+```
+
+Removing the bundle reconciles its row out of the composition. It does not delete downloaded papers, package caches, or user-managed settings.
+
+If you already run paper-search-mcp through your own `@deepseek-ai/dsh-mcp-client` row, remove that row (or give one of the two a distinct `serverName`) before adding the bundle — duplicate `serverName`s fail at load. The bundle package version tracks this checkout's Python project version; `dsh/README.md` documents alternate launchers (`uv tool run`, `python -m`, `npx`), environment forwarding, and development.
 
 ---
 
@@ -585,6 +653,11 @@ To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
 > Legacy variable names without the `PAPER_SEARCH_MCP_` prefix (e.g. `CORE_API_KEY`, `UNPAYWALL_EMAIL`) are still supported for backward compatibility.
 
 ---
+
+### Optional local search cache
+
+[Opt-in SQLite search caching](docs/SEARCH_CACHE.md) adds TTL, size limits,
+status, and clearing. It is disabled by default and bypasses authenticated sources.
 
 ## Contributing
 
@@ -683,3 +756,21 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ---
 
 Happy researching with `paper-search-mcp`! If you encounter issues, open a GitHub issue.
+
+### Explicit institutional metadata connectors
+
+Web of Science Starter is available only through `search_wos` or an explicit
+`wos` source (`paper-search search 'TI=(machine learning)' -s wos`). Supplying a
+key does **not** add it to default, `all`, `fast`, or `fastest` searches. Supply
+`PAPER_SEARCH_MCP_WOS_API_KEY` (legacy `WOS_API_KEY` also works) at runtime; the
+connector does not create accounts or persist credentials. See
+[the institutional connector guide](docs/INSTITUTIONAL_CONNECTORS.md) for limits,
+errors, capability boundaries, and validation status.
+
+Scopus is likewise explicit-only (`-s scopus` or MCP `search_scopus`), using
+`PAPER_SEARCH_MCP_SCOPUS_API_KEY` (legacy `SCOPUS_API_KEY`). Metadata search defaults
+to `STANDARD`. Abstract retrieval is available via `paper-search read scopus ID`
+or MCP `read_scopus_paper`; ScienceDirect article retrieval requires explicit
+`--full-text` / `full_text=true` and a verified DOI/PII match. The response labels
+`full_text`, `abstract_only`, and `unavailable` separately. Neither connector's
+live institutional entitlement has been validated by these fixture tests.

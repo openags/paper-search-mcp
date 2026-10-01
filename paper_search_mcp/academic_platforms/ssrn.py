@@ -2,17 +2,12 @@
 
 SSRN is Elsevier's preprint server primarily serving economics, law, business,
 and social sciences.  SSRN does not offer a public API.  This connector uses
-**SSRN's publicly accessible HTML search endpoint** to retrieve metadata only
-— no content scraping, no PDF harvesting.
+**OpenAlex metadata API** restricted to SSRN-indexed locations for discovery.
+Legacy HTML parsing helpers remain for compatibility but search does not call
+them or fall back to HTML when OpenAlex fails.
 
-Legal/compliance note:
-  - Only publicly visible metadata (title, authors, abstract, date) is
-    collected, which SSRN makes freely available in its standard web
-    interface and is legally accessible for personal research use.
-  - PDF download is explicitly NOT implemented because full-text access
-    requires an SSRN account and would violate automated-access policies.
-  - This connector is metadata/discovery only.  For full text, open the
-    returned URL in a browser and download manually.
+Public full-text access is best-effort and does not sign in or bypass access
+controls. A discovered locator does not guarantee a downloadable PDF.
 """
 
 from __future__ import annotations
@@ -20,9 +15,11 @@ from __future__ import annotations
 import logging
 import re
 import time
-import os
 from typing import List, Optional, Any, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs
+from pathlib import Path
+
+from .public_pdf import save_verified_pdf, read_pdf_text
 
 import requests
 from bs4 import BeautifulSoup
@@ -33,15 +30,22 @@ from ..paper import Paper
 logger = logging.getLogger(__name__)
 
 
+class _PublicOnlyAuth(requests.auth.AuthBase):
+    def __call__(self, request):
+        # Do not automatically use an SSRN account from .netrc.
+        request.headers.pop("Authorization", None)
+        return request
+
+
 class SSRNSearcher(PaperSource):
-    """Metadata-only connector for SSRN search results.
+    """SSRN discovery with separately validated public PDF retrieval.
 
     Capabilities:
     - **search**: ✅ returns metadata (title, authors, abstract, date, URL)
     - **download_pdf**: ⚠️ best-effort (works only when SSRN exposes a direct public PDF URL)
     - **read_paper**: ⚠️ best-effort (depends on downloadable PDF)
 
-    No API key required; uses standard HTTP requests with polite rate-limiting.
+    Search uses OpenAlex and honors existing OpenAlex configuration.
     """
 
     SEARCH_URL = "https://www.ssrn.com/index.cfm/en/rps-stage1-results/"
@@ -55,6 +59,7 @@ class SSRNSearcher(PaperSource):
 
     def __init__(self) -> None:
         self.session = requests.Session()
+        self.session.auth = _PublicOnlyAuth()
         self.session.headers.update(
             {
                 "User-Agent": self.USER_AGENT,
@@ -63,45 +68,21 @@ class SSRNSearcher(PaperSource):
             }
         )
         self._last_request_time: float = 0.0
+        self._pdf_titles: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # PaperSource interface
     # ------------------------------------------------------------------
 
     def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:
-        """Search SSRN and return metadata records.
+        """Discover SSRN metadata via OpenAlex, without SSRN HTML fallback.
 
-        Args:
-            query: Search terms.
-            max_results: Maximum results to return (practical limit ~30 without
-                         pagination; SSRN returns ~15 results per page).
-            **kwargs: Unused; reserved for future filter support.
-
-        Returns:
-            List of :class:`~paper_search_mcp.paper.Paper` objects.
+        See OpenAlexSearcher.search_ssrn for cursor limits and error behavior.
+        Existing OpenAlex key/email configuration is honored; no account is
+        created and no key is required by this connector itself.
         """
-        papers: List[Paper] = []
-        page = 1
-        per_page = 15  # SSRN default
-
-        while len(papers) < max_results:
-            self._throttle()
-            html, err = self._fetch_page(query, page)
-            if err or not html:
-                logger.warning("SSRN search page %d fetch failed: %s", page, err)
-                break
-
-            page_papers = self._parse_results(html)
-            if not page_papers:
-                break
-
-            papers.extend(page_papers)
-            if len(page_papers) < per_page:
-                break  # last page
-
-            page += 1
-
-        return papers[:max_results]
+        from .openalex import OpenAlexSearcher
+        return OpenAlexSearcher().search_ssrn(query, max_results=max_results)
 
     def download_pdf(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Download PDF for an SSRN paper when a public direct link is available.
@@ -128,30 +109,15 @@ class SSRNSearcher(PaperSource):
                 "The paper may require SSRN login or restricted access."
             )
 
-        os.makedirs(save_path, exist_ok=True)
-        output_path = os.path.join(save_path, f"ssrn_{abstract_id}.pdf")
-
         try:
-            response = self.session.get(pdf_url, stream=True, timeout=60)
-            response.raise_for_status()
-
-            content_type = (response.headers.get("content-type") or "").lower()
-            first_chunk = next(response.iter_content(chunk_size=1024), b"")
-            if "pdf" not in content_type and not first_chunk.startswith(b"%PDF"):
-                return (
-                    f"Resolved SSRN URL is not a direct PDF ({pdf_url}). "
-                    "This likely requires browser login."
-                )
-
-            with open(output_path, "wb") as file_obj:
-                if first_chunk:
-                    file_obj.write(first_chunk)
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        file_obj.write(chunk)
-            return output_path
-        except requests.RequestException as exc:
-            return f"SSRN PDF download failed for {abstract_id}: {exc}"
+            response = self.session.get(pdf_url, stream=True, timeout=60, allow_redirects=False)
+        except requests.RequestException:
+            raise RuntimeError("SSRN PDF request failed (network or timeout)") from None
+        with response:
+            if response.status_code != 200:
+                raise RuntimeError(f"SSRN public PDF returned HTTP {response.status_code}; no login or redirect fallback is attempted")
+            title = self._pdf_titles.get(abstract_id, "")
+            return save_verified_pdf(response, Path(save_path) / f"ssrn_{abstract_id}.pdf", title)
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Download and extract text from SSRN PDF when accessible.
@@ -167,21 +133,7 @@ class SSRNSearcher(PaperSource):
         if not pdf_path.endswith(".pdf"):
             return pdf_path
 
-        try:
-            from pypdf import PdfReader
-
-            reader = PdfReader(pdf_path)
-            text_parts = []
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-
-            if not text_parts:
-                return f"SSRN PDF downloaded to {pdf_path}, but no extractable text was found."
-            return "\n\n".join(text_parts)
-        except Exception as exc:
-            return f"SSRN PDF downloaded to {pdf_path}, but text extraction failed: {exc}"
+        return read_pdf_text(pdf_path)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -242,43 +194,51 @@ class SSRNSearcher(PaperSource):
         if value.lower().startswith("ssrn:"):
             value = value.split(":", 1)[1]
 
-        if value.isdigit():
+        if re.fullmatch(r"[0-9]+", value):
             return value
 
-        match = re.search(r"abstract(?:_id)?[=_](\d+)", value)
-        if match:
-            return match.group(1)
+        from .openalex import OpenAlexSearcher
+        return OpenAlexSearcher._extract_ssrn_abstract_id(value)
 
-        return ""
 
     def _resolve_pdf_url(self, abstract_id: str) -> str:
-        """Resolve direct PDF URL from SSRN abstract page when available."""
+        """Resolve a public SSRN PDF only from an identity-verified paper page."""
         abstract_url = f"{self.BASE_URL}/sol3/papers.cfm?abstract_id={abstract_id}"
+        self._pdf_titles.pop(abstract_id, None)
         try:
-            response = self.session.get(abstract_url, timeout=20)
-            response.raise_for_status()
+            response = self.session.get(abstract_url, timeout=20, allow_redirects=False)
         except requests.RequestException:
-            return ""
-
+            raise RuntimeError("SSRN paper page request failed (network or timeout)") from None
+        if response.status_code != 200:
+            raise RuntimeError(f"SSRN paper page returned HTTP {response.status_code}; public access is unavailable")
         soup = BeautifulSoup(response.text, "html.parser")
-        link_candidates = [
-            "a[title*='Download PDF' i]",
-            "a[href*='Delivery.cfm']",
-            "a[href*='.pdf']",
-            "a[href*='download']",
-            "a[href*='abstract_id=']",
-        ]
-
-        for selector in link_candidates:
-            for anchor in soup.select(selector):
-                href = (anchor.get("href") or "").strip()
-                if not href:
+        title = soup.find("meta", attrs={"name": "citation_title"})
+        canonical = soup.find("link", rel="canonical")
+        citation_url = soup.find("meta", attrs={"name": "citation_abstract_html_url"})
+        identity_urls = [tag.get(attr, "") for tag, attr in ((canonical, "href"), (citation_url, "content")) if tag]
+        if (not title or not title.get("content") or not identity_urls
+                or any(self._extract_abstract_id(urljoin(abstract_url, url)) != abstract_id for url in identity_urls)):
+            raise RuntimeError("SSRN paper page identity could not be verified")
+        candidates = []
+        pdf_meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
+        if pdf_meta:
+            candidates.append(pdf_meta.get("content", ""))
+        candidates.extend(anchor.get("href", "") for anchor in soup.select("a[href*='Delivery.cfm'], a[href$='.pdf']"))
+        for href in candidates:
+            candidate = urljoin(abstract_url, href)
+            try:
+                parsed = urlparse(candidate)
+                if (parsed.scheme != "https" or parsed.hostname != "papers.ssrn.com"
+                        or parsed.username or parsed.password or parsed.port
+                        or not ("/delivery.cfm" in parsed.path.lower() or parsed.path.lower().endswith(".pdf"))):
                     continue
-
-                candidate = urljoin(self.BASE_URL, href)
-                if "delivery.cfm" in candidate.lower() or candidate.lower().endswith(".pdf"):
-                    return candidate
-
+                ids = parse_qs(parsed.query).get("abstract_id", []) + parse_qs(parsed.query).get("abstractid", [])
+                if ids and any(value != abstract_id for value in ids):
+                    continue
+            except ValueError:
+                continue
+            self._pdf_titles[abstract_id] = title["content"]
+            return candidate
         return ""
 
     def _parse_results(self, html: str) -> List[Paper]:

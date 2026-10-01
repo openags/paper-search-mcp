@@ -38,9 +38,11 @@ from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
 from .academic_platforms.semantic import SemanticSearcher
 from .academic_platforms.ssrn import SSRNSearcher
+from .academic_platforms.openreview import OpenReviewSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .config import get_env, load_env_file
+from .search_cache import SearchCache, search_key
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
@@ -85,6 +87,7 @@ class _BoundedSearchExecutor:
 
 
 _SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
+_SEARCH_CACHE = SearchCache.from_env()
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -109,12 +112,22 @@ unpaywall_searcher = UnpaywallSearcher(resolver=unpaywall_resolver)
 zenodo_searcher = ZenodoSearcher()
 hal_searcher = HALSearcher()
 ssrn_searcher = SSRNSearcher()
+openreview_searcher = OpenReviewSearcher()
 # scihub_searcher = SciHubSearcher()
 
 
 # Asynchronous helper to adapt synchronous searchers
 # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
+    cache = _SEARCH_CACHE
+    key = search_key(searcher, query, max_results, kwargs) if cache.settings.enabled else None
+    generation = None
+    if key is not None:
+        cached, generation = await asyncio.wrap_future(
+            _SEARCH_EXECUTOR.submit(cache.lookup, key)
+        )
+        if cached is not None:
+            return cached
     search_future = _SEARCH_EXECUTOR.submit(
         searcher.search,
         query,
@@ -122,7 +135,36 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
         **kwargs,
     )
     papers = await asyncio.wrap_future(search_future)
-    return [paper.to_dict() for paper in papers]
+    result = [paper.to_dict() for paper in papers]
+    # A cancelled or failed provider call never reaches the cache write. Clear
+    # increments a shared generation so in-flight searches cannot repopulate it.
+    if key is not None and generation is not None and result:
+        try:
+            await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(cache.put, key, result, generation))
+        except SearchExecutorSaturatedError:
+            pass  # An optional cache must not turn a successful search into failure.
+    return result
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_search_cache_status() -> Dict:
+    """Show opt-in local search cache settings and entry count, never query contents.
+
+    Enable/disable with PAPER_SEARCH_MCP_SEARCH_CACHE_ENABLED and restart the
+    server. Defaults to disabled; inspect docs/SEARCH_CACHE.md for TTL/size knobs.
+    """
+    return await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(_SEARCH_CACHE.status))
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def clear_search_cache() -> Dict:
+    """Delete all cached search results at the configured local cache path.
+
+    Works while caching is disabled and never creates a missing database.
+    Does not delete downloaded PDFs or other files. New searches can fill the
+    cache again if enabled; disable caching and restart to stop future writes.
+    """
+    return await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(_SEARCH_CACHE.clear))
 
 
 async def _run_search_with_timeout(
@@ -163,6 +205,7 @@ ALL_SOURCES = [
     "zenodo",
     "hal",
     "ssrn",
+    "openreview",
     "unpaywall",
 ]
 
@@ -190,12 +233,16 @@ acm_searcher = ACMSearcher()
 ALL_SOURCES.append("acm")
 
 
+# Explicit-only institutional sources never consume quota via sources="all".
+EXPLICIT_ONLY_SOURCES = ["wos", "scopus"]
+
+
 def _parse_sources(sources: str) -> List[str]:
     if not sources or sources.strip().lower() == "all":
         return ALL_SOURCES
 
     normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
-    return [source for source in normalized if source in ALL_SOURCES]
+    return [source for source in normalized if source in ALL_SOURCES + EXPLICIT_ONLY_SOURCES]
 
 
 def _invalid_sources(sources: str) -> List[str]:
@@ -204,7 +251,7 @@ def _invalid_sources(sources: str) -> List[str]:
         return []
 
     normalized = [part.strip().lower() for part in sources.split(",") if part.strip()]
-    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES))
+    return list(dict.fromkeys(source for source in normalized if source not in ALL_SOURCES + EXPLICIT_ONLY_SOURCES))
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -538,7 +585,7 @@ async def search_papers(
         query: Search query string.
         max_results_per_source: Max results to fetch from each selected source.
         sources: Comma-separated source names or 'all'.
-            Available: arxiv,pubmed,biorxiv,medrxiv,google_scholar,iacr,semantic,crossref,openalex,pmc,core,europepmc,dblp,openaire,citeseerx,doaj,base,zenodo,hal,ssrn,unpaywall
+            Available: arxiv,pubmed,biorxiv,medrxiv,google_scholar,iacr,semantic,crossref,openalex,pmc,core,europepmc,dblp,openaire,citeseerx,doaj,base,zenodo,hal,ssrn,openreview,unpaywall
         year: Optional year filter for Semantic Scholar only.
     Returns:
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
@@ -601,6 +648,8 @@ async def search_papers(
             task_map[source] = search_zenodo(query, max_results_per_source)
         elif source == "hal":
             task_map[source] = search_hal(query, max_results_per_source)
+        elif source == "openreview":
+            task_map[source] = search_openreview(query, max_results_per_source)
         elif source == "ssrn":
             task_map[source] = search_ssrn(query, max_results_per_source)
         elif source == "unpaywall":
@@ -608,6 +657,10 @@ async def search_papers(
         elif source == "ieee":
             if ieee_searcher is not None:
                 task_map[source] = async_search(ieee_searcher, query, max_results_per_source)
+        elif source == "scopus":
+            task_map[source] = search_scopus(query, max_results_per_source)
+        elif source == "wos":
+            task_map[source] = search_wos(query, max_results_per_source)
         elif source == "acm":
             if acm_searcher is not None:
                 task_map[source] = async_search(acm_searcher, query, max_results_per_source)
@@ -648,6 +701,45 @@ async def search_papers(
         "total": len(deduped_papers),
         "raw_total": len(merged_papers),
     }
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_wos(query: str, max_results: int = 10, db: str = "WOS") -> List[Dict]:
+    """Explicit Web of Science Starter metadata search; never part of 'all'.
+
+    Requires a runtime WOS_API_KEY (PAPER_SEARCH_MCP_ prefix supported).
+    Native WoS query syntax, max_results 0..100 (at most two requests).
+    No PDF, abstract, or full-text capability. API errors are not empty results.
+    """
+    from .academic_platforms.wos import WebOfScienceSearcher
+    return await async_search(WebOfScienceSearcher(), query, max_results, db=db)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_scopus(query: str, max_results: int = 10, view: str = "STANDARD",
+                        sort: str = "relevance", field: str = "", date: str = "") -> List[Dict]:
+    """Explicit Scopus metadata search, never part of 'all'.
+
+    Requires runtime SCOPUS_API_KEY (PAPER_SEARCH_MCP_ prefix supported).
+    max_results 0..100; at most four pages. COMPLETE requires extra entitlement.
+    sort: relevance, coverDate, citedby-count, creator; date: YYYY or YYYY-YYYY.
+    Field: TITLE, ABS, KEY, AUTH, AFFILORG, or empty for native query syntax.
+    """
+    from .academic_platforms.scopus import ScopusSearcher
+    return await async_search(ScopusSearcher(), query, max_results,
+                              view=view, sort=sort, field=field, date=date)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def read_scopus_paper(paper_id: str, full_text: bool = False) -> Dict[str, Any]:
+    """Retrieve Scopus abstract metadata, with explicit ScienceDirect opt-in.
+
+    full_text=True attempts one article retrieval by a verified DOI/PII.
+    Returns status full_text, abstract_only, or unavailable, plus reason.
+    Never guesses by title or writes PDFs; typed API failures are not empty text.
+    """
+    from .academic_platforms.scopus import ScopusSearcher
+    return await asyncio.to_thread(ScopusSearcher().read_paper, paper_id, full_text=full_text)
 
 
 # Tool definitions
@@ -1112,6 +1204,7 @@ async def download_with_fallback(
         "zenodo": zenodo_searcher.download_pdf,
         "hal": hal_searcher.download_pdf,
         "ssrn": ssrn_searcher.download_pdf,
+        "openreview": openreview_searcher.download_pdf,
     }
 
     attempt_errors: List[str] = []
@@ -1229,6 +1322,54 @@ async def search_openalex(
     extra = {"filter": filter_value} if filter_value else {}
     papers = await async_search(openalex_searcher, query, max_results, **extra)
     return papers if papers else []
+
+
+async def _openalex_relationship(method, identifier, max_results, filter,
+                                 max_pages, max_requests, timeout_seconds):
+    from .academic_platforms.openalex_relations import validate_options
+    validate_options(max_results, max_pages, max_requests, timeout_seconds)
+    future = _SEARCH_EXECUTOR.submit(
+        method, identifier, max_results=max_results, filter=filter,
+        max_pages=max_pages, max_requests=max_requests,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError("OpenAlex relationship lookup exceeded its time budget") from exc
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_citing_papers(identifier: str, max_results: int = 10, filter: str = "",
+                            max_pages: int = 5, max_requests: int = 8,
+                            timeout_seconds: float = 30.0) -> Dict:
+    """Get one hop of papers citing a DOI or OpenAlex work ID (never a title).
+
+    Most-cited first. Limits: 500 results, 5 pages, 8 HTTP requests, 60 seconds.
+    The seed lookup and redirects consume requests; no retries or enrichment.
+    Returns papers with pagination/truncation metadata. API failures raise an
+    error rather than an empty success. Optional filter narrows OpenAlex works.
+    """
+    return await _openalex_relationship(
+        openalex_searcher.get_citations, identifier, max_results, filter,
+        max_pages, max_requests, timeout_seconds,
+    )
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_referenced_papers(identifier: str, max_results: int = 10, filter: str = "",
+                                max_pages: int = 5, max_requests: int = 8,
+                                timeout_seconds: float = 30.0) -> Dict:
+    """Get one hop of papers referenced by a DOI or OpenAlex work ID.
+
+    Same budgets/error contract as get_citing_papers. Missing OpenAlex reference
+    coverage may yield an empty successful list; it does not prove no references
+    exist in the original paper. No title guessing or multi-hop graph traversal.
+    """
+    return await _openalex_relationship(
+        openalex_searcher.get_references, identifier, max_results, filter,
+        max_pages, max_requests, timeout_seconds,
+    )
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
@@ -1372,10 +1513,37 @@ async def search_hal(query: str, max_results: int = 10) -> List[Dict]:
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
-    """Search metadata records from SSRN.
+async def search_openreview(query: str, max_results: int = 10) -> List[Dict]:
+    """Search public OpenReview API v2 papers anonymously (0..1000 results).
 
-    Note: SSRN connector is metadata-only and does not support direct PDF download.
+    Reviews, replies, private notes and API v1-only records are excluded.
+    Up to 1000 hits are scanned in 100-record pages; errors are reported.
+    """
+    return await async_search(openreview_searcher, query, max_results)
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def download_openreview(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download a public OpenReview PDF by note ID or official forum URL.
+
+    Verifies public paper identity, PDF structure and first-page title. Does not
+    use authentication or follow redirects; files over 50 MiB are rejected.
+    """
+    return await asyncio.to_thread(openreview_searcher.download_pdf, paper_id, save_path)
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def read_openreview_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download, validate and read an anonymously accessible OpenReview PDF."""
+    return await asyncio.to_thread(openreview_searcher.read_paper, paper_id, save_path)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
+    """Search SSRN-indexed metadata through OpenAlex.
+
+    Uses bounded cursor pagination (0..1000 results), with explicit API errors.
+    Direct public SSRN download/read is separate and best-effort.
 
     Args:
         query: Search query string (e.g., 'machine learning').
@@ -1666,7 +1834,7 @@ if ieee_searcher is not None:
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
     async def download_ieee(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from IEEE Xplore.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY) and institutional access.
+        """IEEE metadata-only connector: direct PDF download is not implemented.
 
         Args:
             paper_id: IEEE Xplore paper identifier.
@@ -1678,7 +1846,7 @@ if ieee_searcher is not None:
 
     @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
     async def read_ieee_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an IEEE Xplore paper.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
+        """IEEE metadata-only connector: direct full-text reading is not implemented.
 
         Args:
             paper_id: IEEE Xplore paper identifier.
@@ -1857,6 +2025,10 @@ def _build_server_parser() -> argparse.ArgumentParser:
         default=_server_env("PATH", "/mcp"),
         help="Streamable HTTP endpoint path (env: PAPER_SEARCH_MCP_PATH)",
     )
+    parser.add_argument(
+        "--auth", choices=("none", "oauth"), default=None,
+        help="HTTP auth mode (env: PAPER_SEARCH_MCP_AUTH; default: none; ignored for stdio)",
+    )
     return parser
 
 
@@ -1868,7 +2040,8 @@ def main(argv: list[str] | None = None) -> None:
     shorter ``PAPER_SEARCH_*`` names introduced by PR #114 remain accepted as
     aliases for the preferred ``PAPER_SEARCH_MCP_*`` names.
     """
-    args = _build_server_parser().parse_args(argv)
+    parser = _build_server_parser()
+    args = parser.parse_args(argv)
 
     if args.transport == "stdio":
         # Only meaningful for stdio: an http server has no owning client to outlive.
@@ -1878,6 +2051,15 @@ def main(argv: list[str] | None = None) -> None:
         mcp.run(transport="stdio")
         return
 
+    from .http_auth import AuthConfigurationError, load_http_auth_config, run_protected_http
+
+    try:
+        auth_config = load_http_auth_config(
+            args.auth, args.path if args.transport == "streamable-http" else "/sse"
+        )
+    except AuthConfigurationError as exc:
+        parser.error(str(exc))
+
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     if args.transport == "streamable-http":
@@ -1885,7 +2067,10 @@ def main(argv: list[str] | None = None) -> None:
     logger.info(
         "serving %s on %s:%s", args.transport, mcp.settings.host, mcp.settings.port
     )
-    mcp.run(transport=args.transport)
+    if auth_config is not None:
+        run_protected_http(mcp, args.transport, auth_config)
+    else:
+        mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 import unittest
 import os
 import requests
-from paper_search_mcp.academic_platforms.google_scholar import GoogleScholarSearcher
+from paper_search_mcp.academic_platforms.google_scholar import (
+    GoogleScholarSearchError,
+    GoogleScholarSearcher,
+)
 
 def check_scholar_accessible():
     """检查 Google Scholar 是否可访问"""
@@ -25,7 +28,10 @@ class TestGoogleScholarSearcher(unittest.TestCase):
         if not self.scholar_accessible:
             self.skipTest("Google Scholar is not accessible")
             
-        papers = self.searcher.search("machine learning", max_results=5)
+        try:
+            papers = self.searcher.search("machine learning", max_results=5)
+        except GoogleScholarSearchError as exc:
+            self.skipTest(f"Google Scholar is unavailable: {exc}")
         print(f"\nFound {len(papers)} papers for query 'machine learning':")
         if len(papers) == 0:
             self.skipTest("Google Scholar returned 0 results (likely bot-detection/rate-limit)")

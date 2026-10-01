@@ -198,7 +198,7 @@ class BioRxivSearcher(PaperSource):
                     raise Exception(
                         f"Failed to download PDF after {self.max_retries} attempts: {e}"
                     )
-                print(f"Attempt {tries} failed, retrying...")
+                logger.warning("Attempt %s failed, retrying...", tries)
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """
@@ -222,5 +222,5 @@ class BioRxivSearcher(PaperSource):
                 text += page.extract_text() + "\n"
             return text.strip()
         except Exception as e:
-            print(f"Error reading PDF for paper {paper_id}: {e}")
+            logger.error("Error reading PDF for paper %s: %s", paper_id, e)
             return ""

@@ -197,7 +197,6 @@ def test_cli_reports_scholar_error_without_corrupting_json(searcher, monkeypatch
     good_paper = {"paper_id": "good", "title": "Good paper", "source": "arxiv"}
     good_searcher = Mock()
     good_searcher.search.return_value = [Mock(to_dict=Mock(return_value=good_paper))]
-    monkeypatch.setattr(cli, "_init_searchers", lambda: None)
     monkeypatch.setattr(cli, "SEARCHERS", {"google_scholar": searcher, "arxiv": good_searcher})
     args = cli.build_parser().parse_args(["search", "test", "--sources", "google_scholar,arxiv"])
 

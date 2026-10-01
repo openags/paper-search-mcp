@@ -60,6 +60,7 @@ For a remote protected deployment, keep the backend private and put it behind an
   - **Layer 1 (Unified Tooling)**: High-level `search_papers` for multi-source concurrent search & deduplication, and `download_with_fallback` relying on publisher open access links with sequential fallbacks.
   - **Layer 2 (Platform Connectors)**: Modular connectors for specific academic platforms (arXiv, PubMed, bioRxiv, Semantic Scholar, etc.) equipped with intelligent DOI extraction via regex text analysis or API fields.
 - **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
+- **Opt-in Fast Search**: CLI search keeps broad coverage by default. Use `-s fast` (OpenAlex, Crossref, arXiv, PubMed, Europe PMC) or `-s fastest` (OpenAlex and Crossref) when lower latency matters more than coverage.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
 - **Optional API-Key Enhancement**: Sources like Semantic Scholar can work better with a user-provided API key, but are not intended to force paid usage.
@@ -245,6 +246,34 @@ Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment
 - "Download the PDF for arxiv paper 2106.12345"
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
+
+Choose sources explicitly when latency matters:
+
+```bash
+paper-search search "gender imbalance neuroscience references" -s fast -n 3
+paper-search search "gender imbalance neuroscience references" -s fastest -n 3
+paper-search search "gender imbalance neuroscience references" -s all -n 3
+paper-search download semantic DOI:10.1038/s41593-020-0658-y -o ./downloads
+```
+
+The CLI keeps `-s all` as its default broad source set. `--exhaustive` is an
+accepted compatibility no-op because broad search is already the default.
+Explicit `-s` selections always take precedence, including `-s fast` and
+`-s fastest`. The broad set is unchanged;
+optional paid sources are never added to these presets.
+
+`-s fast` selects OpenAlex, Crossref, arXiv, PubMed, and Europe PMC. A nonblank
+`PAPER_SEARCH_MCP_SEMANTIC_SCHOLAR_API_KEY` (or legacy
+`SEMANTIC_SCHOLAR_API_KEY`) also includes Semantic Scholar. `-s fastest` selects
+only OpenAlex and Crossref. Presets are latency-oriented choices, not guarantees
+of response time or exhaustive literature coverage. Anonymous Semantic Scholar
+429 responses fail immediately; authenticated requests retain bounded retries.
+
+Only selected searchers are constructed. Source lists and presets are honored
+exactly: a DOI in the query never adds another source. Use `-s unpaywall` for a
+DOI lookup, or include `unpaywall` explicitly in a comma-separated source list.
+The broad `all` preset already includes it. MCP server search defaults are
+unchanged.
 
 Sort search results by citation count or publication date:
 

@@ -21,7 +21,7 @@ def run_command(command, *args):
     return asyncio.run(getattr(cli, f"cmd_{command}")(namespace))
 
 
-def test_constructor_warnings_leave_sources_json_clean(monkeypatch, capsys, caplog):
+def test_listing_sources_avoids_constructor_warnings(monkeypatch, capsys, caplog):
     monkeypatch.setattr(cli, "SEARCHERS", {})
     monkeypatch.delenv("CORE_API_KEY", raising=False)
     monkeypatch.delenv("PAPER_SEARCH_MCP_CORE_API_KEY", raising=False)
@@ -30,7 +30,8 @@ def test_constructor_warnings_leave_sources_json_clean(monkeypatch, capsys, capl
     assert run_command("sources") == 0
 
     assert "core" in json.loads(capsys.readouterr().out)["sources"]
-    assert "No CORE API key provided" in caplog.text
+    assert "No CORE API key provided" not in caplog.text
+    assert cli.SEARCHERS == {}
 
 
 def test_concurrent_search_parse_errors_leave_stdout_untouched(

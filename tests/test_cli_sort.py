@@ -65,7 +65,7 @@ def install_searchers(monkeypatch, source_papers):
             searcher.search.return_value = [Mock(to_dict=Mock(return_value=p)) for p in results]
         searchers[source] = searcher
     monkeypatch.setattr(cli, "SEARCHERS", searchers)
-    monkeypatch.setattr(cli, "_init_searchers", lambda: None)
+    monkeypatch.setattr(cli, "_available_sources", lambda: list(searchers))
     return searchers
 
 

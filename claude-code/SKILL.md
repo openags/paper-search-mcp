@@ -21,10 +21,11 @@ If `paper-search` is not available, install it with `uv tool install paper-searc
 paper-search search "<query>" -n <max_per_source> -s <sources> -y <year>
 ```
 - `-n`: results per source (default: 5)
-- `-s`: comma-separated sources or "all" (default: all)
+- `-s`: comma-separated sources, "fast", "fastest", or "all" (default: all)
+- `--exhaustive`: compatibility no-op (broad search is already the default); explicit `-s` always takes precedence
 - `-y`: year filter for Semantic Scholar (e.g. "2020", "2018-2022")
 
-For speed, prefer targeted sources (`-s arxiv,semantic,crossref`) over "all" unless broad coverage is needed.
+For speed, use `-s fast` (OpenAlex, Crossref, arXiv, PubMed, Europe PMC; also Semantic Scholar when its API key is nonblank) or `-s fastest` (OpenAlex and Crossref). Explicit source choices are never expanded, even for DOI queries. Use `-s unpaywall` for DOI lookup; "all" already includes it. These presets do not enable optional paid sources.
 
 ### Download PDF
 ```bash

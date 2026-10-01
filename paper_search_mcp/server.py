@@ -38,6 +38,7 @@ from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.sci_hub import SciHubFetcher
 from .academic_platforms.semantic import SemanticSearcher
 from .academic_platforms.ssrn import SSRNSearcher
+from .academic_platforms.openreview import OpenReviewSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .config import get_env, load_env_file
@@ -109,6 +110,7 @@ unpaywall_searcher = UnpaywallSearcher(resolver=unpaywall_resolver)
 zenodo_searcher = ZenodoSearcher()
 hal_searcher = HALSearcher()
 ssrn_searcher = SSRNSearcher()
+openreview_searcher = OpenReviewSearcher()
 # scihub_searcher = SciHubSearcher()
 
 
@@ -163,6 +165,7 @@ ALL_SOURCES = [
     "zenodo",
     "hal",
     "ssrn",
+    "openreview",
     "unpaywall",
 ]
 
@@ -538,7 +541,7 @@ async def search_papers(
         query: Search query string.
         max_results_per_source: Max results to fetch from each selected source.
         sources: Comma-separated source names or 'all'.
-            Available: arxiv,pubmed,biorxiv,medrxiv,google_scholar,iacr,semantic,crossref,openalex,pmc,core,europepmc,dblp,openaire,citeseerx,doaj,base,zenodo,hal,ssrn,unpaywall
+            Available: arxiv,pubmed,biorxiv,medrxiv,google_scholar,iacr,semantic,crossref,openalex,pmc,core,europepmc,dblp,openaire,citeseerx,doaj,base,zenodo,hal,ssrn,openreview,unpaywall
         year: Optional year filter for Semantic Scholar only.
     Returns:
         Aggregated dictionary with per-source stats, errors, and deduplicated papers.
@@ -601,6 +604,8 @@ async def search_papers(
             task_map[source] = search_zenodo(query, max_results_per_source)
         elif source == "hal":
             task_map[source] = search_hal(query, max_results_per_source)
+        elif source == "openreview":
+            task_map[source] = search_openreview(query, max_results_per_source)
         elif source == "ssrn":
             task_map[source] = search_ssrn(query, max_results_per_source)
         elif source == "unpaywall":
@@ -1112,6 +1117,7 @@ async def download_with_fallback(
         "zenodo": zenodo_searcher.download_pdf,
         "hal": hal_searcher.download_pdf,
         "ssrn": ssrn_searcher.download_pdf,
+        "openreview": openreview_searcher.download_pdf,
     }
 
     attempt_errors: List[str] = []
@@ -1372,10 +1378,37 @@ async def search_hal(query: str, max_results: int = 10) -> List[Dict]:
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
-async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
-    """Search metadata records from SSRN.
+async def search_openreview(query: str, max_results: int = 10) -> List[Dict]:
+    """Search public OpenReview API v2 papers anonymously (0..1000 results).
 
-    Note: SSRN connector is metadata-only and does not support direct PDF download.
+    Reviews, replies, private notes and API v1-only records are excluded.
+    Up to 1000 hits are scanned in 100-record pages; errors are reported.
+    """
+    return await async_search(openreview_searcher, query, max_results)
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def download_openreview(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download a public OpenReview PDF by note ID or official forum URL.
+
+    Verifies public paper identity, PDF structure and first-page title. Does not
+    use authentication or follow redirects; files over 50 MiB are rejected.
+    """
+    return await asyncio.to_thread(openreview_searcher.download_pdf, paper_id, save_path)
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def read_openreview_paper(paper_id: str, save_path: str = "./downloads") -> str:
+    """Download, validate and read an anonymously accessible OpenReview PDF."""
+    return await asyncio.to_thread(openreview_searcher.read_paper, paper_id, save_path)
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def search_ssrn(query: str, max_results: int = 10) -> List[Dict]:
+    """Search SSRN-indexed metadata through OpenAlex.
+
+    Uses bounded cursor pagination (0..1000 results), with explicit API errors.
+    Direct public SSRN download/read is separate and best-effort.
 
     Args:
         query: Search query string (e.g., 'machine learning').
@@ -1666,7 +1699,7 @@ if ieee_searcher is not None:
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
     async def download_ieee(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download a PDF from IEEE Xplore.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY) and institutional access.
+        """IEEE metadata-only connector: direct PDF download is not implemented.
 
         Args:
             paper_id: IEEE Xplore paper identifier.
@@ -1678,7 +1711,7 @@ if ieee_searcher is not None:
 
     @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
     async def read_ieee_paper(paper_id: str, save_path: str = "./downloads") -> str:
-        """Download and read an IEEE Xplore paper.  Requires PAPER_SEARCH_MCP_IEEE_API_KEY (or IEEE_API_KEY).
+        """IEEE metadata-only connector: direct full-text reading is not implemented.
 
         Args:
             paper_id: IEEE Xplore paper identifier.

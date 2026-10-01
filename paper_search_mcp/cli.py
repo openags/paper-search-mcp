@@ -33,6 +33,7 @@ from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
+from .academic_platforms.openreview import OpenReviewSearcher
 
 # ---------------------------------------------------------------------------
 # Searcher registry
@@ -76,6 +77,7 @@ def _get_searcher(source: str) -> Any:
         "zenodo": ZenodoSearcher,
         "hal": HALSearcher,
         "ssrn": SSRNSearcher,
+        "openreview": OpenReviewSearcher,
     }
 
     if source == "unpaywall":
@@ -99,7 +101,7 @@ ALL_SOURCES = [
     "arxiv", "pubmed", "biorxiv", "medrxiv", "google_scholar", "iacr",
     "semantic", "crossref", "openalex", "pmc", "core", "europepmc",
     "dblp", "openaire", "citeseerx", "doaj", "base", "zenodo", "hal",
-    "ssrn", "unpaywall",
+    "ssrn", "openreview", "unpaywall",
 ]
 
 FASTEST_SOURCES = [

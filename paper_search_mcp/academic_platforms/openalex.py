@@ -182,6 +182,131 @@ class OpenAlexSearcher(PaperSource):
 
         return papers
 
+    SSRN_SOURCE_ID = "S4210172589"
+    SSRN_PAGE_SIZE = 100
+    SSRN_MAX_RESULTS = 1000
+    SSRN_MAX_PAGES = 20
+
+    @staticmethod
+    def _extract_ssrn_abstract_id(value: str) -> str:
+        """Accept SSRN locators only, never a lookalike host or arbitrary URL."""
+        if not isinstance(value, str):
+            return ""
+        from urllib.parse import parse_qs, urlparse
+        import re
+        try:
+            url = urlparse(value.strip())
+            if url.scheme not in {"http", "https"} or url.username or url.password or url.port:
+                return ""
+            if url.hostname in {"doi.org", "dx.doi.org"}:
+                match = re.fullmatch(r"/10\.2139/ssrn\.([0-9]+)", url.path, re.IGNORECASE)
+                return match.group(1) if match else ""
+            if url.hostname not in {"papers.ssrn.com", "ssrn.com", "www.ssrn.com"}:
+                return ""
+            match = re.fullmatch(r"/abstract=([0-9]+)", url.path)
+            if match:
+                return match.group(1)
+            if url.path.lower() not in {"/sol3/papers.cfm", "/sol3/delivery.cfm"}:
+                return ""
+            ids = parse_qs(url.query).get("abstract_id", [])
+            return ids[0] if len(ids) == 1 and re.fullmatch(r"[0-9]+", ids[0]) else ""
+        except ValueError:
+            return ""
+
+    def _normalize_ssrn_paper_id(self, item: dict) -> tuple[str, str]:
+        locations = [item.get("primary_location") or {}] + (item.get("locations") or [])
+        candidates = [item.get("doi") or ""]
+        for location in locations:
+            if isinstance(location, dict):
+                candidates.extend([location.get("landing_page_url") or "", location.get("pdf_url") or ""])
+        ids = {self._extract_ssrn_abstract_id(value) for value in candidates}
+        ids.discard("")
+        # Multiple SSRN versions cannot be identified as one paper safely.
+        if len(ids) != 1:
+            return "", ""
+        abstract_id = ids.pop()
+        return f"ssrn:{abstract_id}", f"https://papers.ssrn.com/sol3/papers.cfm?abstract_id={abstract_id}"
+
+    def search_ssrn(self, query: str, max_results: int = 10) -> List[Paper]:
+        """SSRN discovery via OpenAlex, including secondary SSRN locations.
+
+        Cursor pagination scans up to 20 pages of 100 records. max_results must
+        be 0..1000. Unidentifiable/ambiguous SSRN records are skipped; API,
+        schema, scan-limit and cursor-cycle failures raise rather than reporting
+        false zero results or silently returning partial data. No SSRN HTML
+        search fallback is used. Returned PDF URLs are intentionally empty:
+        OpenAlex landing/OA locators are not verified PDF downloads.
+        """
+        if not isinstance(max_results, int) or isinstance(max_results, bool) or not 0 <= max_results <= self.SSRN_MAX_RESULTS:
+            raise ValueError("SSRN max_results must be an integer from 0 to 1000")
+        if not max_results:
+            return []
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("SSRN query must not be empty")
+        papers, seen, cursors = [], set(), set()
+        cursor = "*"
+        for _ in range(self.SSRN_MAX_PAGES):
+            if cursor in cursors:
+                raise RuntimeError("OpenAlex SSRN pagination repeated a cursor")
+            cursors.add(cursor)
+            try:
+                response = self.session.get(self.BASE_URL, params={
+                    "search": query, "filter": f"locations.source.id:{self.SSRN_SOURCE_ID}",
+                    "per_page": min(max_results, self.SSRN_PAGE_SIZE), "cursor": cursor,
+                }, timeout=30, allow_redirects=False)
+            except requests.RequestException:
+                raise RuntimeError("OpenAlex SSRN request failed (network or timeout)") from None
+            if response.status_code != 200:
+                raise RuntimeError(f"OpenAlex SSRN search returned HTTP {response.status_code}")
+            try:
+                data = response.json()
+            except (ValueError, TypeError):
+                raise RuntimeError("OpenAlex SSRN returned invalid JSON") from None
+            if (not isinstance(data, dict) or not isinstance(data.get("results"), list)
+                    or not isinstance(data.get("meta"), dict) or "next_cursor" not in data["meta"]):
+                raise RuntimeError("OpenAlex SSRN returned a malformed paginated response")
+            for item in data["results"]:
+                if not isinstance(item, dict):
+                    raise RuntimeError("OpenAlex SSRN returned a malformed work")
+                title = item.get("title")
+                if not isinstance(title, str) or not title.strip():
+                    continue
+                paper_id, url = self._normalize_ssrn_paper_id(item)
+                if not paper_id or paper_id in seen:
+                    continue
+                seen.add(paper_id)
+                authors = []
+                for authorship in item.get("authorships") or []:
+                    if isinstance(authorship, dict):
+                        name = (authorship.get("author") or {}).get("display_name")
+                        if isinstance(name, str) and name:
+                            authors.append(name)
+                try:
+                    date = datetime.strptime(item.get("publication_date") or "", "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    date = None
+                doi = item.get("doi") or ""
+                if not isinstance(doi, str):
+                    doi = ""
+                citations = item.get("cited_by_count")
+                papers.append(Paper(
+                    paper_id=paper_id, title=title.strip(), authors=authors,
+                    abstract=self._reconstruct_abstract(item.get("abstract_inverted_index")),
+                    doi=doi.removeprefix("https://doi.org/"), published_date=date,
+                    pdf_url="", url=url, source="ssrn",
+                    citations=citations if isinstance(citations, int) and citations >= 0 else 0,
+                    extra={"discovery_source": "openalex", "openalex_id": item.get("id") or ""},
+                ))
+                if len(papers) == max_results:
+                    return papers
+            next_cursor = data["meta"]["next_cursor"]
+            if next_cursor is None or not data["results"]:
+                return papers
+            if not isinstance(next_cursor, str) or not next_cursor:
+                raise RuntimeError("OpenAlex SSRN returned an invalid cursor")
+            cursor = next_cursor
+        raise RuntimeError("OpenAlex SSRN scan limit reached; narrow the query")
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         OpenAlex does not host PDFs natively, it only links to open access versions.

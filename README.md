@@ -59,7 +59,7 @@ For a remote protected deployment, keep the backend private and put it behind an
 - **Two-Layer Architecture**:
   - **Layer 1 (Unified Tooling)**: High-level `search_papers` for multi-source concurrent search & deduplication, and `download_with_fallback` relying on publisher open access links with sequential fallbacks.
   - **Layer 2 (Platform Connectors)**: Modular connectors for specific academic platforms (arXiv, PubMed, bioRxiv, Semantic Scholar, etc.) equipped with intelligent DOI extraction via regex text analysis or API fields.
-- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
+- **Multi-Source Support**: Search and download papers from arXiv, PubMed, bioRxiv, medRxiv, Google Scholar, IACR ePrint Archive, Semantic Scholar, Crossref, OpenAlex, PubMed Central (PMC), CORE, Europe PMC, dblp, OpenAIRE, CiteSeerX, DOAJ, BASE, Zenodo, HAL, SSRN, OpenReview, Unpaywall (DOI lookup), and optional Sci-Hub workflows.
 - **Opt-in Fast Search**: CLI search keeps broad coverage by default. Use `-s fast` (OpenAlex, Crossref, arXiv, PubMed, Europe PMC) or `-s fastest` (OpenAlex and Crossref) when lower latency matters more than coverage.
 - **Standardized Output**: Papers are returned in a consistent dictionary format via the `Paper` class.
 - **Free-First Design**: Open and public sources are prioritized before any optional commercial or restricted integrations.
@@ -111,10 +111,11 @@ This matrix reflects **verified live-integration results** from functional and e
 | BASE | ⚠️ | ✅ (record-dependent) | ✅ (record-dependent) | OAI-PMH endpoint requires institutional IP registration; returns empty gracefully otherwise |
 | Zenodo | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Open API; reliable |
 | HAL | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Open API; reliable |
-| SSRN | ⚠️ | ⚠️ best-effort | ⚠️ best-effort | 403 bot-detection active; public PDF only |
+| SSRN | ✅ (OpenAlex metadata) | ⚠️ best-effort | ⚠️ best-effort | Public discovery verified; SSRN page/PDF identity must be verified separately |
+| OpenReview | ✅ (anonymous API v2) | ⚠️ public-only | ⚠️ public-only | Search verified; exact-note lookup returned 403 in live PDF check; PDF success is mock-tested only |
 | Unpaywall | ✅ (DOI lookup) | ❌ | ❌ | **Requires** `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` |
 | Sci-Hub (optional) | ⚠️ fallback-only | ✅ | ❌ | Optional; unstable mirrors; user responsibility |
-| **IEEE Xplore** 🔑 | 🚧 skeleton | 🚧 skeleton | 🚧 skeleton | Requires `PAPER_SEARCH_MCP_IEEE_API_KEY` to activate |
+| **IEEE Xplore** 🔑 | ⚠️ configured metadata | ❌ | ❌ | Deterministic tests only; no live key-authenticated validation; metadata key does not grant full text |
 | **ACM DL** | ✅ (Crossref metadata) | ⚠️ | ⚠️ | Keyless search; direct PDF/read may be blocked by browser challenges; use OA fallback |
 
 > ✅ = reliable in live tests.  ⚠️ = works but subject to upstream instability or access restrictions.  ❌ = not supported.  🔑 = key required.  🚧 = skeleton only.
@@ -154,7 +155,7 @@ Some search failures are caused by external provider instability, not by bugs in
 | OpenAIRE | Transient 403 responses | IP-based session rate limiting | Connector retries 3× per profile, escalating: plain session → XML Accept header → raw `requests.get` with Mozilla UA |
 | CiteSeerX | 404 via web archive redirect | PSU endpoint intermittently redirects to archive | No workaround; connector returns empty gracefully |
 | BASE | Search returns 0 results | OAI-PMH endpoint requires institutional IP registration | Register at [base-search.net](https://www.base-search.net/about/en/) for API access; connector returns empty gracefully otherwise |
-| SSRN | HTTP 403 | Bot-detection (Cloudflare) | No workaround; connector tries two endpoints and returns a clear message on failure |
+| SSRN full text | HTTP 403 or identity unavailable | Public page/PDF delivery may be restricted | Search uses OpenAlex; download reports failure without login, redirects or HTML search fallback |
 | PMC / Europe PMC | PDF download ProxyError | Local proxy blocking direct HTTPS PDF download | Disable proxy or use `download_with_fallback` instead |
 | Unpaywall | Skipped entirely | `UNPAYWALL_EMAIL` env var not set | Set `PAPER_SEARCH_MCP_UNPAYWALL_EMAIL` in `~/.config/paper-search-mcp/.env` |
 
@@ -168,12 +169,12 @@ guarantee access to Scholar or a fixed number of queries per session.
 
 ## Optional Paid Platform Connectors (Phase 3)
 
-IEEE Xplore is an **opt-in skeleton**, disabled until its API key is configured.
+IEEE Xplore provides **opt-in metadata search**, disabled until an existing API key is configured.
 ACM Digital Library search is **keyless and enabled by default**, using Crossref metadata restricted to ACM DOI prefix `10.1145`.
 
 | Platform | Env Var | Status |
 |---|---|---|
-| IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | 🚧 skeleton — search registered, download/read raise `NotImplementedError` |
+| IEEE Xplore | `PAPER_SEARCH_MCP_IEEE_API_KEY` | Metadata search with pagination; direct download/read remain unsupported |
 | ACM Digital Library | None | Crossref-backed search; PDF download/read depend on publisher access |
 
 **How to enable:**
@@ -182,17 +183,18 @@ ACM Digital Library search is **keyless and enabled by default**, using Crossref
 export PAPER_SEARCH_MCP_IEEE_API_KEY=<your_ieee_key>       # free key at https://developer.ieee.org/
 ```
 
-With an IEEE key, `ieee` and its tools are registered at startup. ACM (`acm`, `search_acm`, `download_acm`, and `read_acm_paper`) is always available. Legacy `PAPER_SEARCH_MCP_ACM_API_KEY` / `ACM_API_KEY` settings are no longer used and can be removed.
+With an IEEE key, `ieee` and its tools are registered at startup. See [IEEE metadata limits and full-text boundaries](docs/IEEE_METADATA.md). ACM (`acm`, `search_acm`, `download_acm`, and `read_acm_paper`) is always available. Legacy `PAPER_SEARCH_MCP_ACM_API_KEY` / `ACM_API_KEY` settings are no longer used and can be removed.
 
 ACM downloads require an ACM DOI such as `10.1145/...`. Publisher browser challenges may block scripted access; use `download_with_fallback(source="acm", paper_id="10.1145/...", doi="10.1145/...")` to try open repositories. `read_acm_paper` downloads a PDF into `save_path` before extracting text and can overwrite that file.
 
 ## Free Source Expansion (Phase 4)
 
-Three additional free-source connectors are now integrated into the MCP server:
+Additional public-source connectors are integrated into the MCP server:
 
 - `zenodo`: Official Zenodo REST API connector (search + record-dependent PDF/read support).
 - `hal`: HAL public API connector (search + record-dependent PDF/read support).
-- `ssrn`: Discovery-first connector with hardened parser and best-effort download/read when a direct public PDF link is available.
+- `ssrn`: [OpenAlex-backed discovery](docs/SSRN_OPENALEX.md) with strict SSRN identity and validated best-effort public downloads.
+- `openreview`: [Anonymous public API v2 papers](docs/OPENREVIEW.md), excluding reviews/private notes; verified OpenReview-hosted PDF download/read.
 - `unpaywall`: DOI-centric OA metadata source for standalone lookup (`search_unpaywall`) and fallback URL resolution.
 
 SSRN integration remains compliance-first: it only attempts direct public PDF links exposed by SSRN pages. If login/restricted delivery is required, the connector returns a clear message instead of bypassing access controls.

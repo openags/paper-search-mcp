@@ -49,6 +49,11 @@ jobs:
           tests/test_arxiv_406.py
           tests/test_arxiv.py::TestArxivRateLimiting
           tests/test_biorxiv_search_modes.py
+          tests/test_openreview.py
+          tests/test_ssrn_openalex.py
+          tests/test_ssrn.py
+          tests/test_openalex.py
+          tests/test_ieee.py
           -q --tb=short
 
       - name: Build package

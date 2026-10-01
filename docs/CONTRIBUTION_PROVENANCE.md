@@ -39,3 +39,15 @@ the default branch for repository contributor statistics.
 
 These source pull requests were bot-authored, so no missing human contributor
 credit needed to be repaired for PR #116.
+
+## MCP dependency refresh from PR #87
+
+The FastMCP 3.4.2 and MCP Python SDK 1.27.2 minimum versions originate in
+[#87](https://github.com/openags/paper-search-mcp/pull/87), opened by
+`@pinguin-halt`. Its original commit
+[`786a668`](https://github.com/openags/paper-search-mcp/commit/786a6684ccea55b82d8a0b7ed5a51e5ff30556ac)
+is authored by ismail (`@ismailokta`), whose original author history is retained.
+The conflict resolution keeps the current `pypdf` migration and MCP `<2` bound,
+adds a FastMCP `<4` compatibility bound, and regenerates the lock selectively
+for the requested versions and their required dependencies. The integration
+commit also includes the source author's verified `Co-authored-by` trailer.

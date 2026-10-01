@@ -19,7 +19,8 @@ def test_mcp_dependency_stays_on_compatible_major_version():
     pyproject = Path(__file__).parents[1] / "pyproject.toml"
     project_config = pyproject.read_text(encoding="utf-8")
 
-    assert '"mcp[cli]>=1.8.0,<2"' in project_config
+    assert '"mcp[cli]>=1.27.2,<2"' in project_config
+    assert '"fastmcp>=3.4.2,<4"' in project_config
 
 
 def test_arxiv_uses_https_and_quotes_plain_multi_word_query():

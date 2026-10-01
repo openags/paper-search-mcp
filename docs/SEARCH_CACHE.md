@@ -28,7 +28,8 @@ added. Simultaneous misses can still issue separate provider calls.
 
 - MCP `get_search_cache_status()` shows enabled state, configured path/limits,
   stored entry count, and whether the database can be opened. It never lists
-  queries. Expired entries may count until the next lookup prunes them.
+  queries. Expired entries may count until the next successful cache write
+  prunes them.
 - MCP `clear_search_cache()` removes all result rows and reports how many were
   cleared. It works while disabled and does not create a missing database.
   A generation counter prevents already-running searches from repopulating the
@@ -88,8 +89,10 @@ file. If a limit is lowered below an existing file's size, searches bypass that
 cache; clear remains available. To reclaim disk space, stop all server processes
 and remove only the configured cache database after clearing it.
 
-SQLite transactions synchronize threads and processes. Lock waits are capped at
-100 ms; contention can skip caching rather than stall provider work. A corrupt,
+SQLite transactions synchronize threads and processes. Warm lookups use one
+read snapshot; schema creation happens only on initialization, and successful
+writes prune expired entries. Lock waits are capped at 100 ms; contention can
+skip caching rather than stall provider work. A corrupt,
 incompatible, or unrelated existing database is not overwritten or repaired.
 
 ## Verification and provenance

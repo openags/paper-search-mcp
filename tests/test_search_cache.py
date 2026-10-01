@@ -384,3 +384,143 @@ def test_dynamic_semantic_key_is_not_cached():
 def test_public_builtin_without_credentials_is_cacheable():
     from paper_search_mcp.academic_platforms.openalex import OpenAlexSearcher
     assert search_key(OpenAlexSearcher(api_key="", email=""), "Q", 10, {}) is not None
+
+
+def test_warm_lookup_and_status_read_committed_snapshot_while_writer_is_reserved(cache):
+    """Regression: opening/reading a cache must not compete for a write lock."""
+    write(cache, "key", [{"title": "committed"}])
+    _, generation = cache.lookup("key")
+    with sqlite3.connect(cache.settings.path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE cache_entries SET payload=? WHERE key=?",
+                       ('[{"title":"uncommitted"}]', "key"))
+        writer.execute("UPDATE cache_meta SET generation=generation+1 WHERE id=1")
+        # SQLite RESERVED locks allow readers. Keep the writer open until these
+        # calls finish: the old implementation deterministically exhausted its
+        # 100 ms timeout here and returned (None, None), even on a cache hit.
+        assert SearchCache(cache.settings).lookup("key") == ([{"title": "committed"}], generation)
+        assert SearchCache(cache.settings).status()["available"] is True
+        writer.rollback()
+    assert cache.lookup("key") == ([{"title": "committed"}], generation)
+
+
+def test_warm_lookup_does_not_reinitialize_schema_or_prune_with_write_locks(cache):
+    write(cache)
+    statements = []
+    original_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        con = original_connect(*args, **kwargs)
+        con.set_trace_callback(statements.append)
+        return con
+
+    with patch("paper_search_mcp.search_cache.sqlite3.connect", traced_connect):
+        assert SearchCache(cache.settings).lookup("key")[0] == [{"title": "key"}]
+        assert SearchCache(cache.settings).status()["available"]
+    prohibited = ("BEGIN IMMEDIATE", "CREATE ", "INSERT ", "UPDATE ", "DELETE ",
+                  "PRAGMA application_id=", "PRAGMA journal_mode=")
+    assert not [sql for sql in statements if sql.startswith(prohibited)]
+
+
+def test_expired_lookup_is_read_only_and_next_write_prunes_shortened_ttl(cache):
+    with patch("paper_search_mcp.search_cache.time.time", return_value=100):
+        write(cache, "expired")
+    shortened = SearchCache(replace(cache.settings, ttl_seconds=10))
+    with patch("paper_search_mcp.search_cache.time.time", return_value=111):
+        with sqlite3.connect(cache.settings.path) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            assert shortened.lookup("expired") == (None, 0)
+            writer.rollback()
+        assert shortened.status()["entries"] == 1
+        write(shortened, "fresh")
+        assert shortened.status()["entries"] == 1
+        assert shortened.lookup("expired")[0] is None
+        assert shortened.lookup("fresh")[0] == [{"title": "fresh"}]
+
+
+def test_simultaneous_initializers_recheck_ownership_after_obtaining_write_lock(cache):
+    from threading import Barrier, local
+    barrier = Barrier(2)
+    state = local()
+    original_connect = sqlite3.connect
+
+    class SynchronizedConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            cursor = super().execute(sql, *args, **kwargs)
+            if sql == "PRAGMA application_id" and not getattr(state, "observed", False):
+                # Force both callers to see the same uninitialized database.
+                value = cursor.fetchone()
+                cursor.close()
+                assert value == (0,)
+                state.observed = True
+                barrier.wait(timeout=5)
+                return SimpleNamespace(fetchone=lambda: value)
+            return cursor
+
+    def connect(*args, **kwargs):
+        return original_connect(*args, **kwargs, factory=SynchronizedConnection)
+
+    with patch("paper_search_mcp.search_cache.sqlite3.connect", connect):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: SearchCache(cache.settings).lookup("missing"), range(2)))
+    assert results == [(None, 0), (None, 0)]
+    write(cache, "subsequent")
+    assert cache.lookup("subsequent")[0] == [{"title": "subsequent"}]
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_repeated_simultaneous_thread_initialization_and_writes(tmp_path, warm):
+    from threading import Barrier
+    for iteration in range(10):
+        settings = CacheSettings(enabled=True, path=tmp_path / f"cache-{iteration}.db")
+        if warm:
+            assert SearchCache(settings).lookup("initialize") == (None, 0)
+        barrier = Barrier(5)
+
+        def run(number):
+            barrier.wait(timeout=5)
+            other = SearchCache(settings)
+            for item in range(4):
+                key = f"{number}:{item}"
+                assert other.lookup(key) == (None, 0)
+                assert other.put(key, [{"title": key}], 0)
+                assert other.lookup(key) == ([{"title": key}], 0)
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            list(pool.map(run, range(5)))
+        assert SearchCache(settings).status()["entries"] == 20
+
+
+def _simultaneous_process_initializer(path, number, barrier, output):
+    other = SearchCache(CacheSettings(enabled=True, path=path))
+    barrier.wait(timeout=20)
+    key = f"initial-process-{number}"
+    assert other.lookup(key) == (None, 0)
+    assert other.put(key, [{"title": key}], 0)
+    assert other.lookup(key) == ([{"title": key}], 0)
+    output.put(number)
+
+
+@pytest.mark.parametrize("iteration", range(3))
+def test_simultaneous_process_initialization(tmp_path, iteration):
+    import multiprocessing
+    ctx = multiprocessing.get_context("spawn")
+    barrier, output = ctx.Barrier(3), ctx.Queue()
+    path = tmp_path / f"process-init-{iteration}.db"
+    processes = [ctx.Process(target=_simultaneous_process_initializer,
+                            args=(path, number, barrier, output)) for number in range(3)]
+    try:
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(timeout=30)
+            assert process.exitcode == 0
+        assert sorted(output.get(timeout=2) for _ in processes) == [0, 1, 2]
+        assert SearchCache(CacheSettings(enabled=True, path=path)).status()["entries"] == 3
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        output.close()
+        output.join_thread()

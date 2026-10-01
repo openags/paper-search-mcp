@@ -187,30 +187,49 @@ class SearchCache:
             raise sqlite3.DatabaseError("cache exceeds configured disk limit")
         connection = sqlite3.connect(str(path), timeout=0.1)
         try:
-            connection.execute("BEGIN")
+            # A warm cache must not take a write lock merely to open it. In
+            # particular, rewriting application_id/schema on every operation
+            # adds fsyncs and can starve concurrent lookups of their 100 ms budget.
             app_id = connection.execute("PRAGMA application_id").fetchone()[0]
             if app_id != _APPLICATION_ID:
-                tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                if app_id or tables:
+                if app_id:
                     raise sqlite3.DatabaseError("path is not a paper-search cache")
                 if not create:
-                    yield None
-                    return
-            connection.commit()
+                    # Check ownership and schema in the same read snapshot.
+                    connection.execute("BEGIN")
+                    app_id = connection.execute("PRAGMA application_id").fetchone()[0]
+                    tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                    connection.commit()
+                    if app_id != _APPLICATION_ID:
+                        if app_id or tables:
+                            raise sqlite3.DatabaseError("path is not a paper-search cache")
+                        yield None
+                        return
+                else:
+                    # Serialize first initialization across processes, then
+                    # recheck: another initializer may have won while we waited.
+                    connection.execute("BEGIN IMMEDIATE")
+                    app_id = connection.execute("PRAGMA application_id").fetchone()[0]
+                    if app_id != _APPLICATION_ID:
+                        tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                        if app_id or tables:
+                            raise sqlite3.DatabaseError("path is not a paper-search cache")
+                        connection.execute(f"PRAGMA application_id={_APPLICATION_ID}")
+                        connection.execute("""CREATE TABLE cache_entries (
+                            key TEXT PRIMARY KEY, created REAL NOT NULL, expires REAL NOT NULL,
+                            payload TEXT NOT NULL, size INTEGER NOT NULL)""")
+                        connection.execute("""CREATE TABLE cache_meta (
+                            id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL)""")
+                        connection.execute("INSERT INTO cache_meta VALUES (1, 0)")
+                    connection.commit()
             connection.execute("PRAGMA secure_delete=ON")
             page_size = connection.execute("PRAGMA page_size").fetchone()[0]
             connection.execute(f"PRAGMA max_page_count={self.settings.max_bytes // page_size}")
-            # DELETE mode keeps transient journal storage bounded by the database.
-            connection.execute("PRAGMA journal_mode=DELETE")
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(f"PRAGMA application_id={_APPLICATION_ID}")
-            connection.execute("""CREATE TABLE IF NOT EXISTS cache_entries (
-                key TEXT PRIMARY KEY, created REAL NOT NULL, expires REAL NOT NULL,
-                payload TEXT NOT NULL, size INTEGER NOT NULL)""")
-            connection.execute("""CREATE TABLE IF NOT EXISTS cache_meta (
-                id INTEGER PRIMARY KEY CHECK(id=1), generation INTEGER NOT NULL)""")
-            connection.execute("INSERT OR IGNORE INTO cache_meta VALUES (1, 0)")
-            connection.commit()
+            # Newly created SQLite files already use DELETE mode. Repeatedly
+            # setting journal_mode can contend with active writers; only verify
+            # it here, and reject externally changed modes rather than growing WAL.
+            if connection.execute("PRAGMA journal_mode").fetchone()[0] != "delete":
+                raise sqlite3.DatabaseError("unsupported search cache journal mode")
             yield connection
         finally:
             connection.close()
@@ -220,13 +239,17 @@ class SearchCache:
             return None, None
         try:
             with self._connection(create=True) as con:
-                # One transaction captures value and generation consistently with clear.
-                con.execute("BEGIN IMMEDIATE")
+                # Read value and generation from one snapshot without reserving
+                # a write lock. A concurrent clear still invalidates late puts.
+                # Expired rows are excluded here and pruned by the next put.
+                con.execute("BEGIN")
                 now = time.time()
-                con.execute("DELETE FROM cache_entries WHERE expires <= ? OR created > ? OR created + ? <= ?",
-                            (now, now, self.settings.ttl_seconds, now))
                 generation = con.execute("SELECT generation FROM cache_meta WHERE id=1").fetchone()[0]
-                row = con.execute("SELECT payload FROM cache_entries WHERE key=?", (key,)).fetchone()
+                row = con.execute(
+                    "SELECT payload FROM cache_entries WHERE key=? AND expires > ? "
+                    "AND created <= ? AND created + ? > ?",
+                    (key, now, now, self.settings.ttl_seconds, now),
+                ).fetchone()
                 con.commit()
                 if row is None:
                     return None, generation
@@ -252,8 +275,8 @@ class SearchCache:
                 if current != generation:
                     return False  # A clear during the network call wins over late writes.
                 now = time.time()
-                con.execute("DELETE FROM cache_entries WHERE expires <= ? OR created > ? OR key=?",
-                            (now, now, key))
+                con.execute("DELETE FROM cache_entries WHERE expires <= ? OR created > ? OR created + ? <= ? OR key=?",
+                            (now, now, self.settings.ttl_seconds, now, key))
                 # Keep payload + keys under half the disk cap; the rest is SQLite
                 # B-tree/page overhead. max_page_count is the physical backstop.
                 while True:

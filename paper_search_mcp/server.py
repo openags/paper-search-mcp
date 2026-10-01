@@ -1231,6 +1231,54 @@ async def search_openalex(
     return papers if papers else []
 
 
+async def _openalex_relationship(method, identifier, max_results, filter,
+                                 max_pages, max_requests, timeout_seconds):
+    from .academic_platforms.openalex_relations import validate_options
+    validate_options(max_results, max_pages, max_requests, timeout_seconds)
+    future = _SEARCH_EXECUTOR.submit(
+        method, identifier, max_results=max_results, filter=filter,
+        max_pages=max_pages, max_requests=max_requests,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError("OpenAlex relationship lookup exceeded its time budget") from exc
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_citing_papers(identifier: str, max_results: int = 10, filter: str = "",
+                            max_pages: int = 5, max_requests: int = 8,
+                            timeout_seconds: float = 30.0) -> Dict:
+    """Get one hop of papers citing a DOI or OpenAlex work ID (never a title).
+
+    Most-cited first. Limits: 500 results, 5 pages, 8 HTTP requests, 60 seconds.
+    The seed lookup and redirects consume requests; no retries or enrichment.
+    Returns papers with pagination/truncation metadata. API failures raise an
+    error rather than an empty success. Optional filter narrows OpenAlex works.
+    """
+    return await _openalex_relationship(
+        openalex_searcher.get_citations, identifier, max_results, filter,
+        max_pages, max_requests, timeout_seconds,
+    )
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_referenced_papers(identifier: str, max_results: int = 10, filter: str = "",
+                                max_pages: int = 5, max_requests: int = 8,
+                                timeout_seconds: float = 30.0) -> Dict:
+    """Get one hop of papers referenced by a DOI or OpenAlex work ID.
+
+    Same budgets/error contract as get_citing_papers. Missing OpenAlex reference
+    coverage may yield an empty successful list; it does not prove no references
+    exist in the original paper. No title guessing or multi-hop graph traversal.
+    """
+    return await _openalex_relationship(
+        openalex_searcher.get_references, identifier, max_results, filter,
+        max_pages, max_requests, timeout_seconds,
+    )
+
+
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
 async def search_pmc(query: str, max_results: int = 10) -> List[Dict]:
     """Search academic papers from PubMed Central (PMC).

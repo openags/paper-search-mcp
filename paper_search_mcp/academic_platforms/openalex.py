@@ -10,6 +10,11 @@ from ..config import get_env
 logger = logging.getLogger(__name__)
 
 
+def _work_id(value: str) -> str:
+    return (value or "").removeprefix("https://openalex.org/")
+
+
+
 class OpenAlexSearcher(PaperSource):
     """OpenAlex paper search implementation"""
 
@@ -60,6 +65,107 @@ class OpenAlexSearcher(PaperSource):
             logger.warning(f"Error reconstructing OpenAlex abstract: {e}")
             return ""
 
+    def _parse_work(self, item: dict) -> Paper | None:
+        """Map one OpenAlex work object to a Paper. Returns None if it has no title."""
+        if not isinstance(item, dict):
+            return None
+        # ID usually looks like 'https://openalex.org/W2741809807'
+        paper_id = _work_id(item.get("id", ""))
+        title = item.get("title")
+        if not title:
+            return None  # Skip items without a title
+
+        # Process Authors
+        # Every `or <default>` below is load-bearing: OpenAlex returns JSON null for
+        # absent fields, so .get(key, default) yields None rather than the default.
+        authors = [
+            (author.get("author") or {}).get("display_name", "")
+            for author in (item.get("authorships") or [])
+            if isinstance(author, dict) and (author.get("author") or {}).get("display_name")
+        ]
+
+        # Abstract
+        abstract = self._reconstruct_abstract(item.get("abstract_inverted_index"))
+
+        # Process DOI
+        doi = item.get("doi") or ""
+        if doi:
+            # OpenAlex DOI is returned as a full url e.g. https://doi.org/10...
+            doi = doi.replace("https://doi.org/", "")
+
+        if not doi and abstract:
+            doi = extract_doi(abstract)
+
+        # Process URLs (Landing page vs direct PDF)
+        url = ""
+        pdf_url = ""
+
+        primary_location = item.get("primary_location")
+        if primary_location:
+            url = primary_location.get("landing_page_url", "")
+            pdf_url = primary_location.get("pdf_url", "")
+
+        if not url:
+            url = item.get("id", "")
+
+        # best_oa_location points at whichever repository actually hosts an open copy,
+        # which is often not the primary location.
+        if not pdf_url:
+            best_oa = item.get("best_oa_location") or {}
+            pdf_url = best_oa.get("pdf_url") or ""
+
+        # Everything above is a field OpenAlex asserts to be a PDF. oa_url below is only
+        # the "best free link", which is frequently a landing page -- worth having, but
+        # callers must not be told it is a file.
+        pdf_is_direct = bool(pdf_url)
+
+        # Check general open access availability for PDF fallback
+        open_access = item.get("open_access") or {}
+        if not pdf_url and open_access.get("is_oa"):
+            pdf_url = open_access.get("oa_url", "")
+
+        # Dates
+        pub_date_str = item.get("publication_date")
+        published_date = None
+        if pub_date_str:
+            try:
+                published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+            except (TypeError, ValueError):
+                pass
+
+        # Categories / Concepts
+        concepts = [
+            concept.get("display_name")
+            for concept in (item.get("concepts") or [])
+            if isinstance(concept, dict) and concept.get("display_name")
+        ]
+
+        return Paper(
+            paper_id=paper_id,
+            title=title,
+            authors=authors,
+            abstract=abstract,
+            url=url,
+            pdf_url=pdf_url or "",
+            published_date=published_date,
+            source="openalex",
+            categories=concepts[:5],  # Keep top 5 concepts to reduce size
+            doi=doi,
+            citations=item.get("cited_by_count") or 0,
+            references=[
+                _work_id(ref)
+                for ref in (item.get("referenced_works") or [])
+                if isinstance(ref, str) and _work_id(ref)
+            ],
+            # OpenAlex's own openness verdict, kept separate from pdf_url because a
+            # paper can be open access while the only indexed link is a landing page.
+            extra={
+                "is_oa": bool(open_access.get("is_oa")),
+                "pdf_is_direct": pdf_is_direct,
+            },
+        )
+
+
     def search(
         self,
         query: str,
@@ -101,86 +207,24 @@ class OpenAlexSearcher(PaperSource):
                 if len(papers) >= max_results:
                     break
 
-                # ID usually looks like 'https://openalex.org/W2741809807'
-                paper_id = item.get("id", "").replace("https://openalex.org/", "")
-                title = item.get("title")
-                if not title:
-                    continue  # Skip items without a title
-
-                # Process Authors
-                authors = [
-                    author.get("author", {}).get("display_name", "")
-                    for author in item.get("authorships", [])
-                    if author.get("author", {}).get("display_name")
-                ]
-
-                # Abstract
-                abstract = self._reconstruct_abstract(
-                    item.get("abstract_inverted_index")
-                )
-
-                # Process DOI
-                doi = item.get("doi", "")
-                if doi:
-                    # OpenAlex DOI is returned as a full url e.g. https://doi.org/10...
-                    doi = doi.replace("https://doi.org/", "")
-
-                if not doi and abstract:
-                    doi = extract_doi(abstract)
-
-                # Process URLs (Landing page vs direct PDF)
-                url = ""
-                pdf_url = ""
-
-                primary_location = item.get("primary_location")
-                if primary_location:
-                    url = primary_location.get("landing_page_url", "")
-                    pdf_url = primary_location.get("pdf_url", "")
-
-                if not url:
-                    url = item.get("id", "")
-
-                # Check general open access availability for PDF fallback
-                open_access = item.get("open_access", {})
-                if not pdf_url and open_access.get("is_oa"):
-                    pdf_url = open_access.get("oa_url", "")
-
-                # Dates
-                pub_date_str = item.get("publication_date")
-                published_date = None
-                if pub_date_str:
-                    try:
-                        published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
-                    except ValueError:
-                        pass
-
-                # Categories / Concepts
-                concepts = [
-                    concept.get("display_name")
-                    for concept in item.get("concepts", [])
-                    if concept.get("display_name")
-                ]
-
-                papers.append(
-                    Paper(
-                        paper_id=paper_id,
-                        title=title,
-                        authors=authors,
-                        abstract=abstract,
-                        url=url,
-                        pdf_url=pdf_url or "",
-                        published_date=published_date,
-                        source="openalex",
-                        categories=concepts[:5],  # Keep top 5 concepts to reduce size
-                        doi=doi,
-                        citations=item.get("cited_by_count", 0),
-                    )
-                )
+                paper = self._parse_work(item)
+                if paper is not None:
+                    papers.append(paper)
 
         except Exception as e:
             logger.error(f"OpenAlex search error: {e}")
 
         return papers
+
+    def get_citations(self, identifier: str, max_results: int = 10, **options) -> dict:
+        """One-hop citing works; accepts only a DOI or OpenAlex work ID."""
+        from .openalex_relations import related_works
+        return related_works(self, identifier, "cites", max_results, **options)
+
+    def get_references(self, identifier: str, max_results: int = 10, **options) -> dict:
+        """One-hop referenced works; accepts only a DOI or OpenAlex work ID."""
+        from .openalex_relations import related_works
+        return related_works(self, identifier, "cited_by", max_results, **options)
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """

@@ -1,6 +1,8 @@
 from typing import List, Optional
 from datetime import datetime
+from io import BytesIO
 import os
+import tempfile
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -390,6 +392,47 @@ class SemanticSearcher(PaperSource):
 
         return papers[:max_results]
 
+    @staticmethod
+    def _download_pdf_file(pdf_url: str, pdf_path: str) -> None:
+        """Validate response bytes before atomically replacing the destination."""
+        response = requests.get(pdf_url, timeout=30)
+        response.raise_for_status()
+        content = response.content
+        if not content:
+            raise requests.RequestException("Downloaded PDF is empty")
+        # Allow a BOM/leading whitespace, but not HTML containing a PDF marker.
+        # Neither a .pdf URL nor application/pdf MIME type proves the body is PDF.
+        if not re.match(rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)", content[:1024]):
+            raise requests.RequestException("Response does not contain a PDF header")
+        try:
+            # A plausible header alone also occurs in truncated/bogus responses.
+            # Parse without requiring text extraction or decrypting valid PDFs.
+            PdfReader(BytesIO(content))
+        except Exception as exc:
+            raise requests.RequestException("Downloaded PDF could not be parsed") from exc
+
+        directory = os.path.dirname(pdf_path)
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=directory,
+                prefix=".semantic-",
+                suffix=".part",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                temporary.write(content)
+            os.replace(temporary_path, pdf_path)
+            temporary_path = ""
+        finally:
+            if temporary_path:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    logger.warning("Could not remove partial PDF: %s", temporary_path)
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         Download PDF from Semantic Scholar
@@ -413,18 +456,9 @@ class SemanticSearcher(PaperSource):
             paper = self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
-            pdf_url = paper.pdf_url
-            pdf_response = requests.get(pdf_url, timeout=30)
-            pdf_response.raise_for_status()
-
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
-
             filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
             pdf_path = os.path.join(save_path, filename)
-
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
+            self._download_pdf_file(paper.pdf_url, pdf_path)
             return pdf_path
         except Exception as e:
             logger.error(f"PDF download error: {e}")
@@ -459,11 +493,7 @@ class SemanticSearcher(PaperSource):
                 if not paper or not paper.pdf_url:
                     return f"Error: Could not find PDF URL for paper {paper_id}"
 
-                pdf_response = requests.get(paper.pdf_url, timeout=30)
-                pdf_response.raise_for_status()
-
-                with open(pdf_path, "wb") as f:
-                    f.write(pdf_response.content)
+                self._download_pdf_file(paper.pdf_url, pdf_path)
             else:
                 paper = self.get_paper_details(paper_id)
 

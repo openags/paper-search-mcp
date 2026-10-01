@@ -36,6 +36,7 @@ jobs:
           tests/test_cli_sort.py
           tests/test_cli_sources.py
           tests/test_semantic_rate_limits.py
+          tests/test_semantic_pdf_validation.py
           tests/test_cli_diagnostics.py
           tests/test_config_env.py
           tests/test_unpaywall.py

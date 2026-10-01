@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List
 
 from .config import get_env
+from .tool_cli import cmd_tool
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -340,6 +341,13 @@ def build_parser() -> argparse.ArgumentParser:
     # sources
     sub.add_parser("sources", help="List available sources")
 
+    # Parse only the outer command here; the async handler discovers the MCP
+    # tools and parses their arguments, including help, without nested loops.
+    p_tool = sub.add_parser("tool", help="Call any registered MCP tool", add_help=False)
+    p_tool.add_argument("-h", "--help", dest="tool_help", action="store_true")
+    p_tool.add_argument("--list", dest="list_tools", action="store_true")
+    p_tool.add_argument("tool_args", nargs=argparse.REMAINDER)
+
     return parser
 
 
@@ -352,6 +360,7 @@ def main() -> None:
         "download": cmd_download,
         "read": cmd_read,
         "sources": cmd_sources,
+        "tool": cmd_tool,
     }
 
     exit_code = asyncio.run(dispatch[args.command](args))

@@ -1010,6 +1010,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -1022,6 +1023,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.27.2,<2" },
     { name = "pypdf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "requests" },
 ]
 provides-extras = ["dev"]

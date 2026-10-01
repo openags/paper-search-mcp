@@ -24,6 +24,7 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
   - [Method 5 — npx](#method-5--npx-via-smithery-cli-no-local-python-needed)
   - [Method 6 — Docker](#method-6--docker)
   - [Method 7 — Clone & run from source](#method-7--clone--run-from-source-development--recommended-for-macos-local)
+  - [DeepSeek Harness (DSH)](#deepseek-harness-dsh)
   - [Environment Variables](#environment-variables-env-file)
 - [Contributing](#contributing)
 - [Demo](#demo)
@@ -67,6 +68,7 @@ For a remote protected deployment, keep the backend private and put it behind an
 - **Discovery + Retrieval Workflow**: Google Scholar and Crossref can be used for discovery and DOI backfilling, while open repositories and publisher links are used for lawful full-text resolution where available.
 - **OA-First Fallback Chain**: `download_with_fallback` now follows source-native download → OpenAIRE/CORE/Europe PMC/PMC discovery → Unpaywall DOI resolution → optional Sci-Hub.
 - **MCP Integration**: Compatible with MCP clients for LLM context enhancement.
+- **DeepSeek Harness (DSH) Integration**: A dsh profile bundle (clone the repo, `npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add link:./dsh`) exposing every tool as `mcp__paper-search__*`, with an optional guidance skill.
 - **Extensible Design**: Easily add new academic platforms by extending the `academic_platforms` module.
 
 ## Source Strategy
@@ -314,6 +316,8 @@ with ZipFile("paper-search-skill.zip", "w", compression=ZIP_DEFLATED) as archive
     archive.write("claude-code/SKILL.md", arcname="paper-search/SKILL.md")
 ```
 
+A reusable builder is also available: `python scripts/build_skill_zip.py --output paper-search-skill.zip`. It refuses to overwrite an existing file unless `--force` is supplied. Its archive layout, frontmatter, and byte-for-byte instruction contents are covered by offline tests.
+
 This only packages the instructions; it does not bundle Python dependencies, install `paper-search`, or configure an MCP connection. The bundled skill expects a runtime that can execute the CLI and reach the academic services. Upload acceptance and execution in Claude web or another runtime have **not been validated by this project**. Check that runtime's current metadata, package-installation, network-access, and code-execution requirements before adapting the skill. If you want to use an MCP client instead, follow the MCP installation methods below; uploading a skill ZIP does not start or connect an external MCP server.
 
 ---
@@ -557,6 +561,41 @@ For active development, optionally install an editable copy:
 uv venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 ```
+
+---
+
+### DeepSeek Harness (DSH)
+
+Paper search is available inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) as a profile bundle: it boots the MCP server and registers all its tools in any dsh profile as `mcp__paper-search__*`. The bundle only mounts a composition row — the MCP server itself is untouched.
+
+**Prerequisites**: [uv](https://docs.astral.sh/uv/getting-started/installation/) (the default launcher is `uvx`) and [pnpm](https://pnpm.io/installation) (`dsh plugin` forwards to pnpm). Commands below use the `npx @deepseek-ai/dsh` launcher (no global install needed); with a global dsh install, drop the prefix.
+
+```bash
+git clone https://github.com/openags/paper-search-mcp.git
+cd paper-search-mcp
+npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add link:./dsh
+```
+
+`link:` updates the bundle configuration from the checkout. `git pull` does not update the separately launched PyPI server; see `dsh/README.md` for a source-checkout launcher and reproducible version selection. Replace `web` with your profile name; a missing profile is initialized automatically. Restart the profile (`npx @deepseek-ai/dsh@0.2.0-rc.2 web`, or relaunch) and the tools appear — e.g. `mcp__paper-search__search_papers`, `mcp__paper-search__download_with_fallback`, `mcp__paper-search__search_arxiv`.
+
+**API keys**: just follow [Environment Variables](#environment-variables-env-file) — the server auto-loads `~/.config/paper-search-mcp/.env`. DSH deliberately scrubs credential-shaped ambient env vars from spawned processes, so shell exports do not reach the server; to forward variables explicitly, override the `mcp-paper-search` row in `~/.dsh/profiles/<name>/cordis.patch.yml` (a config override replaces the whole object — see `dsh/README.md` for a complete example).
+
+**Optional skill** with usage guidance (workflow, source table, tool mapping):
+
+```bash
+mkdir -p ~/.dsh/skills && cp -r dsh/skills/paper-search ~/.dsh/skills/
+```
+
+**Uninstall**:
+
+```bash
+npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web remove paper-search-mcp-dsh
+rm -rf ~/.dsh/skills/paper-search
+```
+
+Removing the bundle reconciles its row out of the composition. It does not delete downloaded papers, package caches, or user-managed settings.
+
+If you already run paper-search-mcp through your own `@deepseek-ai/dsh-mcp-client` row, remove that row (or give one of the two a distinct `serverName`) before adding the bundle — duplicate `serverName`s fail at load. The bundle package version tracks this checkout's Python project version; `dsh/README.md` documents alternate launchers (`uv tool run`, `python -m`, `npx`), environment forwarding, and development.
 
 ---
 

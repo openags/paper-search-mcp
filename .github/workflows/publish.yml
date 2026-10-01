@@ -43,6 +43,7 @@ jobs:
           tests/test_tool_schema_compat.py
           tests/test_mcp_stdio.py
           tests/test_server_transport.py
+          tests/test_http_auth.py
           tests/test_stabilization_regressions.py
           tests/test_search_timeouts.py
           tests/test_google_scholar_errors.py

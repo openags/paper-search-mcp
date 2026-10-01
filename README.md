@@ -48,9 +48,9 @@ A Model Context Protocol (MCP) server for searching and downloading academic pap
 
 ## MCP Authorization Compatibility
 
-The bundled MCP server supports `stdio` (the default), `sse`, and `streamable-http`. Network transports bind to `127.0.0.1` by default. Transport support does **not** make the server an OAuth 2.1 protected resource: it does not implement protected-resource metadata, bearer-token validation, scopes, or OAuth authorization responses.
+The bundled MCP server supports `stdio` (the default), `sse`, and `streamable-http`. Network transports bind to `127.0.0.1` by default. Optional OAuth protected-resource mode adds standard discovery, JWT bearer-token validation and required scopes to both HTTP transports, using an external authorization server.
 
-For a remote protected deployment, keep the backend private and put it behind an MCP/HTTP gateway that implements the [MCP authorization and discovery requirements](https://modelcontextprotocol.io/specification/latest/basic/authorization), forwarding only authorized requests. A generic reverse proxy alone does not establish MCP OAuth compliance. Do not expose the unauthenticated backend directly to the internet. Native protected-resource support remains tracked in [#25](https://github.com/openags/paper-search-mcp/issues/25).
+Enable it with `--auth oauth` or `PAPER_SEARCH_MCP_AUTH=oauth` and the explicit issuer/JWKS/resource/audience/scope configuration in [OAuth protected-resource setup](docs/OAUTH_PROTECTED_RESOURCE.md). Invalid or incomplete HTTP auth settings fail startup. stdio remains independent of HTTP authentication. Local HTTP without OAuth configuration remains open; do not publish that listener directly. A protected remote deployment still needs TLS, rate limits and filesystem isolation. This feature does not host login/accounts or replace the external issuer's OAuth flow; live identity-provider interoperability must be validated for your deployment.
 
 ---
 
@@ -547,9 +547,10 @@ The available transports are `stdio`, `sse`, and `streamable-http`. The default
 remains `stdio`. The same network settings can be supplied with
 `PAPER_SEARCH_MCP_TRANSPORT`, `PAPER_SEARCH_MCP_HOST`,
 `PAPER_SEARCH_MCP_PORT`, and `PAPER_SEARCH_MCP_PATH`; command-line options take
-precedence. Binding to a non-loopback host such as `0.0.0.0` exposes an
-unauthenticated server, so place it behind an authenticated gateway rather than
-publishing it directly to the internet.
+precedence. With the default `--auth none`, binding to a non-loopback host such
+as `0.0.0.0` exposes an unauthenticated server. For protected HTTP, configure
+[optional OAuth mode](docs/OAUTH_PROTECTED_RESOURCE.md) and keep the backend behind
+TLS and appropriate deployment controls; otherwise use an authenticated gateway.
 
 For active development, optionally install an editable copy:
 

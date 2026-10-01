@@ -1857,6 +1857,10 @@ def _build_server_parser() -> argparse.ArgumentParser:
         default=_server_env("PATH", "/mcp"),
         help="Streamable HTTP endpoint path (env: PAPER_SEARCH_MCP_PATH)",
     )
+    parser.add_argument(
+        "--auth", choices=("none", "oauth"), default=None,
+        help="HTTP auth mode (env: PAPER_SEARCH_MCP_AUTH; default: none; ignored for stdio)",
+    )
     return parser
 
 
@@ -1868,7 +1872,8 @@ def main(argv: list[str] | None = None) -> None:
     shorter ``PAPER_SEARCH_*`` names introduced by PR #114 remain accepted as
     aliases for the preferred ``PAPER_SEARCH_MCP_*`` names.
     """
-    args = _build_server_parser().parse_args(argv)
+    parser = _build_server_parser()
+    args = parser.parse_args(argv)
 
     if args.transport == "stdio":
         # Only meaningful for stdio: an http server has no owning client to outlive.
@@ -1878,6 +1883,15 @@ def main(argv: list[str] | None = None) -> None:
         mcp.run(transport="stdio")
         return
 
+    from .http_auth import AuthConfigurationError, load_http_auth_config, run_protected_http
+
+    try:
+        auth_config = load_http_auth_config(
+            args.auth, args.path if args.transport == "streamable-http" else "/sse"
+        )
+    except AuthConfigurationError as exc:
+        parser.error(str(exc))
+
     mcp.settings.host = args.host
     mcp.settings.port = args.port
     if args.transport == "streamable-http":
@@ -1885,7 +1899,10 @@ def main(argv: list[str] | None = None) -> None:
     logger.info(
         "serving %s on %s:%s", args.transport, mcp.settings.host, mcp.settings.port
     )
-    mcp.run(transport=args.transport)
+    if auth_config is not None:
+        run_protected_http(mcp, args.transport, auth_config)
+    else:
+        mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":

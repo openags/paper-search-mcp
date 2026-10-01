@@ -586,6 +586,11 @@ To use a custom path: `export PAPER_SEARCH_MCP_ENV_FILE=/absolute/path/to/.env`
 
 ---
 
+### Optional local search cache
+
+[Opt-in SQLite search caching](docs/SEARCH_CACHE.md) adds TTL, size limits,
+status, and clearing. It is disabled by default and bypasses authenticated sources.
+
 ## Contributing
 
 We welcome contributions! Here's how to get started:

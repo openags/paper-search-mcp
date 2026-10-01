@@ -41,6 +41,7 @@ from .academic_platforms.ssrn import SSRNSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .config import get_env, load_env_file
+from .search_cache import SearchCache, search_key
 
 # Initialize MCP server
 mcp = FastMCP("paper_search_server")
@@ -85,6 +86,7 @@ class _BoundedSearchExecutor:
 
 
 _SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
+_SEARCH_CACHE = SearchCache.from_env()
 
 # Instances of searchers
 arxiv_searcher = ArxivSearcher()
@@ -115,6 +117,15 @@ ssrn_searcher = SSRNSearcher()
 # Asynchronous helper to adapt synchronous searchers
 # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
+    cache = _SEARCH_CACHE
+    key = search_key(searcher, query, max_results, kwargs) if cache.settings.enabled else None
+    generation = None
+    if key is not None:
+        cached, generation = await asyncio.wrap_future(
+            _SEARCH_EXECUTOR.submit(cache.lookup, key)
+        )
+        if cached is not None:
+            return cached
     search_future = _SEARCH_EXECUTOR.submit(
         searcher.search,
         query,
@@ -122,7 +133,36 @@ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List
         **kwargs,
     )
     papers = await asyncio.wrap_future(search_future)
-    return [paper.to_dict() for paper in papers]
+    result = [paper.to_dict() for paper in papers]
+    # A cancelled or failed provider call never reaches the cache write. Clear
+    # increments a shared generation so in-flight searches cannot repopulate it.
+    if key is not None and generation is not None and result:
+        try:
+            await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(cache.put, key, result, generation))
+        except SearchExecutorSaturatedError:
+            pass  # An optional cache must not turn a successful search into failure.
+    return result
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def get_search_cache_status() -> Dict:
+    """Show opt-in local search cache settings and entry count, never query contents.
+
+    Enable/disable with PAPER_SEARCH_MCP_SEARCH_CACHE_ENABLED and restart the
+    server. Defaults to disabled; inspect docs/SEARCH_CACHE.md for TTL/size knobs.
+    """
+    return await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(_SEARCH_CACHE.status))
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+async def clear_search_cache() -> Dict:
+    """Delete all cached search results at the configured local cache path.
+
+    Works while caching is disabled and never creates a missing database.
+    Does not delete downloaded PDFs or other files. New searches can fill the
+    cache again if enabled; disable caching and restart to stop future writes.
+    """
+    return await asyncio.wrap_future(_SEARCH_EXECUTOR.submit(_SEARCH_CACHE.clear))
 
 
 async def _run_search_with_timeout(

@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+import tempfile
 from datetime import datetime
 from threading import Lock
 from typing import List
@@ -40,6 +41,18 @@ class ArxivSearcher(PaperSource):
         re.IGNORECASE,
     )
     _BOOLEAN_OP_RE = re.compile(r"(?:^|\s)(AND|OR|ANDNOT)(?:\s|$)")
+    _PAPER_ID_RE = re.compile(
+        r"(?:[0-9]{4}\.[0-9]{4,5}|[a-z-]+(?:\.[A-Z]{2})?/[0-9]{7})(?:v[1-9][0-9]*)?"
+    )
+    MAX_PDF_BYTES = 100 * 1024 * 1024
+
+    @classmethod
+    def _pdf_path(cls, paper_id, save_path):
+        if (not isinstance(paper_id, str) or len(paper_id) > 128
+                or not cls._PAPER_ID_RE.fullmatch(paper_id)):
+            raise ValueError("Expected a bare arXiv paper ID, optionally with a version")
+        # Legacy category/number IDs retain their historical subdirectory path.
+        return os.path.join(os.fspath(save_path), *paper_id.split("/")) + ".pdf"
 
     def __init__(self):
         self.session = requests.Session()
@@ -209,7 +222,8 @@ class ArxivSearcher(PaperSource):
                 doi = doi or extract_doi(link.href)
 
         return Paper(
-            paper_id=entry.id.split('/')[-1],
+            # Legacy identifiers include the category (e.g. hep-th/9901001).
+            paper_id=entry.id.split('/abs/', 1)[-1],
             title=entry.title,
             authors=authors,
             abstract=entry.summary,
@@ -224,12 +238,53 @@ class ArxivSearcher(PaperSource):
         )
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
+        output_file = self._pdf_path(paper_id, save_path)
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"
-        response = requests.get(pdf_url)
-        os.makedirs(save_path, exist_ok=True)
-        output_file = f"{save_path}/{paper_id}.pdf"
-        with open(output_file, 'wb') as f:
-            f.write(response.content)
+        temporary_path = ""
+        if not self._request_lock.acquire(timeout=30):
+            raise requests.RequestException("arXiv download timed out waiting for its request slot")
+        try:
+            self._pace_locked()
+            # Connect/read timeouts are not a hard total transfer deadline.
+            # Do not retry access failures or change the caller's identity.
+            with requests.get(pdf_url, stream=True, timeout=(10, 30)) as response:
+                if response.status_code != 200:
+                    raise requests.RequestException(
+                        f"arXiv download failed: HTTP {response.status_code}"
+                    )
+                directory = os.path.dirname(output_file) or "."
+                os.makedirs(directory, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=directory, prefix=".arxiv-", suffix=".part", delete=False
+                ) as temporary:
+                    temporary_path = temporary.name
+                    size = 0
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        if size > self.MAX_PDF_BYTES:
+                            raise requests.RequestException("arXiv PDF exceeds the 100 MiB limit")
+                        temporary.write(chunk)
+                with open(temporary_path, "rb") as downloaded:
+                    if not re.match(
+                        rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)", downloaded.read(1024)
+                    ):
+                        raise requests.RequestException("arXiv response does not contain a PDF header")
+                    downloaded.seek(0)
+                    try:
+                        PdfReader(downloaded)
+                    except Exception as exc:
+                        raise requests.RequestException("arXiv downloaded PDF could not be parsed") from exc
+                os.replace(temporary_path, output_file)
+                temporary_path = ""
+        finally:
+            self._request_lock.release()
+            if temporary_path:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    logger.warning("Could not remove temporary arXiv download")
         return output_file
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
@@ -243,7 +298,7 @@ class ArxivSearcher(PaperSource):
             str: The extracted text content of the paper
         """
         # First ensure we have the PDF
-        pdf_path = f"{save_path}/{paper_id}.pdf"
+        pdf_path = self._pdf_path(paper_id, save_path)
         if not os.path.exists(pdf_path):
             pdf_path = self.download_pdf(paper_id, save_path)
         
@@ -254,12 +309,16 @@ class ArxivSearcher(PaperSource):
             
             # Extract text from each page
             for page in reader.pages:
-                text += page.extract_text() + "\n"
+                text += (page.extract_text() or "") + "\n"
+
+            if not text.strip():
+                raise ValueError("No extractable text; an image-only PDF may require OCR")
             
             return text.strip()
         except Exception as e:
-            logger.error("Error reading PDF for paper %s: %s", paper_id, e)
-            return ""
+            raise RuntimeError(
+                "arXiv PDF could not be read as text; it may be invalid, encrypted or image-only"
+            ) from e
 
 if __name__ == "__main__":
     # 测试 ArxivSearcher 的功能

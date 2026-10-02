@@ -196,6 +196,17 @@ OCR, medical inference or new dependency is added. Labels are heuristic and may
 be uncertain. See [bounded PDF sections](docs/PDF_SECTIONS.md) for access rules,
 CLI usage and parser limitations.
 
+### arXiv PDF downloads and reads
+
+arXiv downloads validate bare modern/legacy paper IDs, serialize and pace requests,
+check HTTP status, stream at most 100 MiB to a same-directory temporary file, and
+check the PDF header and parser before atomically replacing the destination.
+A failed transfer or invalid PDF leaves an existing file unchanged. Downloads
+use 10-second connect and 30-second read timeouts, not a hard total transfer
+or parser runtime limit, and do not automatically retry denied responses.
+`read arxiv` reports invalid/encrypted/image-only PDFs as errors rather than
+successful empty output; it does not perform OCR or delete invalid cached files.
+
 ## Optional Paid Platform Connectors (Phase 3)
 
 IEEE Xplore provides **opt-in metadata search**, disabled until an existing API key is configured.

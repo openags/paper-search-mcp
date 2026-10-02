@@ -59,6 +59,17 @@ def test_valid_406_arxiv_feed_returns_papers_without_retry(paced_searcher):
     assert searcher.session.get.call_args.kwargs["timeout"] == 30
 
 
+def test_search_retains_legacy_id_for_download(paced_searcher):
+    searcher, _, _ = paced_searcher
+    feed = ARXIV_FEED.replace(b"2401.12345v1", b"hep-th/9901001v1")
+    searcher.session.get = Mock(return_value=response_with(feed))
+    papers = searcher.search("legacy paper")
+    assert papers[0].paper_id == "hep-th/9901001v1"
+    assert searcher._pdf_path(papers[0].paper_id, "downloads").endswith(
+        arxiv.os.path.join("hep-th", "9901001v1.pdf")
+    )
+
+
 @pytest.mark.parametrize("body", [
     b"",
     b"<html><body>Not Acceptable</body></html>",
@@ -133,3 +144,138 @@ def test_unified_search_reports_406_as_source_error(paced_searcher):
     assert "HTTP 406" in result["errors"]["arxiv"]
     assert result["source_results"] == {"arxiv": 0}
     assert result["papers"] == []
+
+
+# Artifact integrity regressions use the existing deterministic arXiv test entry.
+import io
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
+
+import pytest
+import requests
+from pypdf import PdfWriter
+
+from paper_search_mcp.academic_platforms import arxiv
+
+
+@pytest.fixture
+def pdf_bytes():
+    output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=100, height=100)
+    writer.write(output)
+    return output.getvalue()
+
+
+@pytest.fixture
+def searcher(monkeypatch):
+    monkeypatch.setattr(arxiv.ArxivSearcher, '_pace_locked', Mock())
+    return arxiv.ArxivSearcher()
+
+
+def response(monkeypatch, chunks, status=200):
+    result = MagicMock()
+    result.__enter__.return_value = result
+    result.status_code = status
+    result.iter_content.return_value = iter(chunks)
+    get = Mock(return_value=result)
+    monkeypatch.setattr(arxiv.requests, 'get', get)
+    return get
+
+
+@pytest.mark.parametrize('paper_id', ['2406.17835', '2406.17835v2', 'hep-th/9901001v1'])
+def test_success_is_paced_streamed_and_atomically_saved(searcher, monkeypatch, tmp_path, pdf_bytes, paper_id):
+    get = response(monkeypatch, [pdf_bytes[:11], b'', pdf_bytes[11:]])
+    path = searcher.download_pdf(paper_id, str(tmp_path / 'with spaces'))
+    assert open(path, 'rb').read() == pdf_bytes
+    assert get.call_args.kwargs == {'stream': True, 'timeout': (10, 30)}
+    searcher._pace_locked.assert_called_once_with()
+    assert not list(tmp_path.rglob('*.part'))
+
+
+@pytest.mark.parametrize('status', [403, 404, 429, 500, 503])
+def test_http_failure_preserves_old_file_without_retry(searcher, monkeypatch, tmp_path, status):
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(b'old preserved bytes')
+    get = response(monkeypatch, [b'<html>denied</html>'], status)
+    with pytest.raises(requests.RequestException, match=f'HTTP {status}'):
+        searcher.download_pdf('2406.17835', str(tmp_path))
+    assert target.read_bytes() == b'old preserved bytes'
+    assert get.call_count == 1
+    assert not list(tmp_path.glob('*.part'))
+
+
+@pytest.mark.parametrize('body', [b'', b'<html>denied</html>', b'%PDF-1.7\ntruncated'])
+def test_invalid_body_preserves_old_pdf(searcher, monkeypatch, tmp_path, body, pdf_bytes):
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(pdf_bytes)
+    response(monkeypatch, [body])
+    with pytest.raises(requests.RequestException, match='PDF'):
+        searcher.download_pdf('2406.17835', str(tmp_path))
+    assert target.read_bytes() == pdf_bytes
+    assert not list(tmp_path.glob('*.part'))
+
+
+def test_partial_stream_timeout_cleans_temp_and_preserves_old(searcher, monkeypatch, tmp_path, pdf_bytes):
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(pdf_bytes)
+    def interrupted():
+        yield b'%PDF-1.7\n'
+        raise requests.Timeout('mock read timeout')
+    response(monkeypatch, interrupted())
+    with pytest.raises(requests.Timeout):
+        searcher.download_pdf('2406.17835', str(tmp_path))
+    assert target.read_bytes() == pdf_bytes
+    assert not list(tmp_path.glob('*.part'))
+    assert searcher._request_lock.acquire(blocking=False)
+    searcher._request_lock.release()
+
+
+def test_size_limit_cleans_partial_without_replacing_target(searcher, monkeypatch, tmp_path, pdf_bytes):
+    monkeypatch.setattr(searcher, 'MAX_PDF_BYTES', 10)
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(pdf_bytes)
+    response(monkeypatch, [b'%PDF-1.7\nmore'])
+    with pytest.raises(requests.RequestException, match='limit'):
+        searcher.download_pdf('2406.17835', str(tmp_path))
+    assert target.read_bytes() == pdf_bytes
+    assert not list(tmp_path.glob('*.part'))
+
+
+@pytest.mark.parametrize('paper_id', ['../secret', '/etc/passwd', '2406.17835/../../x', 'x?y=z', '2406.17835.pdf', '2406.17835v0', None])
+def test_invalid_id_rejected_before_network_or_directory(searcher, monkeypatch, tmp_path, paper_id):
+    get = Mock()
+    monkeypatch.setattr(arxiv.requests, 'get', get)
+    for method in (searcher.download_pdf, searcher.read_paper):
+        with pytest.raises(ValueError, match='arXiv paper ID'):
+            method(paper_id, str(tmp_path / 'absent'))
+    get.assert_not_called()
+    assert not (tmp_path / 'absent').exists()
+
+
+def test_replace_failure_keeps_previous_file_and_removes_partial(searcher, monkeypatch, tmp_path, pdf_bytes):
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(b'previous')
+    response(monkeypatch, [pdf_bytes])
+    monkeypatch.setattr(arxiv.os, 'replace', Mock(side_effect=PermissionError('locked')))
+    with pytest.raises(PermissionError):
+        searcher.download_pdf('2406.17835', str(tmp_path))
+    assert target.read_bytes() == b'previous'
+    assert not list(tmp_path.glob('*.part'))
+
+
+@pytest.mark.parametrize('kind', ['html', 'empty', 'image_only'])
+def test_failed_read_does_not_return_blank_success(searcher, tmp_path, pdf_bytes, kind):
+    body = {'html': b'<html>denied</html>', 'empty': b'', 'image_only': pdf_bytes}[kind]
+    target = tmp_path / '2406.17835.pdf'
+    target.write_bytes(body)
+    with pytest.raises(RuntimeError, match='could not be read as text'):
+        searcher.read_paper('2406.17835', str(tmp_path))
+    assert target.read_bytes() == body
+
+
+def test_read_preserves_text_with_an_empty_page(searcher, monkeypatch, tmp_path, pdf_bytes):
+    (tmp_path / '2406.17835.pdf').write_bytes(pdf_bytes)
+    monkeypatch.setattr(arxiv, 'PdfReader', lambda path: SimpleNamespace(pages=[
+        SimpleNamespace(extract_text=lambda: None), SimpleNamespace(extract_text=lambda: 'Paper text')]))
+    assert searcher.read_paper('2406.17835', str(tmp_path)) == 'Paper text'

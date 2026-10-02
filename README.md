@@ -323,6 +323,25 @@ DOI lookup, or include `unpaywall` explicitly in a comma-separated source list.
 The broad `all` preset already includes it. MCP server search defaults are
 unchanged.
 
+To stop a slow source from holding up a CLI search, opt into a per-source deadline:
+
+```bash
+paper-search search "robot scientist" -s fast --source-timeout 45
+```
+
+`--source-timeout SECONDS` must be positive and finite. It runs selected sources
+in separate Python processes, at most four at once. Each source's budget starts
+after OS process creation returns and includes Python/provider initialization,
+search, serialization, and worker exit. Process creation, time waiting for a
+worker slot, and process cleanup add overhead outside that budget. It is
+not a deadline for the whole command. Timed-out workers are killed and reaped
+before their slots are reused, so a blocked network call cannot hold up Python's
+thread-executor shutdown. Successful sources keep their results and timed-out
+sources appear in `errors` with a zero `source_results` count. Source selection,
+labels, sorting, JSON fields, and partial-result exit status (0) are unchanged.
+Subprocess startup adds overhead, especially for very small budgets. Without the
+flag, existing connector-specific timeouts and in-process search are unchanged.
+
 Sort search results by citation count or publication date:
 
 ```bash

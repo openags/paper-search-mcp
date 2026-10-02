@@ -14,6 +14,7 @@ import requests
 
 from paper_search_mcp import cli, config
 from paper_search_mcp.academic_platforms import arxiv, biorxiv, medrxiv
+from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
 
 
 def run_command(command, *args):
@@ -32,6 +33,102 @@ def test_listing_sources_avoids_constructor_warnings(monkeypatch, capsys, caplog
     assert "core" in json.loads(capsys.readouterr().out)["sources"]
     assert "No CORE API key provided" not in caplog.text
     assert cli.SEARCHERS == {}
+
+
+def test_download_connector_error_string_is_not_a_success(monkeypatch, tmp_path, capsys):
+    # Exercise the real connector's no-PDF return contract without networking.
+    searcher = SemanticSearcher()
+    monkeypatch.setattr(searcher, "get_paper_details", Mock(return_value=None))
+    monkeypatch.setattr(cli, "SEARCHERS", {"semantic": searcher})
+
+    assert run_command("download", "semantic", "ARXIV:2503.22444v2", "-o", str(tmp_path)) == 1
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "error"
+    assert "Could not find PDF URL" in output["message"]
+    assert "path" not in output
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("result_kind", ["missing", "empty", "directory", "invalid", "none"])
+def test_download_requires_a_saved_file(result_kind, monkeypatch, tmp_path, capsys):
+    path = tmp_path / "paper.pdf"
+    if result_kind == "empty":
+        path.touch()
+    elif result_kind == "directory":
+        path.mkdir()
+    result = {"invalid": "bad\0path", "none": None}.get(result_kind, str(path))
+    searcher = Mock()
+    searcher.download_pdf.return_value = result
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": searcher})
+
+    assert run_command("download", "arxiv", "example", "-o", str(tmp_path)) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "error"
+    assert "path" not in output
+
+
+def test_download_unreadable_file_is_an_error(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF-1.7\nmock")
+    searcher = Mock()
+    searcher.download_pdf.return_value = str(path)
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": searcher})
+    monkeypatch.setattr(Path, "open", Mock(side_effect=PermissionError("unreadable")))
+
+    assert run_command("download", "arxiv", "example", "-o", str(tmp_path)) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "error"
+    assert "readable PDF file" in output["message"]
+
+
+@pytest.mark.parametrize("path_object", [False, True])
+def test_download_success_preserves_relative_path(path_object, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    path = Path("a directory") / "paper.pdf"
+    path.parent.mkdir()
+    path.write_bytes(b"%PDF-1.7\nmock")
+    searcher = Mock()
+    searcher.download_pdf.return_value = path if path_object else str(path)
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": searcher})
+
+    assert run_command("download", "arxiv", "example", "-o", "a directory") == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "ok", "path": str(path)}
+
+
+@pytest.mark.parametrize("body", [b"<html>Access denied</html>", b"<html>%PDF-1.7\n</html>", b"%PDF-not-a-version"])
+def test_download_rejects_saved_non_pdf_body(body, monkeypatch, tmp_path, capsys):
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(body)
+    searcher = Mock()
+    searcher.download_pdf.return_value = str(path)
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": searcher})
+
+    assert run_command("download", "arxiv", "example", "-o", str(tmp_path)) == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "error"
+    # Checking a returned artifact must not delete or rewrite it.
+    assert path.read_bytes() == body
+
+
+@pytest.mark.parametrize("filename", [
+    "Error downloading PDF example.pdf",
+    pytest.param(
+        "Error downloading PDF: example.pdf",
+        marks=pytest.mark.skipif(
+            sys.platform == "win32", reason="Colon filenames are valid on POSIX, not Windows"
+        ),
+    ),
+])
+def test_download_accepts_real_path_that_looks_like_an_error(filename, monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    path = Path(filename)
+    path.write_bytes(b" \xef\xbb\xbf\n%PDF-1.7\nmock")
+    searcher = Mock()
+    searcher.download_pdf.return_value = str(path)
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": searcher})
+
+    assert run_command("download", "arxiv", "example", "-o", ".") == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "ok", "path": str(path)}
 
 
 def test_concurrent_search_parse_errors_leave_stdout_untouched(
@@ -94,7 +191,7 @@ def test_download_retry_leaves_one_json_result(
     searcher = (
         module.BioRxivSearcher() if source == "biorxiv" else module.MedRxivSearcher()
     )
-    response = Mock(content=b"%PDF-mock")
+    response = Mock(content=b"%PDF-1.7\nmock")
     failure = requests.ConnectionError("offline")
     attempts = [failure, response] if succeeds else [failure] * searcher.max_retries
     monkeypatch.setattr(searcher.session, "get", Mock(side_effect=attempts))
@@ -108,7 +205,7 @@ def test_download_retry_leaves_one_json_result(
     assert result["status"] == ("ok" if succeeds else "error")
     assert "Attempt 1 failed, retrying..." in caplog.text
     if succeeds:
-        assert (tmp_path / "10.1101_example.pdf").read_bytes() == b"%PDF-mock"
+        assert (tmp_path / "10.1101_example.pdf").read_bytes() == b"%PDF-1.7\nmock"
     else:
         assert "Failed to download PDF after 3 attempts" in result["message"]
 

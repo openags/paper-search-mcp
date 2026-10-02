@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import re
 import sys
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import get_env
@@ -285,7 +288,26 @@ async def cmd_download(args: argparse.Namespace) -> int:
     searcher = _get_searcher(source)
     try:
         result = await asyncio.to_thread(searcher.download_pdf, args.paper_id, args.save_path)
-        print(json.dumps({"status": "ok", "path": result}))
+        # Some connectors return an explanatory error string instead of
+        # raising. A successful call alone does not prove a file was saved.
+        if not isinstance(result, (str, os.PathLike)):
+            raise RuntimeError("Download did not return a file path")
+        path = Path(result)
+        try:
+            saved = False
+            if path.is_file():
+                with path.open("rb") as downloaded:
+                    # Match the PDF-header policy used by the Semantic
+                    # connector. HTML error pages are not download successes.
+                    saved = bool(re.match(
+                        rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)",
+                        downloaded.read(1024),
+                    ))
+        except (OSError, ValueError):
+            saved = False
+        if not saved:
+            raise RuntimeError(f"Download did not produce a readable PDF file: {result}")
+        print(json.dumps({"status": "ok", "path": str(result)}))
         return 0
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))

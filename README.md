@@ -278,6 +278,12 @@ Create `~/.config/paper-search-mcp/.env` for optional API keys (see [Environment
 
 The skill uses a CLI (`paper-search`) that wraps the same library as the MCP server, outputting JSON for search/download and plain text for read.
 
+`paper-search download` reports `status: "ok"` only when the returned path is a
+readable, non-empty regular file with a PDF header. Connector error strings,
+missing files, and saved HTML error pages produce a JSON error and exit code 1.
+This lightweight check does not establish complete PDF integrity or paper identity;
+those checks remain the responsibility of the source connector and the reader.
+
 Choose sources explicitly when latency matters:
 
 ```bash

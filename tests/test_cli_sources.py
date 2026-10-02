@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -104,7 +105,10 @@ def test_get_searcher_only_initializes_requested_source_and_caches(monkeypatch):
     ("download", "download_pdf", "/tmp/example.pdf"),
     ("read", "read_paper", "Paper text"),
 ])
-def test_single_source_commands_are_lazy(command, method, result, monkeypatch, capsys):
+def test_single_source_commands_are_lazy(command, method, result, monkeypatch, capsys, tmp_path):
+    if command == "download":
+        result = str(tmp_path / "example.pdf")
+        Path(result).write_bytes(b"%PDF-1.7\nmock")
     searcher = Mock()
     getattr(searcher, method).return_value = result
     constructor = Mock(return_value=searcher)

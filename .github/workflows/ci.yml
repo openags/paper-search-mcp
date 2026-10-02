@@ -65,6 +65,7 @@ jobs:
           tests/test_ssrn.py
           tests/test_openalex.py
           tests/test_openalex_relations.py
+          tests/test_sections.py
           tests/test_search_cache.py
           tests/test_ieee.py
           tests/test_dsh_bundle.py

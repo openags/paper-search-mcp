@@ -195,16 +195,43 @@ def test_clear_works_when_disabled_and_invalidates_inflight_generation(cache):
     assert cache.status()["entries"] == 0
 
 
+def _concurrent_write_attempt(cache, key, value):
+    # Optional caching has a 100 ms SQLite busy budget. Under contention a
+    # lookup/write may truthfully fail open; a successful acknowledgement may
+    # never be lost, and a failed acknowledgement may never hide a write.
+    before = cache.lookup(key)
+    assert before in ((None, None), (None, 0))
+    success = cache.put(key, value, before[1])
+    after = cache.lookup(key)
+    expected = (value, 0) if success else (None, 0)
+    assert after == expected or after == (None, None)
+    return key, value, success
+
+
+def _assert_concurrent_results_and_recovery(cache, attempts, initial_entries=0):
+    assert attempts and any(success for _, _, success in attempts), "No concurrent write made progress"
+    assert len({key for key, _, _ in attempts}) == len(attempts)
+    assert cache.status()["available"]
+    assert cache.status()["entries"] == initial_entries + sum(success for _, _, success in attempts)
+    with sqlite3.connect(cache.settings.path) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    # After workers release all locks, require exact persistence/non-persistence
+    # for EVERY acknowledged/unacknowledged result, then prove normal recovery.
+    for key, value, success in attempts:
+        assert cache.lookup(key) == (value if success else None, 0)
+        if not success:
+            assert cache.put(key, value, 0)
+        assert cache.lookup(key) == (value, 0)
+    assert cache.status()["entries"] == initial_entries + len(attempts)
+
+
 def test_concurrent_threads_and_instances_are_consistent(cache):
     cache.lookup("initialize")
     def run(i):
-        other = SearchCache(cache.settings)
-        _, generation = other.lookup(f"key{i}")
-        assert other.put(f"key{i}", [{"title": f"value{i}"}], generation)
-        assert other.lookup(f"key{i}")[0] == [{"title": f"value{i}"}]
+        return _concurrent_write_attempt(SearchCache(cache.settings), f"key{i}", [{"title": f"value{i}"}])
     with ThreadPoolExecutor(max_workers=5) as pool:
-        list(pool.map(run, range(20)))
-    assert cache.status()["entries"] == 20
+        attempts = list(pool.map(run, range(20)))
+    _assert_concurrent_results_and_recovery(cache, attempts)
 
 
 def test_lock_contention_is_bounded_and_fails_open(cache):
@@ -329,9 +356,7 @@ def _process_cache_writer(args):
     path, number = args
     cache = SearchCache(CacheSettings(enabled=True, path=path))
     key = f"process-{number}"
-    _, generation = cache.lookup(key)
-    success = cache.put(key, [{"title": key}], generation)
-    return success, cache.lookup(key)[0]
+    return _concurrent_write_attempt(cache, key, [{"title": key}])
 
 
 def test_separate_processes_share_transactional_cache(cache):
@@ -340,8 +365,8 @@ def test_separate_processes_share_transactional_cache(cache):
     write(cache, "initial")
     with ProcessPoolExecutor(max_workers=3, mp_context=multiprocessing.get_context("spawn")) as pool:
         results = list(pool.map(_process_cache_writer, [(cache.settings.path, i) for i in range(9)]))
-    assert results == [(True, [{"title": f"process-{i}"}]) for i in range(9)]
-    assert cache.status()["entries"] == 10
+    _assert_concurrent_results_and_recovery(cache, results, initial_entries=1)
+    assert cache.lookup("initial") == ([{"title": "initial"}], 0)
 
 
 def test_disabled_search_does_not_read_or_write_existing_cache(cache):
@@ -480,25 +505,22 @@ def test_repeated_simultaneous_thread_initialization_and_writes(tmp_path, warm):
         def run(number):
             barrier.wait(timeout=5)
             other = SearchCache(settings)
+            attempts = []
             for item in range(4):
                 key = f"{number}:{item}"
-                assert other.lookup(key) == (None, 0)
-                assert other.put(key, [{"title": key}], 0)
-                assert other.lookup(key) == ([{"title": key}], 0)
+                attempts.append(_concurrent_write_attempt(other, key, [{"title": key}]))
+            return attempts
 
         with ThreadPoolExecutor(max_workers=5) as pool:
-            list(pool.map(run, range(5)))
-        assert SearchCache(settings).status()["entries"] == 20
+            attempts = [attempt for batch in pool.map(run, range(5)) for attempt in batch]
+        _assert_concurrent_results_and_recovery(SearchCache(settings), attempts)
 
 
 def _simultaneous_process_initializer(path, number, barrier, output):
     other = SearchCache(CacheSettings(enabled=True, path=path))
     barrier.wait(timeout=20)
     key = f"initial-process-{number}"
-    assert other.lookup(key) == (None, 0)
-    assert other.put(key, [{"title": key}], 0)
-    assert other.lookup(key) == ([{"title": key}], 0)
-    output.put(number)
+    output.put(_concurrent_write_attempt(other, key, [{"title": key}]))
 
 
 @pytest.mark.parametrize("iteration", range(3))
@@ -515,8 +537,9 @@ def test_simultaneous_process_initialization(tmp_path, iteration):
         for process in processes:
             process.join(timeout=30)
             assert process.exitcode == 0
-        assert sorted(output.get(timeout=2) for _ in processes) == [0, 1, 2]
-        assert SearchCache(CacheSettings(enabled=True, path=path)).status()["entries"] == 3
+        attempts = [output.get(timeout=2) for _ in processes]
+        assert sorted(key for key, _, _ in attempts) == [f"initial-process-{i}" for i in range(3)]
+        _assert_concurrent_results_and_recovery(SearchCache(CacheSettings(enabled=True, path=path)), attempts)
     finally:
         for process in processes:
             if process.is_alive():
@@ -524,3 +547,39 @@ def test_simultaneous_process_initialization(tmp_path, iteration):
                 process.join(timeout=5)
         output.close()
         output.join_thread()
+
+
+def test_reserved_writer_truthfully_skips_contending_write_and_recovers(cache):
+    """Deterministically reproduce the CI stress test's legitimate failed put."""
+    write(cache, "existing")
+    original_connect = sqlite3.connect
+    with original_connect(cache.settings.path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        with patch("paper_search_mcp.search_cache.sqlite3.connect", wraps=original_connect) as connect:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                # Keep the writer reserved until the contender returns, rather
+                # than guessing how long a shared CI runner takes to fsync.
+                attempt = pool.submit(_concurrent_write_attempt, cache, "contender", [{"title": "new"}]).result(timeout=5)
+            assert attempt == ("contender", [{"title": "new"}], False)
+            assert connect.call_args_list
+            assert all(call.kwargs["timeout"] == 0.1 for call in connect.call_args_list)
+        assert cache.lookup("existing") == ([{"title": "existing"}], 0)
+        writer.rollback()
+    assert cache.lookup("contender") == (None, 0)
+    assert cache.put("contender", [{"title": "new"}], 0)
+    assert cache.lookup("contender") == ([{"title": "new"}], 0)
+    assert cache.status()["entries"] == 2
+
+
+def test_concurrency_verifier_rejects_total_failure_and_false_acknowledgements(cache):
+    cache.lookup("initialize")
+    with pytest.raises(AssertionError, match="No concurrent write made progress"):
+        _assert_concurrent_results_and_recovery(cache, [("missing", [{"title": "x"}], False)])
+    with pytest.raises(AssertionError):
+        _assert_concurrent_results_and_recovery(cache, [("missing", [{"title": "x"}], True)])
+    write(cache, "unexpected")
+    with pytest.raises(AssertionError):
+        _assert_concurrent_results_and_recovery(cache, [
+            ("unexpected", [{"title": "unexpected"}], False),
+            ("missing", [{"title": "x"}], True),
+        ])

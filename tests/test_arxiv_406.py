@@ -59,6 +59,17 @@ def test_valid_406_arxiv_feed_returns_papers_without_retry(paced_searcher):
     assert searcher.session.get.call_args.kwargs["timeout"] == 30
 
 
+def test_search_retains_legacy_id_for_download(paced_searcher):
+    searcher, _, _ = paced_searcher
+    feed = ARXIV_FEED.replace(b"2401.12345v1", b"hep-th/9901001v1")
+    searcher.session.get = Mock(return_value=response_with(feed))
+    papers = searcher.search("legacy paper")
+    assert papers[0].paper_id == "hep-th/9901001v1"
+    assert searcher._pdf_path(papers[0].paper_id, "downloads").endswith(
+        arxiv.os.path.join("hep-th", "9901001v1.pdf")
+    )
+
+
 @pytest.mark.parametrize("body", [
     b"",
     b"<html><body>Not Acceptable</body></html>",

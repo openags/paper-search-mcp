@@ -222,7 +222,8 @@ class ArxivSearcher(PaperSource):
                 doi = doi or extract_doi(link.href)
 
         return Paper(
-            paper_id=entry.id.split('/')[-1],
+            # Legacy identifiers include the category (e.g. hep-th/9901001).
+            paper_id=entry.id.split('/abs/', 1)[-1],
             title=entry.title,
             authors=authors,
             abstract=entry.summary,

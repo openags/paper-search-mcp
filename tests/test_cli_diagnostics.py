@@ -213,7 +213,6 @@ def test_download_retry_leaves_one_json_result(
 @pytest.mark.parametrize(
     ("module", "searcher_class"),
     [
-        (arxiv, arxiv.ArxivSearcher),
         (biorxiv, biorxiv.BioRxivSearcher),
         (medrxiv, medrxiv.MedRxivSearcher),
     ],
@@ -231,6 +230,15 @@ def test_read_failure_diagnostic_does_not_become_paper_text(
     # Preserve the existing empty-string result on a PDF parsing failure.
     assert capsys.readouterr().out == "\n"
     assert "Error reading PDF for paper example: bad PDF" in caplog.text
+
+
+def test_arxiv_read_failure_is_a_cli_error(monkeypatch, tmp_path, capsys):
+    (tmp_path / "2406.17835.pdf").write_bytes(b"invalid PDF")
+    monkeypatch.setattr(cli, "SEARCHERS", {"arxiv": arxiv.ArxivSearcher()})
+    assert run_command("read", "arxiv", "2406.17835", "-o", str(tmp_path)) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "error"
+    assert "could not be read as text" in result["message"]
 
 
 @pytest.mark.parametrize("command", ["search", "download"])

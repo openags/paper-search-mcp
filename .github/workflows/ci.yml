@@ -1,12 +1,16 @@
-name: Publish to PyPI
+name: CI
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -70,38 +74,3 @@ jobs:
           tests/test_fallback.py
           tests/test_paper.py
           -q --tb=short
-
-      - name: Build package
-        run: uv build
-
-      - name: Verify wheel entry points
-        run: |
-          python -c "import pathlib, zipfile; wheel = next(pathlib.Path('dist').glob('paper_search_mcp-*.whl')); z = zipfile.ZipFile(wheel); entry = next(name for name in z.namelist() if name.endswith('.dist-info/entry_points.txt')); data = z.read(entry).decode(); assert 'paper-search-mcp = paper_search_mcp.server:main' in data; assert 'paper-search = paper_search_mcp.cli:main' in data; print(data)"
-
-  publish:
-    needs: test
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Build package
-        run: uv build
-
-      - name: Verify wheel entry points
-        run: |
-          python -c "import pathlib, zipfile; wheel = next(pathlib.Path('dist').glob('paper_search_mcp-*.whl')); z = zipfile.ZipFile(wheel); entry = next(name for name in z.namelist() if name.endswith('.dist-info/entry_points.txt')); data = z.read(entry).decode(); assert 'paper-search-mcp = paper_search_mcp.server:main' in data; assert 'paper-search = paper_search_mcp.cli:main' in data; print(data)"
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1

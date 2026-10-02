@@ -1001,8 +1001,10 @@ dependencies = [
     { name = "fastmcp" },
     { name = "feedparser" },
     { name = "httpx", extra = ["socks"] },
+    { name = "joserfc" },
     { name = "lxml" },
     { name = "mcp", extra = ["cli"] },
+    { name = "pydantic" },
     { name = "pypdf" },
     { name = "requests" },
 ]
@@ -1010,6 +1012,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -1018,10 +1021,13 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.4.2,<4" },
     { name = "feedparser" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
+    { name = "joserfc", specifier = ">=1.6,<2" },
     { name = "lxml", specifier = ">=4.9.0" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27.2,<2" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pypdf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "requests" },
 ]
 provides-extras = ["dev"]

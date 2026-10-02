@@ -65,3 +65,19 @@ The conflict resolution keeps the current `pypdf` migration and MCP `<2` bound,
 adds a FastMCP `<4` compatibility bound, and regenerates the lock selectively
 for the requested versions and their required dependencies. The integration
 commit also includes the source author's verified `Co-authored-by` trailer.
+
+## Bounded OpenAlex relationships
+
+[PR #96](https://github.com/openags/paper-search-mcp/pull/96), original commit
+[`f5127b9`](https://github.com/openags/paper-search-mcp/commit/f5127b932fa41749af32c99338cd6941587f5807)
+by George930502, supplied the extracted null-tolerant OpenAlex parser and the
+one-hop `cites` / `cited_by` design adapted here. The source author's verified
+Git author identity is `George930502 <George930502@users.noreply.github.com>`;
+the integration commit retains this co-author trailer. The request budgets,
+strict identifier rules, explicit error contract, and deterministic budget tests
+are new. Title guessing, default citation enrichment, and the OA resolver tool
+from that PR are deliberately not incorporated.
+
+Thanks to `@avvohacker` for [issue #122](https://github.com/openags/paper-search-mcp/issues/122)
+and `@heliowap` for [issue #94](https://github.com/openags/paper-search-mcp/issues/94).
+These issue proposals inform the bounded scope; no issue-authored code was copied.

@@ -70,7 +70,7 @@ def test_google_scholar_tool_returns_results_before_timeout():
     )
 
 
-def test_google_scholar_tool_returns_empty_list_on_timeout():
+def test_google_scholar_tool_reports_timeout_instead_of_empty_success():
     async def slow_search(*args, **kwargs):
         await asyncio.sleep(0.05)
         return [{"paper_id": "1", "title": "paper"}]
@@ -79,11 +79,8 @@ def test_google_scholar_tool_returns_empty_list_on_timeout():
         patch.object(server, "GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS", 0.01),
         patch.object(server, "async_search", AsyncMock(side_effect=slow_search)),
     ):
-        result = asyncio.run(
-            server.search_google_scholar("machine learning", max_results=5)
-        )
-
-    assert result == []
+        with pytest.raises(server.GoogleScholarSearchError, match="timed out after"):
+            asyncio.run(server.search_google_scholar("machine learning", max_results=5))
 
 
 def test_timed_out_blocking_search_keeps_capacity_until_worker_exits():

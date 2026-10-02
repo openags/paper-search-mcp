@@ -1,5 +1,8 @@
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from threading import Lock
+import math
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -23,6 +26,13 @@ class GoogleScholarSearcher(PaperSource):
     
     SCHOLAR_URL = "https://scholar.google.com/scholar"
     CONSENT_COOKIE_VALUE = "YES+"
+    COOLDOWN_SECONDS = 60.0
+    MAX_COOLDOWN_SECONDS = 900.0
+    MAX_RETRY_AFTER_SECONDS = 86400.0
+    FALLBACK_HINT = (
+        "Use search_papers with sources=\"openalex,semantic,crossref\" "
+        "for explicitly labeled alternative sources."
+    )
     BROWSERS = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -33,6 +43,10 @@ class GoogleScholarSearcher(PaperSource):
         self.max_retries = max(1, max_retries)
         self.retry_delay = max(0.5, retry_delay)
         self.proxy_url = (proxy_url or get_env("GOOGLE_SCHOLAR_PROXY_URL", "")).strip()
+        # A shared requests.Session and its backoff state are not thread-safe.
+        self._search_lock = Lock()
+        self._cooldown_until = 0.0
+        self._consecutive_blocks = 0
         self._setup_session()
 
     def _setup_session(self):
@@ -55,8 +69,47 @@ class GoogleScholarSearcher(PaperSource):
                 'https': self.proxy_url
             })
 
-    def _rotate_user_agent(self):
-        self.session.headers.update({'User-Agent': random.choice(self.BROWSERS)})
+    @classmethod
+    def _retry_after(cls, response) -> float:
+        """Parse Retry-After delta-seconds or an HTTP date, never response text."""
+        value = (getattr(response, "headers", None) or {}).get("Retry-After", "")
+        if not isinstance(value, str) or not value.strip():
+            return 0.0
+        value = value.strip()
+        try:
+            if value.isascii() and value.isdigit():
+                # Bound untrusted numeric conversion and scheduling state.
+                digits = value.lstrip("0") or "0"
+                delay = float(digits) if len(digits) <= 10 else math.inf
+            else:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    return 0.0
+                delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+            # An over-horizon instruction is a deferred state, not permission
+            # to contact Scholar early when our bounded horizon expires.
+            return math.inf if delay > cls.MAX_RETRY_AFTER_SECONDS else max(0.0, delay)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    def _begin_cooldown(self, response=None) -> None:
+        self._consecutive_blocks = min(self._consecutive_blocks + 1, 5)
+        delay = min(
+            self.COOLDOWN_SECONDS * (2 ** (self._consecutive_blocks - 1)),
+            self.MAX_COOLDOWN_SECONDS,
+        )
+        if response is not None:
+            delay = max(delay, self._retry_after(response))
+        self._cooldown_until = max(self._cooldown_until, time.monotonic() + delay)
+
+    def _cooldown_hint(self) -> str:
+        if math.isinf(self._cooldown_until):
+            return (
+                "The upstream Retry-After exceeds the supported 24-hour scheduling range; "
+                "automatic requests are paused for this process. " + self.FALLBACK_HINT
+            )
+        remaining = max(0, math.ceil(self._cooldown_until - time.monotonic()))
+        return f"Retry after {remaining} seconds. {self.FALLBACK_HINT}"
 
     @staticmethod
     def _remaining_timeout(deadline: Optional[float], maximum: float) -> Optional[float]:
@@ -166,20 +219,36 @@ class GoogleScholarSearcher(PaperSource):
                 persistent consent interstitial prevents a successful search.
                 Already fetched pages are not returned as a complete result.
         """
+        if max_results <= 0 or (timeout_seconds is not None and timeout_seconds <= 0):
+            return []
+        deadline = (
+            time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+        )
+        remaining = self._remaining_timeout(deadline, 30.0)
+        if not self._search_lock.acquire(timeout=remaining if remaining is not None else 0):
+            raise GoogleScholarSearchError(
+                "Google Scholar is busy; search timed out waiting for its session. "
+                + self.FALLBACK_HINT
+            )
+        try:
+            if time.monotonic() < self._cooldown_until:
+                raise GoogleScholarSearchError(
+                    "Google Scholar is cooling down after an upstream access limit. "
+                    + self._cooldown_hint()
+                )
+            return self._search_locked(query, max_results, deadline)
+        finally:
+            self._search_lock.release()
+
+    def _search_locked(self, query: str, max_results: int, deadline: Optional[float]) -> List[Paper]:
         papers = []
         start = 0
         results_per_page = min(10, max_results)
         consent_retry_attempted = False
-        deadline = (
-            time.monotonic() + max(0.0, timeout_seconds)
-            if timeout_seconds is not None
-            else None
-        )
 
         while len(papers) < max_results:
             if deadline is not None and time.monotonic() >= deadline:
-                logger.warning("Google Scholar search deadline reached")
-                break
+                raise GoogleScholarSearchError("Google Scholar search timed out. " + self.FALLBACK_HINT)
             try:
                 # Construct search parameters
                 params = {
@@ -191,7 +260,6 @@ class GoogleScholarSearcher(PaperSource):
 
                 response = None
                 for attempt in range(self.max_retries):
-                    self._rotate_user_agent()
                     if not self._sleep_with_deadline(
                         random.uniform(1.0, 2.5), deadline
                     ):
@@ -205,14 +273,26 @@ class GoogleScholarSearcher(PaperSource):
                         params=params,
                         timeout=request_timeout,
                     )
+                    if response.status_code in (200, 403, 429, 503):
+                        soup = BeautifulSoup(response.text, "html.parser")
+                        if self._is_captcha_page(soup):
+                            self._begin_cooldown(response)
+                            raise GoogleScholarSearchError(
+                                "Google Scholar returned a bot-detection/captcha page. "
+                                + self._cooldown_hint()
+                            )
                     if response.status_code == 200:
                         break
 
                     if response.status_code in (403, 429, 503):
-                        if attempt == self.max_retries - 1:
+                        retry_after = self._retry_after(response)
+                        # Do not hold a synchronous caller asleep for a long
+                        # upstream delay. Record it across calls and fail fast.
+                        if retry_after > 30.0 or attempt == self.max_retries - 1:
                             break
                         wait_time = self.retry_delay * (2 ** attempt)
                         wait_time += random.uniform(0, 0.5)
+                        wait_time = max(wait_time, retry_after)
                         logger.warning(
                             "Google Scholar returned %s (attempt %s/%s). Backing off %.1fs",
                             response.status_code,
@@ -230,20 +310,21 @@ class GoogleScholarSearcher(PaperSource):
                 # Check a known upstream failure before the deadline: running
                 # out of time during backoff must not turn a 429 into success.
                 if response is not None and response.status_code != 200:
+                    hint = self.FALLBACK_HINT
+                    if response.status_code in (403, 429, 503):
+                        self._begin_cooldown(response)
+                        hint = self._cooldown_hint()
                     raise GoogleScholarSearchError(
-                        f"Google Scholar search failed: HTTP {response.status_code}; "
-                        "reduce request frequency or use another source."
+                        f"Google Scholar search failed: HTTP {response.status_code}. " + hint
                     )
 
                 if deadline is not None and time.monotonic() >= deadline:
-                    logger.warning("Google Scholar search deadline reached")
-                    break
+                    raise GoogleScholarSearchError("Google Scholar search timed out. " + self.FALLBACK_HINT)
 
                 if response is None:
-                    break
+                    raise GoogleScholarSearchError("Google Scholar search timed out. " + self.FALLBACK_HINT)
 
-                # Parse results
-                soup = BeautifulSoup(response.text, 'html.parser')
+                # The successful response was already parsed for access checks.
                 page_text = soup.get_text(' ', strip=True).lower()
 
                 if self._is_consent_page(soup, page_text):
@@ -263,12 +344,9 @@ class GoogleScholarSearcher(PaperSource):
                         "use another source until Scholar is accessible."
                     )
 
-                if self._is_captcha_page(soup, page_text):
-                    raise GoogleScholarSearchError(
-                        "Google Scholar returned a bot-detection/captcha page. "
-                        "Reduce request frequency or use another source."
-                    )
-
+                # Only an actual result/no-result page releases the block streak.
+                self._consecutive_blocks = 0
+                self._cooldown_until = 0.0
                 results = soup.find_all('div', class_='gs_ri')
 
                 if not results:
@@ -288,6 +366,8 @@ class GoogleScholarSearcher(PaperSource):
             except GoogleScholarSearchError:
                 raise
             except requests.RequestException as e:
+                if response is not None and response.status_code in (403, 429, 503):
+                    self._begin_cooldown(response)
                 # Do not include request/proxy URLs or response bodies in the
                 # error presented to MCP clients and CLI consumers.
                 raise GoogleScholarSearchError(

@@ -27,7 +27,7 @@ from .academic_platforms.crossref import CrossRefSearcher
 from .academic_platforms.dblp import DBLPSearcher
 from .academic_platforms.doaj import DOAJSearcher
 from .academic_platforms.europepmc import EuropePMCSearcher
-from .academic_platforms.google_scholar import GoogleScholarSearcher
+from .academic_platforms.google_scholar import GoogleScholarSearchError, GoogleScholarSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.iacr import IACRSearcher
 from .academic_platforms.medrxiv import MedRxivSearcher
@@ -831,13 +831,11 @@ async def search_google_scholar(query: str, max_results: int = 10) -> List[Dict]
             ),
             timeout_seconds=GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
         )
-    except TimeoutError:
-        logger.warning(
-            "Google Scholar search timed out after %.1fs for query=%r; returning no results.",
-            GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS,
-            query,
-        )
-        return []
+    except TimeoutError as exc:
+        raise GoogleScholarSearchError(
+            f"Google Scholar search timed out after {GOOGLE_SCHOLAR_TOOL_TIMEOUT_SECONDS:g}s. "
+            + GoogleScholarSearcher.FALLBACK_HINT
+        ) from exc
     return papers if papers else []
 
 

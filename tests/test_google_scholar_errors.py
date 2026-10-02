@@ -28,8 +28,8 @@ EMPTY_HTML = "<html><body>Your search did not match any articles.</body></html>"
 CONSENT_HTML = "<html><body>Before you continue to Google Scholar</body></html>"
 
 
-def response(status=200, text=EMPTY_HTML):
-    return SimpleNamespace(status_code=status, text=text)
+def response(status=200, text=EMPTY_HTML, headers=None):
+    return SimpleNamespace(status_code=status, text=text, headers=headers or {})
 
 
 @pytest.fixture
@@ -223,3 +223,188 @@ def test_live_smoke_test_skips_only_expected_upstream_failure():
     smoke.searcher.search.side_effect = AssertionError("Unexpected regression")
     with pytest.raises(AssertionError, match="Unexpected regression"):
         smoke.test_search()
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+def test_exhausted_backoff_blocks_following_queries_without_requests(searcher, status):
+    searcher.session.get.return_value = response(status)
+    with pytest.raises(GoogleScholarSearchError, match=f"HTTP {status}"):
+        searcher.search("first")
+    calls = searcher.session.get.call_count
+    sleeps = list(searcher.test_clock.sleeps)
+    with pytest.raises(GoogleScholarSearchError, match="cooling down.*Retry after 60 seconds"):
+        searcher.search("different query")
+    assert searcher.session.get.call_count == calls
+    assert searcher.test_clock.sleeps == sleeps
+
+
+@pytest.mark.parametrize("status", [200, 403, 429, 503])
+def test_captcha_cooldown_never_retries_or_rotates_identity(searcher, status):
+    original_ua = searcher.session.headers["User-Agent"]
+    searcher.session.get.return_value = response(status, text="<input name='captcha'>")
+    with pytest.raises(GoogleScholarSearchError, match="captcha"):
+        searcher.search("first")
+    with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+        searcher.search("second")
+    assert searcher.session.get.call_count == 1
+    assert searcher.session.headers["User-Agent"] == original_ua
+
+
+def test_cooldown_expires_and_success_resets_exponential_streak(searcher):
+    searcher.max_retries = 1
+    searcher.session.get.return_value = response(429)
+    for expected in (60, 120, 240, 480, 900, 900):
+        with pytest.raises(GoogleScholarSearchError, match=f"Retry after {expected} seconds"):
+            searcher.search("blocked")
+        searcher.test_clock.now += expected
+    searcher.session.get.return_value = response(text=RESULT_HTML)
+    assert len(searcher.search("recovered", max_results=1)) == 1
+    assert searcher._consecutive_blocks == 0
+    searcher.session.get.return_value = response(429)
+    with pytest.raises(GoogleScholarSearchError, match="Retry after 60 seconds"):
+        searcher.search("blocked again")
+
+
+def test_retry_after_seconds_paces_retry_without_rotating_identity(searcher):
+    original_ua = searcher.session.headers["User-Agent"]
+    searcher.session.get.side_effect = [response(429, headers={"Retry-After": "7"}), response()]
+    assert searcher.search("retry") == []
+    assert searcher.test_clock.sleeps == [1.0, 7.0, 1.0]
+    assert searcher.session.headers["User-Agent"] == original_ua
+
+
+def test_retry_after_http_date_is_honored(searcher, monkeypatch):
+    from datetime import datetime, timezone
+    from email.utils import format_datetime
+    now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+    monkeypatch.setattr(google_scholar, "datetime", FixedDateTime)
+    retry_at = datetime(2026, 10, 2, 0, 2, tzinfo=timezone.utc)
+    searcher.max_retries = 1
+    searcher.session.get.return_value = response(503, headers={"Retry-After": format_datetime(retry_at)})
+    with pytest.raises(GoogleScholarSearchError, match="Retry after 120 seconds"):
+        searcher.search("retry")
+
+
+@pytest.mark.parametrize("header,expected", [
+    ("", 0), ("garbage", 0), ("-1", 0), ("nan", 0), ("inf", 0),
+    ("1.5", 0), ("99999999999999999", float("inf")), ("86401", float("inf")),
+    ("Wed, 21 Oct 2015 07:28:00 GMT", 0), (None, 0), (" 7 ", 7),
+])
+def test_retry_after_untrusted_values_are_bounded(header, expected):
+    assert GoogleScholarSearcher._retry_after(response(429, headers={"Retry-After": header})) == expected
+
+
+def test_retry_after_beyond_deadline_carries_over_to_next_search(searcher):
+    searcher.session.get.return_value = response(429, headers={"Retry-After": "120"})
+    with pytest.raises(GoogleScholarSearchError, match="HTTP 429"):
+        searcher.search("first", timeout_seconds=3)
+    assert searcher.test_clock.now == 1  # A long Retry-After fails fast.
+    with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+        searcher.search("second", timeout_seconds=3)
+    assert searcher.session.get.call_count == 1
+
+
+def test_cooldown_survives_network_error_during_retry(searcher):
+    searcher.session.get.side_effect = [response(429), requests.ConnectionError("private")]
+    with pytest.raises(GoogleScholarSearchError, match="request failed"):
+        searcher.search("first")
+    with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+        searcher.search("second")
+    assert searcher.session.get.call_count == 2
+
+
+def test_deadline_during_pacing_is_not_empty_success(searcher):
+    with pytest.raises(GoogleScholarSearchError, match="timed out"):
+        searcher.search("query", timeout_seconds=0.5)
+    searcher.session.get.assert_not_called()
+
+
+def test_deadline_after_first_page_is_not_partial_success(searcher):
+    searcher.session.get.return_value = response(text=RESULT_HTML)
+    with pytest.raises(GoogleScholarSearchError, match="timed out"):
+        searcher.search("query", max_results=2, timeout_seconds=1.5)
+    assert searcher.session.get.call_count == 1
+
+
+def test_wait_for_busy_session_is_bounded_and_never_issues_request(searcher):
+    searcher._search_lock.acquire()
+    try:
+        with pytest.raises(GoogleScholarSearchError, match="timed out waiting"):
+            searcher.search("query", timeout_seconds=0.01)
+    finally:
+        searcher._search_lock.release()
+    searcher.session.get.assert_not_called()
+
+
+def test_concurrent_calls_share_session_and_cooldown(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    entered, release = Event(), Event()
+    searcher = GoogleScholarSearcher(max_retries=1)
+    monkeypatch.setattr(searcher, "_sleep_with_deadline", lambda delay, deadline: True)
+    def blocked_request(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=3)
+        return response(429)
+    searcher.session.get = Mock(side_effect=blocked_request)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(searcher.search, "first", timeout_seconds=5)
+        assert entered.wait(timeout=2)
+        second = pool.submit(searcher.search, "second", timeout_seconds=5)
+        release.set()
+        with pytest.raises(GoogleScholarSearchError, match="HTTP 429"):
+            first.result(timeout=3)
+        with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+            second.result(timeout=3)
+    assert searcher.session.get.call_count == 1
+
+
+def test_unified_search_preserves_public_alternatives_during_cooldown(searcher, monkeypatch):
+    searcher._begin_cooldown()
+    monkeypatch.setattr(server, "google_scholar_searcher", searcher)
+    papers = [{"paper_id": "W1", "title": "Alternative", "source": "openalex"}]
+    monkeypatch.setattr(server, "search_openalex", AsyncMock(return_value=papers))
+    result = asyncio.run(server.search_papers("query", sources="google_scholar,openalex"))
+    assert "cooling down" in result["errors"]["google_scholar"]
+    assert result["papers"] == papers
+    assert result["source_results"] == {"google_scholar": 0, "openalex": 1}
+    searcher.session.get.assert_not_called()
+
+
+def test_long_valid_retry_after_never_retries_early_at_local_horizon(searcher):
+    searcher.session.get.return_value = response(429, headers={"Retry-After": "172800"})
+    with pytest.raises(GoogleScholarSearchError, match="automatic requests are paused"):
+        searcher.search("first")
+    assert searcher.test_clock.sleeps == [1.0]
+    for elapsed in (86401, 172801):
+        searcher.test_clock.now += elapsed
+        with pytest.raises(GoogleScholarSearchError, match="automatic requests are paused"):
+            searcher.search("next")
+    assert searcher.session.get.call_count == 1
+
+
+def test_long_supported_retry_after_extends_exponential_cooldown_without_sleep(searcher):
+    searcher.session.get.return_value = response(429, headers={"Retry-After": "3600"})
+    with pytest.raises(GoogleScholarSearchError, match="Retry after 3600 seconds"):
+        searcher.search("first")
+    assert searcher.test_clock.sleeps == [1.0]
+    searcher.test_clock.now += 901
+    with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+        searcher.search("next")
+    assert searcher.session.get.call_count == 1
+
+
+def test_captcha_returned_after_deadline_still_starts_cooldown(searcher):
+    def late_response(*args, **kwargs):
+        searcher.test_clock.now += 2
+        return response(text="<input name='captcha'>")
+    searcher.session.get.side_effect = late_response
+    with pytest.raises(GoogleScholarSearchError, match="captcha"):
+        searcher.search("first", timeout_seconds=2)
+    with pytest.raises(GoogleScholarSearchError, match="cooling down"):
+        searcher.search("second")
+    assert searcher.session.get.call_count == 1

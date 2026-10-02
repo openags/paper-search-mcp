@@ -159,7 +159,6 @@ def test_google_scholar_retries_consent_page_once():
             "get",
             side_effect=[consent_response, result_response],
         ) as session_get,
-        patch.object(searcher, "_rotate_user_agent"),
         patch(
             "paper_search_mcp.academic_platforms.google_scholar.time.sleep"
         ),

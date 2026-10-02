@@ -167,8 +167,25 @@ and CLI search, while successful sources still return their papers. Direct
 Scholar searches raise `GoogleScholarSearchError` for those failures. A normal
 empty result page still returns an empty list. If a later page fails, the source
 is reported as failed rather than returning its earlier pages as complete.
-Existing tool/deadline timeout behavior is unchanged. These diagnostics do not
-guarantee access to Scholar or a fixed number of queries per session.
+Timeouts also raise a source error rather than implying that no papers exist.
+After exhausted HTTP 403/429/503 retries or a CAPTCHA, the shared Scholar
+connector enters a 60-second cooldown. Consecutive blocked searches extend it
+exponentially up to 15 minutes; a valid upstream `Retry-After` can extend this
+interval. A successful page resets the streak. Calls during cooldown fail
+immediately with a retry interval and do not contact Scholar. Retries honor
+valid `Retry-After` seconds or HTTP dates up to 24 hours. Longer instructions
+pause automatic requests for the lifetime of this connector instead of retrying
+earlier than the provider requested. Delays above 30 seconds are carried across
+calls without sleeping in a worker. Concurrent calls share the same paced session. The connector does not rotate
+identity between requests or solve CAPTCHAs. Cooldown state is process-local,
+not a guarantee of an upstream quota or recovery after that interval.
+
+For a survey, select alternative sources explicitly, for example MCP
+`search_papers(query, sources="google_scholar,openalex,semantic,crossref")` or CLI
+`paper-search search "query" -s google_scholar,openalex,semantic,crossref`.
+Successful providers keep their own source labels and their papers even when
+Scholar is cooling down. Alternatives have their own access/rate limits; they
+are never silently returned as Google Scholar results.
 
 ## Optional Paid Platform Connectors (Phase 3)
 

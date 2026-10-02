@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -232,8 +233,9 @@ async def cmd_search(args: argparse.Namespace) -> int:
         return 1
 
     tasks = {}
+    jobs = []
+    source_timeout = getattr(args, "source_timeout", None)
     for src in selected:
-        searcher = _get_searcher(src)
         extra = {}
         if src == "wos":
             extra["db"] = getattr(args, "wos_db", "WOS")
@@ -244,10 +246,18 @@ async def cmd_search(args: argparse.Namespace) -> int:
                      "sort": getattr(args, "scopus_sort", "relevance"),
                      "field": getattr(args, "scopus_field", ""),
                      "date": getattr(args, "scopus_date", "")}
-        tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
+        if source_timeout is None:
+            tasks[src] = _async_search(_get_searcher(src), args.query, args.max_results, **extra)
+        else:
+            jobs.append({"source": src, "query": args.query,
+                         "max_results": args.max_results, "kwargs": extra})
 
-    names = list(tasks.keys())
-    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    names = selected
+    if source_timeout is None:
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    else:
+        from .cli_search import search_sources
+        results = await search_sources(jobs, source_timeout)
 
     merged: List[Dict[str, Any]] = []
     errors: Dict[str, str] = {}
@@ -350,6 +360,16 @@ async def cmd_sources(args: argparse.Namespace) -> int:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive, finite number of seconds") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a positive, finite number of seconds")
+    return seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="paper-search",
@@ -363,6 +383,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("-n", "--max-results", type=int, default=5, help="Max results per source (default: 5)")
     p_search.add_argument("-s", "--sources", default="all",
                           help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: all)")
+    p_search.add_argument("--source-timeout", type=_positive_seconds, metavar="SECONDS",
+                          help="Opt-in per-source deadline, including worker startup; "
+                               "runs at most 4 source processes at once and keeps partial results "
+                               "(default: connector timeouts only)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
     p_search.add_argument("--exhaustive", action="store_true",

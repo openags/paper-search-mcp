@@ -23,6 +23,7 @@ from paper_search_mcp.search_cache import CacheSettings, SearchCache, search_key
 from tests.test_http_auth import app_fixture, keys, listening, token
 
 NEW_TOOLS = {
+    "extract_sections",
     "search_openreview", "download_openreview", "read_openreview_paper",
     "search_wos", "search_scopus", "read_scopus_paper",
     "get_citing_papers", "get_referenced_papers",
@@ -232,7 +233,7 @@ def test_pr_and_release_workflows_cover_every_added_deterministic_suite():
         "test_cli_tools.py", "test_feature_integration.py", "test_semantic_pdf_validation.py",
         "test_wos.py", "test_scopus.py", "test_institutional_http.py", "test_openreview.py",
         "test_ssrn_openalex.py", "test_ieee.py", "test_openalex_relations.py",
-        "test_search_cache.py", "test_http_auth.py", "test_dsh_bundle.py",
+        "test_search_cache.py", "test_sections.py", "test_http_auth.py", "test_dsh_bundle.py",
         "test_skill_zip_builder.py", "test_skill_archive_docs.py",
     }
     selections = []

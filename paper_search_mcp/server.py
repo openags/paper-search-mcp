@@ -12,7 +12,8 @@ import unicodedata
 from collections.abc import Awaitable
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import BoundedSemaphore
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
+from pydantic import Field
 from urllib.parse import unquote
 
 import httpx
@@ -87,6 +88,7 @@ class _BoundedSearchExecutor:
 
 
 _SEARCH_EXECUTOR = _BoundedSearchExecutor(SEARCH_EXECUTOR_MAX_WORKERS)
+_SECTION_EXECUTOR = _BoundedSearchExecutor(2)
 _SEARCH_CACHE = SearchCache.from_env()
 
 # Instances of searchers
@@ -1335,6 +1337,44 @@ async def _openalex_relationship(method, identifier, max_results, filter,
         return await asyncio.wait_for(asyncio.wrap_future(future), timeout_seconds)
     except asyncio.TimeoutError as exc:
         raise TimeoutError("OpenAlex relationship lookup exceeded its time budget") from exc
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+async def extract_sections(
+    pdf_path: str,
+    max_pages: Annotated[int, Field(strict=True, ge=1, le=100)] = 30,
+    max_chars: Annotated[int, Field(strict=True, ge=1, le=200_000)] = 60_000,
+    max_sections: Annotated[int, Field(strict=True, ge=1, le=100)] = 50,
+    timeout_seconds: Annotated[float, Field(strict=True, gt=0, le=60, allow_inf_nan=False)] = 30.0,
+) -> Dict:
+    """Split an already-downloaded PDF into heuristic heading-based sections.
+
+    pdf_path must be relative to PAPER_SEARCH_MCP_SECTION_PDF_ROOT (default
+    ./downloads); absolute paths, traversal and symlinks are rejected. Reads at
+    most 20 MiB, 100 pages, 200000 characters and 100 sections, with a 60-second
+    maximum call budget. Parsing uses a resource-limited process (POSIX required)
+    and separate two-job capacity. Defaults are smaller. Preserves ordering/page spans,
+    repeats and unclassified text, and marks truncation. English standalone
+    headings only; no OCR, semantic fields, medical inference or new downloads.
+    """
+    from .sections import extract_pdf_sections, validate_limits
+    validate_limits(max_pages, max_chars, max_sections, timeout_seconds)
+    cancellation = threading.Event()
+    try:
+        future = _SECTION_EXECUTOR.submit(
+            extract_pdf_sections, pdf_path, max_pages, max_chars, max_sections, timeout_seconds,
+            _cancel_event=cancellation,
+        )
+    except SearchExecutorSaturatedError as exc:
+        raise RuntimeError("PDF parser capacity is exhausted; try again later") from exc
+    try:
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError("PDF section extraction exceeded its time budget") from exc
+    finally:
+        # Cancellation/timeout stops and reaps the child. Only this dedicated
+        # two-slot supervisor pool stays occupied during bounded cleanup.
+        cancellation.set()
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})

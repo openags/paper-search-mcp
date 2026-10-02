@@ -187,6 +187,15 @@ Successful providers keep their own source labels and their papers even when
 Scholar is cooling down. Alternatives have their own access/rate limits; they
 are never silently returned as Google Scholar results.
 
+## Local PDF section extraction
+
+`extract_sections` splits an already-downloaded PDF at recognized standalone
+headings, preserving extracted text order and page spans with explicit limits
+and truncation. Reads are confined to the configured download root; no network,
+OCR, medical inference or new dependency is added. Labels are heuristic and may
+be uncertain. See [bounded PDF sections](docs/PDF_SECTIONS.md) for access rules,
+CLI usage and parser limitations.
+
 ## Optional Paid Platform Connectors (Phase 3)
 
 IEEE Xplore provides **opt-in metadata search**, disabled until an existing API key is configured.

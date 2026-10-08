@@ -7,6 +7,7 @@ from pathlib import Path
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
+from .pmc import PMCSearcher
 from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,15 @@ class EuropePMCSearcher(PaperSource):
             if not paper_details:
                 raise ValueError(f"Could not retrieve details for Europe PMC paper {paper_id}")
 
+            # An article with a PMC copy comes from the PMC Article Datasets: the PMC
+            # article page answers a program with a bot check, and ?pdf=render with 403
+            pmcid = paper_details.get('pmcid', '')
+            if pmcid:
+                try:
+                    return PMCSearcher().download_pdf(pmcid, save_path)
+                except Exception as e:
+                    logger.warning(f"PMC open access PDF for {pmcid} unavailable: {e}")
+
             # Find PDF URL from fullTextUrlList
             pdf_url = ''
             full_text_urls = paper_details.get('fullTextUrlList', {}).get('fullTextUrl', [])
@@ -263,14 +273,6 @@ class EuropePMCSearcher(PaperSource):
                         if url_type == 'pdf':
                             pdf_url = url_value
                             break
-
-            if not pdf_url:
-                # Check if paper has a PMCID and try standard PMC PDF URL
-                pmcid = paper_details.get('pmcid', '')
-                if pmcid:
-                    if not pmcid.startswith('PMC'):
-                        pmcid = f"PMC{pmcid}"
-                    pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/pdf/"
 
             if not pdf_url:
                 raise ValueError(f"Europe PMC paper {paper_id} does not have an accessible PDF")
@@ -364,6 +366,16 @@ class EuropePMCSearcher(PaperSource):
             str: Extracted text content of the paper
         """
         try:
+            # The PMC copy's plain text needs no PDF extraction
+            pmcid = (self._get_paper_details(paper_id) or {}).get('pmcid', '')
+            if pmcid:
+                try:
+                    text = PMCSearcher().open_access_text(pmcid)
+                    if text:
+                        return text
+                except requests.RequestException as e:
+                    logger.warning(f"PMC open access text for {pmcid} unavailable, trying the PDF: {e}")
+
             # Download PDF first
             pdf_path = self.download_pdf(paper_id, save_path)
 

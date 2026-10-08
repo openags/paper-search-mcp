@@ -6,11 +6,13 @@ from datetime import datetime
 from ..paper import Paper
 from ..utils import extract_doi
 from .base import PaperSource
+from .pmc import PMCSearcher
 
 class PubMedSearcher(PaperSource):
     """Searcher for PubMed papers"""
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    LINK_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi"
     REQUEST_TIMEOUT_SECONDS = 30
 
     def search(self, query: str, max_results: int = 10, sort: str = 'relevance') -> List[Paper]:
@@ -100,36 +102,66 @@ class PubMedSearcher(PaperSource):
                 continue
         return papers
 
+    def _pmcid_for(self, pmid: str) -> str:
+        """Return the PMCID of the article's PubMed Central copy, or "" when it has none."""
+        response = requests.get(
+            self.LINK_URL,
+            params={
+                'dbfrom': 'pubmed',
+                'db': 'pmc',
+                'linkname': 'pubmed_pmc',
+                'id': pmid.strip(),
+                'retmode': 'json',
+            },
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        for linkset in response.json().get('linksets', []):
+            for linksetdb in linkset.get('linksetdbs', []):
+                if linksetdb.get('linkname') == 'pubmed_pmc' and linksetdb.get('links'):
+                    return f"PMC{linksetdb['links'][0]}"
+        return ''
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
-        """Attempt to download a paper's PDF from PubMed.
+        """Download the PDF of a PubMed paper's open access copy in PubMed Central.
 
         Args:
             paper_id: PubMed ID (PMID)
             save_path: Directory to save the PDF
 
         Returns:
-            str: Error message indicating PDF download is not supported
-        
+            str: Path to the downloaded PDF file
+
         Raises:
-            NotImplementedError: Always raises this error as PubMed doesn't provide direct PDF access
+            NotImplementedError: When the article has no copy in PubMed Central, since
+                PubMed itself provides no PDF
         """
-        message = ("PubMed does not provide direct PDF downloads. "
+        pmcid = self._pmcid_for(paper_id)
+        if pmcid:
+            return PMCSearcher().download_pdf(pmcid, save_path)
+        message = ("PubMed does not provide direct PDF downloads, and this article has no copy in PubMed Central. "
                   "Please use the paper's DOI or URL to access the publisher's website.")
         raise NotImplementedError(message)
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
-        """Attempt to read and extract text from a PubMed paper.
+        """Read the full text of a PubMed paper's open access copy in PubMed Central.
 
         Args:
             paper_id: PubMed ID (PMID)
-            save_path: Directory for potential PDF storage (unused)
+            save_path: Directory for the PDF when the text has to come from one
 
         Returns:
-            str: Error message indicating PDF reading is not supported
+            str: The full text, or a message saying why there is none
         """
         message = ("PubMed papers cannot be read directly through this tool. "
                   "Only metadata and abstracts are available through PubMed's API. "
                   "Please use the paper's DOI or URL to access the full text on the publisher's website.")
+        try:
+            pmcid = self._pmcid_for(paper_id)
+        except (requests.RequestException, ValueError) as e:
+            return f"{message} The PubMed Central lookup failed: {e}"
+        if pmcid:
+            return PMCSearcher().read_paper(pmcid, save_path)
         return message
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from xml.etree import ElementTree as ET
 from datetime import datetime
 import logging
 import os
+import re
 from pathlib import Path
 from ..paper import Paper
 from ..utils import extract_doi
@@ -23,6 +24,11 @@ class PMCSearcher(PaperSource):
     EUTILS_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     EUTILS_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
     EUTILS_FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    # PMC Article Datasets on AWS: the open access articles for programs. The article
+    # pages under /pmc/articles/ answer a program with a bot check instead of the PDF.
+    # Each version of an article is a key prefix PMCID.N/, and N grows with each revision.
+    # https://pmc.ncbi.nlm.nih.gov/tools/pmcaws/
+    OA_BUCKET_URL = "https://pmc-oa-opendata.s3.amazonaws.com"
 
     def __init__(self):
         self.session = requests.Session()
@@ -281,6 +287,61 @@ class PMCSearcher(PaperSource):
             logger.warning(f"Error parsing article element: {e}")
             return None
 
+    @staticmethod
+    def _normalize_pmcid(paper_id: str) -> str:
+        pmcid = paper_id.strip().upper()
+        return pmcid if pmcid.startswith('PMC') else f"PMC{pmcid}"
+
+    def _latest_oa_key(self, pmcid: str, extension: str) -> Optional[str]:
+        """Return the bucket key of the newest version's PMCID.N.<extension>, or None.
+
+        A listing page holds at most 1000 keys, and figures count among them, so every
+        page is read.
+        """
+        pattern = re.compile(rf"^{re.escape(pmcid)}\.(\d+)/{re.escape(pmcid)}\.\1\.{extension}$")
+        best_key, best_version, token = None, -1, ""
+        while True:
+            params = {"list-type": "2", "prefix": f"{pmcid}."}
+            if token:
+                params["continuation-token"] = token
+            response = self.session.get(f"{self.OA_BUCKET_URL}/", params=params, timeout=30)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            # S3 answers in its own XML namespace; match on the local name only
+            fields = {}
+            for elem in root.iter():
+                name = elem.tag.rsplit('}', 1)[-1]
+                if name == "Key":
+                    match = pattern.match(elem.text or "")
+                    if match and int(match.group(1)) > best_version:
+                        best_key, best_version = elem.text, int(match.group(1))
+                elif name in ("IsTruncated", "NextContinuationToken"):
+                    fields[name] = elem.text or ""
+            token = fields.get("NextContinuationToken", "")
+            if fields.get("IsTruncated") != "true" or not token:
+                return best_key
+
+    def open_access_text(self, paper_id: str) -> Optional[str]:
+        """Return the plain-text rendering of the article's newest open access version.
+
+        Args:
+            paper_id: PMCID (e.g., 'PMC1234567')
+
+        Returns:
+            The text, or None when the dataset holds no text for the article
+
+        Raises:
+            requests.RequestException: When the dataset cannot be reached
+        """
+        pmcid = self._normalize_pmcid(paper_id)
+        key = self._latest_oa_key(pmcid, "txt")
+        if not key:
+            return None
+        response = self.session.get(f"{self.OA_BUCKET_URL}/{key}", timeout=60)
+        response.raise_for_status()
+        text = response.content.decode("utf-8", errors="replace")
+        return text if text.strip() else None
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         Download PDF of a PMC open access article.
@@ -296,25 +357,23 @@ class PMCSearcher(PaperSource):
             Exception: If download fails
         """
         try:
-            # Ensure PMCID format
-            if not paper_id.startswith('PMC'):
-                paper_id = f"PMC{paper_id}"
+            paper_id = self._normalize_pmcid(paper_id)
 
-            pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{paper_id}/pdf/"
+            key = self._latest_oa_key(paper_id, "pdf")
+            if not key:
+                raise ValueError(f"PMC article {paper_id} has no PDF in the PMC open access dataset")
 
             # Create save directory if it doesn't exist
             save_dir = Path(save_path)
             save_dir.mkdir(parents=True, exist_ok=True)
 
             # Download PDF
-            response = self.session.get(pdf_url, timeout=60)
+            response = self.session.get(f"{self.OA_BUCKET_URL}/{key}", timeout=60)
             response.raise_for_status()
 
-            # Check if response is actually a PDF
-            content_type = response.headers.get('Content-Type', '')
-            if 'pdf' not in content_type.lower():
-                # Might be an HTML page indicating no PDF available
-                raise ValueError(f"PMC article {paper_id} does not have an open access PDF")
+            # Check the header rather than trusting the URL or the content type
+            if not response.content.startswith(b"%PDF-"):
+                raise ValueError(f"PMC article {paper_id}: {key} is not a PDF")
 
             # Generate filename
             filename = f"{paper_id}.pdf"
@@ -348,6 +407,15 @@ class PMCSearcher(PaperSource):
             str: Extracted text content of the paper
         """
         try:
+            # The dataset carries a plain-text rendering of each article, which needs no
+            # PDF extraction; the PDF is the fallback for an article that lacks one
+            try:
+                text = self.open_access_text(paper_id)
+                if text:
+                    return text
+            except requests.RequestException as e:
+                logger.warning(f"PMC open access text for {paper_id} unavailable, trying the PDF: {e}")
+
             # Download PDF first
             pdf_path = self.download_pdf(paper_id, save_path)
 

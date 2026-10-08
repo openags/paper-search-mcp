@@ -96,7 +96,7 @@ This matrix reflects **verified live-integration results** from functional and e
 | Platform | Search | Download | Read | Notes |
 |---|---|---|---|---|
 | arXiv | ✅ | ✅ | ✅ | Open API; reliable |
-| PubMed | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
+| PubMed | ✅ | ✅ (PMC OA) | ✅ (PMC OA) | Open API; reliable; download and read go through the article's PubMed Central copy |
 | bioRxiv | ✅ | ✅ | ✅ | Open API; reliable |
 | medRxiv | ✅ | ✅ | ✅ | Open API; reliable |
 | Google Scholar | ⚠️ | ❌ | ❌ | Upstream bot-detection/rate limits can prevent search; reported as source errors |
@@ -104,9 +104,9 @@ This matrix reflects **verified live-integration results** from functional and e
 | Semantic Scholar | ✅ | ✅ (OA) | ✅ (OA) | Works without key (rate-limited); key improves limits; key rejection (403) retried automatically without key |
 | Crossref | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
 | OpenAlex | ✅ | ❌ | ⚠️ info-only | Open API; free API key improves daily limits |
-| PMC | ✅ | ✅ (OA only) | ✅ (OA only) | OA PDFs only; direct download may be blocked by some proxy environments |
+| PMC | ✅ | ✅ (OA only) | ✅ (OA only) | Files come from the PMC Article Datasets on AWS; direct download may be blocked by some proxy environments |
 | CORE | ✅ | ✅ (record-dependent) | ✅ (record-dependent) | Free key recommended; connector retries with backoff and falls back to key-less on 401/403 |
-| Europe PMC | ✅ | ✅ (OA) | ✅ (OA) | OA PDFs only; direct download may be blocked by some proxy environments |
+| Europe PMC | ✅ | ✅ (OA) | ✅ (OA) | OA PDFs only; an article with a PMC copy comes from the PMC Article Datasets; direct download may be blocked by some proxy environments |
 | dblp | ✅ | ❌ | ⚠️ info-only | Open API; reliable |
 | OpenAIRE | ✅ | ❌ | ❌ | Open API; retries 3× with escalating request profiles on transient 403 |
 | CiteSeerX | ⚠️ | ✅ (record-dependent) | ⚠️ | API endpoint intermittently unavailable / redirects to web archive |

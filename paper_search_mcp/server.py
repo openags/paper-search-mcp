@@ -939,7 +939,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str
     try:
         return arxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.warning("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -969,7 +969,7 @@ async def read_biorxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
     try:
         return biorxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.warning("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -986,7 +986,7 @@ async def read_medrxiv_paper(paper_id: str, save_path: str = "./downloads") -> s
     try:
         return medrxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.warning("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -1003,7 +1003,7 @@ async def read_iacr_paper(paper_id: str, save_path: str = "./downloads") -> str:
     try:
         return iacr_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.warning("Error reading paper %s: %s", paper_id, e)
         return ""
 
 
@@ -1067,7 +1067,7 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
     try:
         return semantic_searcher.read_paper(paper_id, save_path)
     except Exception as e:
-        print(f"Error reading paper {paper_id}: {e}")
+        logger.warning("Error reading paper %s: %s", paper_id, e)
         return ""
 
 

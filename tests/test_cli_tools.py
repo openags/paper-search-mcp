@@ -12,6 +12,7 @@ import pytest
 from mcp.types import TextContent, Tool
 
 from paper_search_mcp import cli, server, tool_cli
+from paper_search_mcp.mcp_compat import tool_input_schema
 
 
 def run_tool(*arguments):
@@ -21,7 +22,7 @@ def run_tool(*arguments):
 
 def test_list_is_exactly_the_mcp_registry(capsys):
     expected = [
-        tool.model_dump(mode="json", exclude_none=True)
+        tool.model_dump(mode="json", exclude_none=True, by_alias=True)
         for tool in asyncio.run(server.mcp.list_tools())
     ]
     assert run_tool("--list") == 0
@@ -53,8 +54,8 @@ def test_all_tool_properties_map_to_arguments_with_mcp_defaults():
     parser = tool_cli.build_tool_parser(tools)
     samples = {"string": "example", "integer": "3", "boolean": "true", "number": "1.5"}
     for tool in tools:
-        properties = tool.inputSchema.get("properties", {})
-        required = tool.inputSchema.get("required", [])
+        properties = tool_input_schema(tool).get("properties", {})
+        required = tool_input_schema(tool).get("required", [])
         # Required argument order follows the schema property order, just like
         # the corresponding Python function signature.
         values = [samples[properties[name]["type"]] for name in properties if name in required]

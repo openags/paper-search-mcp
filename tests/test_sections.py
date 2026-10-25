@@ -11,7 +11,9 @@ from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from paper_search_mcp import sections, server, cli
+from paper_search_mcp.mcp_compat import tool_input_schema
 from paper_search_mcp.sections import SectionExtractionError, extract_pdf_sections, split_sections
+from tests.mcp_test_compat import annotation
 
 
 def make_pdf(pages, *, encrypted=False):
@@ -237,8 +239,8 @@ def test_mcp_tool_registration_schema_and_real_call(root, monkeypatch):
     monkeypatch.setenv("PAPER_SEARCH_MCP_SECTION_PDF_ROOT", str(root))
     registry = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
     tool = registry["extract_sections"]
-    assert tool.annotations.readOnlyHint
-    assert "root" not in tool.inputSchema["properties"]
+    assert annotation(tool, "readOnlyHint")
+    assert "root" not in tool_input_schema(tool)["properties"]
     assert asyncio.run(server.extract_sections("paper.pdf"))["total_pages"] == 3
     with pytest.raises(SectionExtractionError):
         asyncio.run(server.extract_sections(str(root / "paper.pdf")))

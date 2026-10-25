@@ -14,12 +14,17 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
 
 from paper_search_mcp import cli, config, server
 from paper_search_mcp.academic_platforms.scopus import ScopusSearcher
 from paper_search_mcp.academic_platforms.wos import WebOfScienceSearcher
 from paper_search_mcp.search_cache import CacheSettings, SearchCache, search_key
+from tests.mcp_test_compat import (
+    is_error,
+    isolate_http_transport_state,
+    server_name,
+    streamable_http_connection,
+)
 from tests.test_http_auth import app_fixture, keys, listening, token
 
 NEW_TOOLS = {
@@ -157,8 +162,7 @@ def test_shared_cli_tool_cache_and_clear_do_not_touch_pdf_files(monkeypatch, tmp
 @pytest.mark.parametrize("transport", ["sse", "streamable-http"])
 def test_merged_registry_and_cache_are_protected_on_real_http(keys, monkeypatch, tmp_path, transport):
     # Isolate transport state while exercising the real merged MCP registry.
-    monkeypatch.setattr(server.mcp, "settings", server.mcp.settings.model_copy(deep=True))
-    monkeypatch.setattr(server.mcp, "_session_manager", None)
+    isolate_http_transport_state(monkeypatch, server.mcp)
     cache = SearchCache(CacheSettings(enabled=True, path=tmp_path / "protected.sqlite3"))
     cache.put("fixture query", [{"title": "Public result"}], cache.lookup("fixture query")[1])
     monkeypatch.setattr(server, "_SEARCH_CACHE", cache)
@@ -172,17 +176,17 @@ def test_merged_registry_and_cache_are_protected_on_real_http(keys, monkeypatch,
                     assert response.status_code == 401
                 assert cache.status()["entries"] == 1
                 headers = {"Authorization": "Bearer " + token(keys, cfg=cfg)}
-                connection = sse_client(base + "/sse", headers=headers) if transport == "sse" else streamablehttp_client(base + "/mcp", headers=headers)
+                connection = sse_client(base + "/sse", headers=headers) if transport == "sse" else streamable_http_connection(base + "/mcp", headers=headers)
                 async with connection as streams:
                     async with ClientSession(streams[0], streams[1]) as session:
-                        assert (await session.initialize()).serverInfo.name == "paper_search_server"
+                        assert server_name(await session.initialize()) == "paper_search_server"
                         names = {item.name for item in (await session.list_tools()).tools}
                         assert NEW_TOOLS <= names
                         status = await session.call_tool("get_search_cache_status", {})
-                        assert not status.isError
+                        assert not is_error(status)
                         assert json.loads(status.content[0].text)["entries"] == 1
                         cleared = await session.call_tool("clear_search_cache", {})
-                        assert not cleared.isError
+                        assert not is_error(cleared)
                         assert json.loads(cleared.content[0].text)["cleared"] == 1
             asyncio.run(asyncio.wait_for(exercise(), 20))
     assert cache.status()["entries"] == 0
@@ -202,7 +206,7 @@ def test_real_stdio_exposes_all_additions_without_http_auth_or_cache_side_effect
                 await session.initialize()
                 assert NEW_TOOLS <= {item.name for item in (await session.list_tools()).tools}
                 result = await session.call_tool("get_search_cache_status", {})
-                assert not result.isError
+                assert not is_error(result)
                 assert json.loads(result.content[0].text)["enabled"] is False
     asyncio.run(asyncio.wait_for(exercise(), 25))
     assert not (tmp_path / "unused.sqlite3").exists()

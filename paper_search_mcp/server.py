@@ -17,7 +17,6 @@ from pydantic import Field
 from urllib.parse import unquote
 
 import httpx
-from mcp.server.fastmcp import FastMCP
 
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.base_search import BASESearcher
@@ -43,6 +42,7 @@ from .academic_platforms.openreview import OpenReviewSearcher
 from .academic_platforms.unpaywall import UnpaywallResolver, UnpaywallSearcher
 from .academic_platforms.zenodo import ZenodoSearcher
 from .config import get_env, load_env_file
+from .mcp_compat import FastMCP, configure_http, run_transport
 from .search_cache import SearchCache, search_key
 
 # Initialize MCP server
@@ -2098,17 +2098,17 @@ def main(argv: list[str] | None = None) -> None:
     except AuthConfigurationError as exc:
         parser.error(str(exc))
 
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
+    http_options: dict[str, Any] = {"host": args.host, "port": args.port}
     if args.transport == "streamable-http":
-        mcp.settings.streamable_http_path = args.path
+        http_options["streamable_http_path"] = args.path
+    configured = configure_http(mcp, **http_options)
     logger.info(
-        "serving %s on %s:%s", args.transport, mcp.settings.host, mcp.settings.port
+        "serving %s on %s:%s", args.transport, configured.host, configured.port
     )
     if auth_config is not None:
         run_protected_http(mcp, args.transport, auth_config)
     else:
-        mcp.run(transport=args.transport)
+        run_transport(mcp, args.transport)
 
 
 if __name__ == "__main__":

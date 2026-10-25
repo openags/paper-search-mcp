@@ -7,6 +7,9 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from paper_search_mcp.mcp_compat import tool_input_schema
+from tests.mcp_test_compat import annotation, is_error, server_name
+
 
 def test_stdio_initializes_lists_tools_and_calls_without_credentials(tmp_path):
     async def exercise_session():
@@ -20,15 +23,15 @@ def test_stdio_initializes_lists_tools_and_calls_without_credentials(tmp_path):
         async with stdio_client(parameters) as (read, write):
             async with ClientSession(read, write) as session:
                 initialized = await session.initialize()
-                assert initialized.serverInfo.name == "paper_search_server"
+                assert server_name(initialized) == "paper_search_server"
 
                 tools = (await session.list_tools()).tools
                 names = {tool.name for tool in tools}
                 assert {"search_papers", "search_arxiv", "download_with_fallback"} <= names
-                assert all(tool.inputSchema.get("type") == "object" for tool in tools)
+                assert all(tool_input_schema(tool).get("type") == "object" for tool in tools)
                 assert all(
                     tool.annotations is not None
-                    and tool.annotations.openWorldHint is True
+                    and annotation(tool, "openWorldHint") is True
                     for tool in tools
                 )
 
@@ -37,7 +40,7 @@ def test_stdio_initializes_lists_tools_and_calls_without_credentials(tmp_path):
                 result = await session.call_tool(
                     "search_papers", {"query": "test", "sources": "not-a-source"}
                 )
-                assert not result.isError
+                assert not is_error(result)
                 payload = json.loads(result.content[0].text)
                 assert payload["sources_used"] == []
                 assert payload["errors"] == {

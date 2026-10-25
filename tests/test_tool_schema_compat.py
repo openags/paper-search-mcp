@@ -6,6 +6,8 @@ import sys
 from unittest.mock import AsyncMock, patch
 
 from paper_search_mcp import server
+from paper_search_mcp.mcp_compat import tool_input_schema
+from tests.mcp_test_compat import annotation
 
 
 def _contains_nullable_union(schema):
@@ -25,7 +27,7 @@ def test_tool_input_schemas_do_not_expose_nullable_unions():
     tools = asyncio.run(server.mcp.list_tools())
 
     nullable_tools = [
-        tool.name for tool in tools if _contains_nullable_union(tool.inputSchema)
+        tool.name for tool in tools if _contains_nullable_union(tool_input_schema(tool))
     ]
 
     assert nullable_tools == []
@@ -37,7 +39,7 @@ def test_all_tools_declare_open_world_annotations():
     missing = [
         tool.name
         for tool in tools
-        if tool.annotations is None or tool.annotations.openWorldHint is not True
+        if tool.annotations is None or annotation(tool, "openWorldHint") is not True
     ]
 
     assert missing == []
@@ -55,7 +57,7 @@ def test_search_and_lookup_tools_are_annotated_read_only():
     assert [
         tool.name
         for tool in read_only_tools
-        if tool.annotations is None or tool.annotations.readOnlyHint is not True
+        if tool.annotations is None or annotation(tool, "readOnlyHint") is not True
     ] == []
 
 
@@ -88,8 +90,8 @@ def test_file_writing_tools_disclose_destructive_local_updates():
         tool.name
         for tool in file_tools
         if tool.annotations is None
-        or tool.annotations.readOnlyHint is not False
-        or tool.annotations.destructiveHint is not True
+        or annotation(tool, "readOnlyHint") is not False
+        or annotation(tool, "destructiveHint") is not True
     ] == []
 
 
@@ -100,7 +102,7 @@ def test_non_writing_read_tools_are_annotated_read_only():
         for tool in tools
         if tool.name.startswith("read_")
         and tool.annotations is not None
-        and tool.annotations.readOnlyHint is True
+        and annotation(tool, "readOnlyHint") is True
     ]
 
     assert {tool.name for tool in read_only_read_tools} == {
@@ -133,7 +135,7 @@ names = {
 }
 tools = asyncio.run(server.mcp.list_tools())
 print(json.dumps({
-    tool.name: tool.annotations.model_dump()
+    tool.name: tool.annotations.model_dump(by_alias=True)
     for tool in tools
     if tool.name in names
 }))

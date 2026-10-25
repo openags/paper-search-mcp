@@ -16,15 +16,15 @@ from joserfc.jws import JWSRegistry
 from joserfc.registry import HeaderParameter
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
 from paper_search_mcp import http_auth, server
+from paper_search_mcp.mcp_compat import FastMCP, configure_http
 from paper_search_mcp.http_auth import (
     AuthConfigurationError, OAuthConfig, ResourceJWTVerifier,
     create_protected_http_app, load_http_auth_config,
 )
+from tests.mcp_test_compat import is_error, server_name, streamable_http_connection
 
 ISSUER = "https://issuer.example/"
 RESOURCE = "https://papers.example/mcp"
@@ -97,7 +97,9 @@ def app_fixture(keys, monkeypatch, transport="streamable-http", cfg=None, sdk=No
     verifier = ResourceJWTVerifier(cfg, http_client=client)
     with monkeypatch.context() as local:
         local.setattr(http_auth, "ResourceJWTVerifier", lambda config: verifier)
-        sdk = sdk or FastMCP("auth-test", json_response=True)
+        if sdk is None:
+            sdk = FastMCP("auth-test")
+            configure_http(sdk, json_response=True)
         app = create_protected_http_app(sdk, transport, cfg)
         yield app, cfg, verifier, requests
     asyncio.run(client.aclose())
@@ -302,13 +304,13 @@ def test_real_http_mcp_initialize_list_and_call(keys, monkeypatch, transport):
         with listening(app) as base:
             async def exercise():
                 headers = {"Authorization": "Bearer " + token(keys, cfg=cfg)}
-                client = sse_client(base + "/sse", headers=headers) if transport == "sse" else streamablehttp_client(base + "/mcp", headers=headers)
+                client = sse_client(base + "/sse", headers=headers) if transport == "sse" else streamable_http_connection(base + "/mcp", headers=headers)
                 async with client as streams:
                     async with ClientSession(streams[0], streams[1]) as session:
-                        assert (await session.initialize()).serverInfo.name == "auth-test"
+                        assert server_name(await session.initialize()) == "auth-test"
                         assert [tool.name for tool in (await session.list_tools()).tools] == ["echo"]
                         result = await session.call_tool("echo", {"value": "protected success"})
-                        assert not result.isError
+                        assert not is_error(result)
                         assert result.content[0].text == "protected success"
             asyncio.run(asyncio.wait_for(exercise(), 20))
 
@@ -390,7 +392,7 @@ def test_stdio_real_session_with_invalid_http_auth_settings(tmp_path):
         )
         async with stdio_client(parameters) as streams:
             async with ClientSession(*streams) as session:
-                assert (await session.initialize()).serverInfo.name == "paper_search_server"
+                assert server_name(await session.initialize()) == "paper_search_server"
                 assert "search_papers" in {tool.name for tool in (await session.list_tools()).tools}
     asyncio.run(asyncio.wait_for(exercise(), 30))
 

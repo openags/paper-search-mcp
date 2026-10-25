@@ -8,6 +8,7 @@ import pytest
 from paper_search_mcp import cli, config, server
 from paper_search_mcp.academic_platforms.institutional import CredentialsRequiredError, ProviderResponseError
 from paper_search_mcp.academic_platforms.wos import WebOfScienceSearcher
+from tests.mcp_test_compat import annotation
 
 
 def hit(number=1):
@@ -127,7 +128,7 @@ def test_only_honest_mcp_capabilities_registered():
     assert 'search_wos' in tools
     assert 'download_wos' not in tools
     assert 'read_wos_paper' not in tools
-    assert tools['search_wos'].annotations.readOnlyHint is True
+    assert annotation(tools['search_wos'], "readOnlyHint") is True
 
 
 @pytest.mark.parametrize('method', ['download_pdf', 'read_paper'])

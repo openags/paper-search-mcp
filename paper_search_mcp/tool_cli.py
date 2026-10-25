@@ -29,6 +29,8 @@ def _argument_type(schema: dict[str, Any]) -> Any:
 
 
 def build_tool_parser(tools: list[Any]) -> argparse.ArgumentParser:
+    from .mcp_compat import tool_input_schema
+
     parser = argparse.ArgumentParser(
         prog="paper-search tool",
         description="Call the same tools as the MCP server. Required arguments "
@@ -48,8 +50,9 @@ def build_tool_parser(tools: list[Any]) -> argparse.ArgumentParser:
             formatter_class=argparse.RawDescriptionHelpFormatter,
             allow_abbrev=False,
         )
-        properties = tool.inputSchema.get("properties", {})
-        required = set(tool.inputSchema.get("required", []))
+        schema = tool_input_schema(tool)
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
         for name, schema in properties.items():
             help_text = schema.get("description", schema.get("title", name))
             if name in required:
@@ -79,6 +82,12 @@ def _print_result(result: Any) -> None:
     """Render the MCP result as ordinary JSON or plain text for shell users."""
     # FastMCP returns (content, structuredContent) for typed return values. Its
     # generated schemas wrap primitive, list, and generic dict returns in result.
+    # MCP SDK 2.x returns a CallToolResult instead; map it onto the same shapes.
+    if not isinstance(result, (tuple, list, dict)):
+        from .mcp_compat import call_tool_payload
+
+        content, structured = call_tool_payload(result)
+        result = (content, structured) if structured is not None else content
     if isinstance(result, tuple):
         _content, structured = result
         result = structured.get("result", structured)
@@ -94,7 +103,9 @@ def _print_result(result: Any) -> None:
         if all(getattr(item, "type", None) == "text" for item in result):
             print("\n".join(item.text for item in result))
         else:
-            print(json.dumps([item.model_dump(mode="json") for item in result], indent=2))
+            print(json.dumps(
+                [item.model_dump(mode="json", by_alias=True) for item in result], indent=2
+            ))
 
 
 async def cmd_tool(args: argparse.Namespace) -> int:
@@ -115,7 +126,10 @@ async def cmd_tool(args: argparse.Namespace) -> int:
             if parsed._tool_name is not None:
                 parser.error("--list cannot be combined with a tool invocation")
             print(json.dumps(
-                {"tools": [tool.model_dump(mode="json", exclude_none=True) for tool in tools]},
+                {"tools": [
+                    tool.model_dump(mode="json", exclude_none=True, by_alias=True)
+                    for tool in tools
+                ]},
                 indent=2,
             ))
             return 0
@@ -129,5 +143,18 @@ async def cmd_tool(args: argparse.Namespace) -> int:
         _print_result(await mcp.call_tool(parsed._tool_name, arguments))
         return 0
     except Exception as exc:
-        print(json.dumps({"status": "error", "message": str(exc)}))
+        print(json.dumps({"status": "error", "message": _error_message(exc)}))
         return 1
+
+
+def _error_message(exc: BaseException) -> str:
+    """Keep the tool's own reason in the message on every MCP SDK version.
+
+    SDK 1.x raises ``ToolError("Error executing tool X: <reason>")``; SDK 2.x
+    raises ``"Error executing tool X"`` and chains the reason as ``__cause__``.
+    """
+    message = str(exc)
+    cause = str(exc.__cause__) if exc.__cause__ is not None else ""
+    if cause and cause not in message:
+        message = f"{message}: {cause}"
+    return message

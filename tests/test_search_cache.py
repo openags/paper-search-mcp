@@ -12,6 +12,7 @@ import pytest
 
 from paper_search_mcp import server
 from paper_search_mcp.search_cache import CacheSettings, SearchCache, search_key
+from tests.mcp_test_compat import annotation
 
 
 @pytest.fixture
@@ -348,8 +349,8 @@ def test_mcp_cache_tools_and_annotations(cache):
         assert asyncio.run(server.get_search_cache_status())["enabled"]
         assert asyncio.run(server.clear_search_cache())["cleared"] == 0
     tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
-    assert tools["get_search_cache_status"].annotations.readOnlyHint
-    assert tools["clear_search_cache"].annotations.destructiveHint
+    assert annotation(tools["get_search_cache_status"], "readOnlyHint")
+    assert annotation(tools["clear_search_cache"], "destructiveHint")
 
 
 def _process_cache_writer(args):

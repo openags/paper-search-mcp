@@ -25,7 +25,6 @@ from mcp.server.auth.routes import (
     build_resource_metadata_url,
     create_protected_resource_routes,
 )
-from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl, TypeAdapter, UrlConstraints
 from starlette.applications import Starlette
@@ -34,6 +33,7 @@ from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.routing import Mount
 
 from .config import load_env_file
+from .mcp_compat import FastMCP, build_http_app, configure_http, http_settings
 
 _PREFIX = "PAPER_SEARCH_MCP_"
 _FIELDS = (
@@ -242,15 +242,15 @@ def create_protected_http_app(server: FastMCP, transport: str, config: OAuthConf
     parsed = urlsplit(config.resource_url)
     # Preserve local access, and permit only the configured public authority.
     # Never trust arbitrary Host or forwarded headers just because auth is on.
-    existing = server.settings.transport_security
+    existing = http_settings(server).transport_security
     allowed_hosts = list(existing.allowed_hosts) if existing else []
     allowed_origins = list(existing.allowed_origins) if existing else []
-    server.settings.transport_security = TransportSecuritySettings(
+    configure_http(server, transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=list(dict.fromkeys([*allowed_hosts, parsed.netloc])),
         allowed_origins=list(dict.fromkeys([*allowed_origins, f"{parsed.scheme}://{parsed.netloc}"])),
-    )
-    inner = server.sse_app() if transport == "sse" else server.streamable_http_app()
+    ))
+    inner = build_http_app(server, transport)
     verifier = ResourceJWTVerifier(config)
     gate = RequireAuthMiddleware(
         inner, list(config.scopes), build_resource_metadata_url(resource)
@@ -280,7 +280,8 @@ def run_protected_http(server: FastMCP, transport: str, config: OAuthConfig) -> 
     """Use the same ASGI runner as the SDK, after successful configuration."""
     import uvicorn
     app = create_protected_http_app(server, transport, config)
+    options = http_settings(server)
     uvicorn.run(
-        app, host=server.settings.host, port=server.settings.port,
+        app, host=options.host, port=options.port,
         log_level=server.settings.log_level.lower(),
     )

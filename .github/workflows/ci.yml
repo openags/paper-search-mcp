@@ -15,6 +15,8 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.10', '3.12', '3.13']
+        # Both MCP SDK generations are supported (see paper_search_mcp/mcp_compat.py).
+        mcp-sdk: ['1', '2']
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,8 +29,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+      - name: Install dependencies (MCP SDK ${{ matrix.mcp-sdk }}.x)
+        run: |
+          if [ "${{ matrix.mcp-sdk }}" = "1" ]; then
+            uv pip install --system -e ".[dev]" "mcp[cli]>=1.27.2,<2" "fastmcp>=3.4.2,<4"
+          else
+            uv pip install --system -e ".[dev]" "mcp[cli]>=2.2,<3" "fastmcp>=4.1,<5"
+          fi
 
       - name: Compile source
         run: python -m compileall -q paper_search_mcp tests
@@ -53,6 +60,7 @@ jobs:
           tests/test_tool_schema_compat.py
           tests/test_mcp_stdio.py
           tests/test_server_transport.py
+          tests/test_mcp_compat.py
           tests/test_http_auth.py
           tests/test_stabilization_regressions.py
           tests/test_search_timeouts.py

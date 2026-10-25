@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from paper_search_mcp import server
+from paper_search_mcp.mcp_compat import configure_http, http_settings
 
 
 class TestServerTransport(unittest.TestCase):
@@ -23,11 +24,7 @@ class TestServerTransport(unittest.TestCase):
         self.saved_env = {key: os.environ.get(key) for key in self.ENV_KEYS}
         for key in self.ENV_KEYS:
             os.environ.pop(key, None)
-        self.saved_settings = (
-            server.mcp.settings.host,
-            server.mcp.settings.port,
-            server.mcp.settings.streamable_http_path,
-        )
+        self.saved_settings = http_settings(server.mcp)
 
     def tearDown(self):
         for key, value in self.saved_env.items():
@@ -35,11 +32,26 @@ class TestServerTransport(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-        (
-            server.mcp.settings.host,
-            server.mcp.settings.port,
-            server.mcp.settings.streamable_http_path,
-        ) = self.saved_settings
+        configure_http(
+            server.mcp,
+            host=self.saved_settings.host,
+            port=self.saved_settings.port,
+            streamable_http_path=self.saved_settings.streamable_http_path,
+        )
+
+    def assert_ran(self, run, transport):
+        """The SDK runner was started once with the configured HTTP options.
+
+        MCP SDK 1.x reads host/port/path from server settings; SDK 2.x takes
+        them as run() keyword arguments, so only check them when passed.
+        """
+        run.assert_called_once()
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["transport"], transport)
+        configured = http_settings(server.mcp)
+        for name in ("host", "port", "streamable_http_path"):
+            if name in kwargs:
+                self.assertEqual(kwargs[name], getattr(configured, name))
 
     def test_stdio_is_default_and_starts_orphan_watchdog(self):
         with (
@@ -74,11 +86,11 @@ class TestServerTransport(unittest.TestCase):
                 ]
             )
 
-        run.assert_called_once_with(transport="streamable-http")
+        self.assert_ran(run, "streamable-http")
         thread.assert_not_called()
-        self.assertEqual(server.mcp.settings.host, "0.0.0.0")
-        self.assertEqual(server.mcp.settings.port, 9010)
-        self.assertEqual(server.mcp.settings.streamable_http_path, "/papers")
+        self.assertEqual(http_settings(server.mcp).host, "0.0.0.0")
+        self.assertEqual(http_settings(server.mcp).port, 9010)
+        self.assertEqual(http_settings(server.mcp).streamable_http_path, "/papers")
 
     def test_prefixed_environment_configures_network_transport(self):
         os.environ.update(
@@ -91,9 +103,9 @@ class TestServerTransport(unittest.TestCase):
         with patch.object(server.mcp, "run") as run:
             server.main([])
 
-        run.assert_called_once_with(transport="sse")
-        self.assertEqual(server.mcp.settings.host, "127.0.0.2")
-        self.assertEqual(server.mcp.settings.port, 9011)
+        self.assert_ran(run, "sse")
+        self.assertEqual(http_settings(server.mcp).host, "127.0.0.2")
+        self.assertEqual(http_settings(server.mcp).port, 9011)
 
     def test_cli_overrides_legacy_environment_aliases(self):
         os.environ.update(
@@ -115,9 +127,9 @@ class TestServerTransport(unittest.TestCase):
                 ]
             )
 
-        run.assert_called_once_with(transport="streamable-http")
-        self.assertEqual(server.mcp.settings.host, "127.0.0.3")
-        self.assertEqual(server.mcp.settings.port, 9012)
+        self.assert_ran(run, "streamable-http")
+        self.assertEqual(http_settings(server.mcp).host, "127.0.0.3")
+        self.assertEqual(http_settings(server.mcp).port, 9012)
 
     def test_invalid_network_options_fail_before_server_start(self):
         invalid_options = (

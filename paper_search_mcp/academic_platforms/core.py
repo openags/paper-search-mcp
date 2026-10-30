@@ -9,6 +9,7 @@ import time
 from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
+from ..file_naming import paper_output_path
 from .base import PaperSource
 from pypdf import PdfReader
 
@@ -295,11 +296,15 @@ class CORESearcher(PaperSource):
         try:
             paper_details = self._get_paper_details(paper_id)
             paper_title = 'paper'
+            paper_authors: list[str] = []
+            paper_date = ''
 
             # First try detail endpoint (preferred when API key is available)
             pdf_url = ''
             if paper_details:
                 paper_title = paper_details.get('title', 'paper')
+                paper_authors = self._authors_from_details(paper_details)
+                paper_date = paper_details.get('publishedDate') or paper_details.get('yearPublished') or ''
                 download_url = paper_details.get('downloadUrl')
                 if download_url and isinstance(download_url, str) and download_url.lower().endswith('.pdf'):
                     pdf_url = download_url
@@ -325,6 +330,8 @@ class CORESearcher(PaperSource):
                 if selected:
                     pdf_url = selected.pdf_url
                     paper_title = selected.title or paper_title
+                    paper_authors = selected.authors or paper_authors
+                    paper_date = selected.published_date or paper_date
 
             if not pdf_url:
                 raise ValueError(f"CORE paper {paper_id} does not have an accessible PDF")
@@ -343,10 +350,14 @@ class CORESearcher(PaperSource):
                 raise ValueError(f"URL does not point to a PDF file: {pdf_url}")
 
             # Generate filename
-            title = paper_title.replace(' ', '_')[:50]
-            filename = f"core_{paper_id}_{title}.pdf"
-            filename = ''.join(c for c in filename if c.isalnum() or c in ('_', '-', '.'))
-            filepath = save_dir / filename
+            filepath = paper_output_path(
+                str(save_dir),
+                title=paper_title,
+                authors=paper_authors,
+                published_date=paper_date,
+                identifier=str(paper_id),
+                extension=".pdf",
+            )
 
             # Save PDF
             with open(filepath, 'wb') as f:
@@ -376,6 +387,22 @@ class CORESearcher(PaperSource):
         except Exception as e:
             logger.warning(f"Error getting CORE paper details: {e}")
             return None
+
+    @staticmethod
+    def _authors_from_details(details: Dict[str, Any]) -> list[str]:
+        authors = details.get('authors') or []
+        values: list[str] = []
+        if isinstance(authors, list):
+            for author in authors:
+                if isinstance(author, dict):
+                    value = author.get('name') or " ".join(
+                        part for part in (author.get('given'), author.get('family')) if part
+                    )
+                else:
+                    value = str(author)
+                if value:
+                    values.append(str(value))
+        return values
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """

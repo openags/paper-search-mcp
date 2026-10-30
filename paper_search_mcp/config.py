@@ -28,7 +28,7 @@ def _strip_quotes(value: str) -> str:
 
 def _load_env_from_file(env_file: Path) -> None:
     for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
+        line = raw_line.strip().lstrip("\ufeff")
         if not line or line.startswith("#"):
             continue
 

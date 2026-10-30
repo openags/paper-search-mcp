@@ -14,6 +14,7 @@ import requests
 from pypdf import PdfReader
 
 from ..paper import Paper
+from ..file_naming import paper_output_path
 from ..utils import extract_doi
 from .base import PaperSource
 
@@ -55,6 +56,8 @@ class ArxivSearcher(PaperSource):
         return os.path.join(os.fspath(save_path), *paper_id.split("/")) + ".pdf"
 
     def __init__(self):
+        self._paper_metadata = {}
+        self._download_paths = {}
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'paper-search-mcp/1.0 (mailto:openags@example.com)',
@@ -203,7 +206,13 @@ class ArxivSearcher(PaperSource):
         papers = []
         for entry in feed.entries:
             try:
-                papers.append(self._paper_from_entry(entry))
+                paper = self._paper_from_entry(entry)
+                papers.append(paper)
+                self._paper_metadata[paper.paper_id] = {
+                    "title": paper.title,
+                    "authors": paper.authors,
+                    "published_date": paper.published_date,
+                }
             except Exception as e:
                 logger.warning("Error parsing arXiv entry: %s", e)
         return papers
@@ -237,8 +246,43 @@ class ArxivSearcher(PaperSource):
             doi=doi
         )
 
+    def _metadata_for_id(self, paper_id: str) -> dict:
+        cached = self._paper_metadata.get(paper_id)
+        if cached is not None:
+            return cached
+        try:
+            response = self._request_with_retries({"id_list": paper_id})
+            if response is None or response.status_code not in (200, 406):
+                return {}
+            feed = feedparser.parse(response.content)
+            if not feed.entries:
+                return {}
+            entry = feed.entries[0]
+            metadata = {
+                "title": entry.title,
+                "authors": [author.name for author in entry.authors],
+                "published_date": datetime.strptime(entry.published, '%Y-%m-%dT%H:%M:%SZ'),
+            }
+            self._paper_metadata[paper_id] = metadata
+            return metadata
+        except Exception:
+            return {}
+
     def download_pdf(self, paper_id: str, save_path: str) -> str:
-        output_file = self._pdf_path(paper_id, save_path)
+        self._pdf_path(paper_id, save_path)
+        metadata = self._metadata_for_id(paper_id)
+        cache_key = (paper_id, os.fspath(save_path))
+        output_file = self._download_paths.get(cache_key)
+        if output_file is None:
+            output_file = str(paper_output_path(
+                save_path,
+                title=metadata.get("title", ""),
+                authors=metadata.get("authors", []),
+                published_date=metadata.get("published_date", ""),
+                identifier=paper_id,
+                extension=".pdf",
+                unique=True,
+            ))
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"
         temporary_path = ""
         if not self._request_lock.acquire(timeout=30):
@@ -285,6 +329,7 @@ class ArxivSearcher(PaperSource):
                     os.remove(temporary_path)
                 except OSError:
                     logger.warning("Could not remove temporary arXiv download")
+        self._download_paths[cache_key] = output_file
         return output_file
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
@@ -297,8 +342,8 @@ class ArxivSearcher(PaperSource):
         Returns:
             str: The extracted text content of the paper
         """
-        # First ensure we have the PDF
-        pdf_path = self._pdf_path(paper_id, save_path)
+        legacy_path = self._pdf_path(paper_id, save_path)
+        pdf_path = self._download_paths.get((paper_id, os.fspath(save_path)), legacy_path)
         if not os.path.exists(pdf_path):
             pdf_path = self.download_pdf(paper_id, save_path)
         

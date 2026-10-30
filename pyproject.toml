@@ -62,4 +62,5 @@ paper-search = "paper_search_mcp.cli:main"
 packages = ["paper_search_mcp"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 python_files = ["test_*.py"]

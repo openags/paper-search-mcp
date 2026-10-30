@@ -16,6 +16,7 @@ from urllib.parse import quote
 from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class DOAJSearcher(PaperSource):
             self.session.headers.update({'X-API-Key': self.api_key})
             logger.info("DOAJ API key configured")
         else:
-            logger.warning(
+            logger.info(
                 "No DOAJ API key provided. Searches will use public access "
                 "with rate limits (100 requests/hour). "
                 "Get a free API key at: https://doaj.org/apply-for-api-key/"
@@ -402,16 +403,18 @@ class DOAJSearcher(PaperSource):
 
         os.makedirs(save_path, exist_ok=True)
 
-        # Create safe filename
-        safe_id = paper_id.replace('/', '_').replace(':', '_')
-        filename = f"doaj_{safe_id}.pdf"
-        output_file = os.path.join(save_path, filename)
+        output_file = paper_output_path_for_paper(
+            save_path,
+            paper,
+            identifier=str(paper_id),
+            extension=".pdf",
+        )
 
         with open(output_file, 'wb') as f:
             f.write(response.content)
 
         logger.info(f"Downloaded PDF to {output_file}")
-        return output_file
+        return str(output_file)
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Read paper text from PDF.

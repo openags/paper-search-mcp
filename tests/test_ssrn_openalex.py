@@ -7,6 +7,7 @@ import requests
 
 from paper_search_mcp.academic_platforms.openalex import OpenAlexSearcher
 from paper_search_mcp.academic_platforms.ssrn import SSRNSearcher
+from paper_search_mcp.file_naming import paper_filename
 from tests.test_openreview import response, pdf_bytes
 
 
@@ -170,7 +171,7 @@ def test_ssrn_download_checks_page_and_pdf_identity(tmp_path):
     page = response(); page.text = paper_page()
     search.session.get = Mock(side_effect=[page, response(body=pdf_bytes())])
     path = search.download_pdf("ssrn:123", str(tmp_path))
-    assert path.endswith("ssrn_123.pdf")
+    assert path == str(tmp_path / paper_filename(title="Verified public research", identifier="123"))
     assert all(c.kwargs["allow_redirects"] is False for c in search.session.get.call_args_list)
 
 

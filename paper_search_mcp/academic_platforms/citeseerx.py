@@ -12,6 +12,7 @@ import urllib3
 from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 
 logger = logging.getLogger(__name__)
@@ -320,11 +321,12 @@ class CiteSeerXSearcher(PaperSource):
             # Create save directory if it doesn't exist
             os.makedirs(save_path, exist_ok=True)
 
-            # Generate filename
-            filename = f"{paper_id.replace('/', '_')}.pdf"
-            if paper.doi:
-                filename = f"{paper.doi.replace('/', '_')}.pdf"
-            filepath = os.path.join(save_path, filename)
+            filepath = paper_output_path_for_paper(
+                save_path,
+                paper,
+                identifier=paper.doi or str(paper_id),
+                extension=".pdf",
+            )
 
             # Save PDF
             with open(filepath, 'wb') as f:
@@ -332,7 +334,7 @@ class CiteSeerXSearcher(PaperSource):
                     f.write(chunk)
 
             logger.info(f"Downloaded PDF to {filepath}")
-            return filepath
+            return str(filepath)
 
         except requests.RequestException as e:
             logger.error(f"Error downloading PDF: {e}")

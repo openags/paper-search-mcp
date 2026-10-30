@@ -24,7 +24,9 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        run: |
+          uv sync --frozen --extra dev --python "${{ matrix.python-version }}"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Compile source
         run: python -m compileall -q paper_search_mcp tests
@@ -70,6 +72,10 @@ jobs:
           tests/test_acm.py
           tests/test_fallback.py
           tests/test_paper.py
+          tests/test_crossref_resolver.py
+          tests/test_file_naming.py
+          tests/test_server.py
+          tests/test_cli_fallback.py
           -q --tb=short
 
       - name: Build package

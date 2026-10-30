@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from ..config import get_env
+from ..file_naming import paper_output_path
 from ..paper import Paper
 from .base import PaperSource
 
@@ -144,9 +145,19 @@ class ZenodoSearcher(PaperSource):
                 "The record may be embargoed or restricted."
             )
 
-        os.makedirs(save_path, exist_ok=True)
-        safe_name = re.sub(r"[^a-zA-Z0-9._-]+", "_", record_id) or record_id
-        output_path = os.path.join(save_path, f"zenodo_{safe_name}.pdf")
+        metadata = record.get("metadata", {})
+        output_path = paper_output_path(
+            save_path,
+            title=metadata.get("title", ""),
+            authors=[
+                (creator.get("name") or "").strip()
+                for creator in metadata.get("creators", [])
+                if isinstance(creator, dict) and (creator.get("name") or "").strip()
+            ],
+            published_date=metadata.get("publication_date", ""),
+            identifier=record_id,
+            extension=".pdf",
+        )
 
         try:
             dl_response = self.session.get(pdf_url, stream=True, timeout=60)

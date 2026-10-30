@@ -264,14 +264,16 @@ def test_cli_and_mcp_search_options_parity(searcher, monkeypatch, capsys):
 
 @pytest.mark.parametrize('status,request_full_text,code', [('full_text', True, 0), ('abstract_only', True, 2),
     ('abstract_only', False, 0), ('unavailable', False, 1), ('unavailable', True, 1)])
-def test_cli_read_status_and_exit_code(status, request_full_text, code, monkeypatch, capsys):
+def test_cli_read_status_and_exit_code(status, request_full_text, code, monkeypatch, capsys, tmp_path):
+    save_path = str(tmp_path / "configured-output")
+    monkeypatch.setenv("PAPER_SEARCH_MCP_DEFAULT_OUTPUT", save_path)
     searcher = Mock()
     searcher.read_paper.return_value = {'status': status}
     monkeypatch.setattr(cli, 'SEARCHERS', {'scopus': searcher})
     args = cli.build_parser().parse_args(['read', 'scopus', '1'] + (['--full-text'] if request_full_text else []))
     assert asyncio.run(cli.cmd_read(args)) == code
     assert json.loads(capsys.readouterr().out)['status'] == status
-    searcher.read_paper.assert_called_once_with('1', './downloads', full_text=request_full_text)
+    searcher.read_paper.assert_called_once_with('1', save_path, full_text=request_full_text)
 
 
 def test_missing_credentials_exposed_in_both_aggregates(capsys):

@@ -15,6 +15,7 @@ import requests
 from paper_search_mcp import cli, config
 from paper_search_mcp.academic_platforms import arxiv, biorxiv, medrxiv
 from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
+from paper_search_mcp.file_naming import paper_filename
 
 
 def run_command(command, *args):
@@ -191,6 +192,7 @@ def test_download_retry_leaves_one_json_result(
     searcher = (
         module.BioRxivSearcher() if source == "biorxiv" else module.MedRxivSearcher()
     )
+    monkeypatch.setattr(module, "metadata_for_identifier", Mock(return_value={}))
     response = Mock(content=b"%PDF-1.7\nmock")
     failure = requests.ConnectionError("offline")
     attempts = [failure, response] if succeeds else [failure] * searcher.max_retries
@@ -205,7 +207,7 @@ def test_download_retry_leaves_one_json_result(
     assert result["status"] == ("ok" if succeeds else "error")
     assert "Attempt 1 failed, retrying..." in caplog.text
     if succeeds:
-        assert (tmp_path / "10.1101_example.pdf").read_bytes() == b"%PDF-1.7\nmock"
+        assert (tmp_path / paper_filename(identifier="10.1101/example")).read_bytes() == b"%PDF-1.7\nmock"
     else:
         assert "Failed to download PDF after 3 attempts" in result["message"]
 
@@ -221,8 +223,11 @@ def test_read_failure_diagnostic_does_not_become_paper_text(
     module, searcher_class, monkeypatch, tmp_path, capsys, caplog
 ):
     source = module.__name__.rsplit(".", 1)[-1]
-    (tmp_path / "example.pdf").write_bytes(b"invalid PDF")
-    monkeypatch.setattr(cli, "SEARCHERS", {source: searcher_class()})
+    pdf_path = tmp_path / paper_filename(identifier="example")
+    pdf_path.write_bytes(b"invalid PDF")
+    searcher = searcher_class()
+    monkeypatch.setattr(searcher, "download_pdf", Mock(return_value=str(pdf_path)))
+    monkeypatch.setattr(cli, "SEARCHERS", {source: searcher})
     monkeypatch.setattr(module, "PdfReader", Mock(side_effect=ValueError("bad PDF")))
 
     assert run_command("read", source, "example", "-o", str(tmp_path)) == 0
@@ -230,6 +235,7 @@ def test_read_failure_diagnostic_does_not_become_paper_text(
     # Preserve the existing empty-string result on a PDF parsing failure.
     assert capsys.readouterr().out == "\n"
     assert "Error reading PDF for paper example: bad PDF" in caplog.text
+    searcher.download_pdf.assert_called_once_with("example", str(tmp_path))
 
 
 def test_arxiv_read_failure_is_a_cli_error(monkeypatch, tmp_path, capsys):

@@ -10,6 +10,7 @@ import requests
 from pypdf import PdfReader, PdfWriter
 
 from paper_search_mcp.academic_platforms import semantic
+from paper_search_mcp.file_naming import paper_filename
 
 
 @pytest.fixture
@@ -39,6 +40,16 @@ def searcher(monkeypatch):
         semantic.requests, "get", Mock(side_effect=AssertionError("Unexpected request"))
     )
     return instance
+
+
+def expected_pdf_path(searcher, save_path, paper_id="paper/123"):
+    paper = searcher.get_paper_details.return_value
+    return Path(save_path) / paper_filename(
+        title=paper.title,
+        authors=paper.authors,
+        published_date=paper.published_date,
+        identifier=paper_id,
+    )
 
 
 def mock_response(monkeypatch, content, content_type="application/pdf", status=200):
@@ -100,7 +111,7 @@ def test_pdf_bytes_are_saved_regardless_of_url_or_mime(
 
     result = searcher.download_pdf("paper/123", str(save_path))
 
-    expected = save_path / "semantic_paper_123.pdf"
+    expected = expected_pdf_path(searcher, save_path)
     assert result == str(expected)
     assert expected.read_bytes() == content
     assert list(save_path.iterdir()) == [expected]
@@ -114,16 +125,20 @@ def test_read_paper_downloads_valid_pdf_and_keeps_existing_result_format(
 
     result = searcher.read_paper("paper/123", str(tmp_path))
 
-    expected = tmp_path / "semantic_paper_123.pdf"
+    expected = expected_pdf_path(searcher, tmp_path)
     assert expected.read_bytes() == pdf_bytes
     assert result == f"PDF downloaded to {expected}, but unable to extract readable text"
 
 
+@pytest.mark.parametrize("legacy_cache", [False, True])
 def test_read_paper_reuses_cached_file_and_metadata_format(
-    searcher, monkeypatch, tmp_path, pdf_bytes
+    searcher, monkeypatch, tmp_path, pdf_bytes, legacy_cache
 ):
-    cached = tmp_path / "semantic_paper_123.pdf"
+    cached = (tmp_path / "semantic_paper_123.pdf" if legacy_cache
+              else expected_pdf_path(searcher, tmp_path))
     cached.write_bytes(pdf_bytes)
+    if not legacy_cache:
+        searcher._download_paths[("paper/123", str(tmp_path))] = str(cached)
     reader = Mock(return_value=SimpleNamespace(pages=[Mock(extract_text=lambda: "Paper text")]))
     monkeypatch.setattr(semantic, "PdfReader", reader)
 
@@ -131,7 +146,8 @@ def test_read_paper_reuses_cached_file_and_metadata_format(
 
     semantic.requests.get.assert_not_called()
     searcher.get_paper_details.assert_called_once_with("paper/123")
-    reader.assert_called_once_with(str(cached))
+    reader.assert_called_once()
+    assert Path(reader.call_args.args[0]) == cached
     assert cached.read_bytes() == pdf_bytes
     assert result.startswith("Title: Test paper\nAuthors: Test Author\nPublished Date: None\n")
     assert f"PDF downloaded to: {cached}\n" in result
@@ -167,7 +183,8 @@ def test_request_errors_keep_download_error_prefix(
 
 @pytest.mark.parametrize("content,status", [(b"", 200), (b"<html>Login</html>", 200), (b"", 503)])
 def test_failed_download_preserves_cached_file(searcher, monkeypatch, tmp_path, pdf_bytes, content, status):
-    cached = tmp_path / "semantic_paper_123.pdf"
+    cached = expected_pdf_path(searcher, tmp_path)
+    searcher._download_paths[("paper/123", str(tmp_path))] = str(cached)
     cached.write_bytes(pdf_bytes)
     mock_response(monkeypatch, content, status=status)
 
@@ -183,7 +200,8 @@ def test_failed_download_preserves_cached_file(searcher, monkeypatch, tmp_path, 
 def test_write_failures_clean_temporary_file_and_preserve_cache(
     searcher, monkeypatch, tmp_path, pdf_bytes, existing_file, failure
 ):
-    cached = tmp_path / "semantic_paper_123.pdf"
+    cached = expected_pdf_path(searcher, tmp_path)
+    searcher._download_paths[("paper/123", str(tmp_path))] = str(cached)
     if existing_file:
         cached.write_bytes(pdf_bytes)
     mock_response(monkeypatch, pdf_bytes)
@@ -226,7 +244,8 @@ def test_write_failures_clean_temporary_file_and_preserve_cache(
 def test_successful_download_replaces_cache_only_after_complete_write(
     searcher, monkeypatch, tmp_path, pdf_bytes
 ):
-    cached = tmp_path / "semantic_paper_123.pdf"
+    cached = expected_pdf_path(searcher, tmp_path)
+    searcher._download_paths[("paper/123", str(tmp_path))] = str(cached)
     old_content = pdf_bytes + b"\n% previous download\n"
     cached.write_bytes(old_content)
     mock_response(monkeypatch, pdf_bytes)
@@ -252,7 +271,8 @@ def test_successful_download_replaces_cache_only_after_complete_write(
 def test_malformed_pdf_body_does_not_replace_cache(
     searcher, monkeypatch, tmp_path, pdf_bytes, existing_file, body
 ):
-    cached = tmp_path / "semantic_paper_123.pdf"
+    cached = expected_pdf_path(searcher, tmp_path)
+    searcher._download_paths[("paper/123", str(tmp_path))] = str(cached)
     if existing_file:
         cached.write_bytes(pdf_bytes)
     # Truncate a real PDF before its cross-reference table/trailer as well.
@@ -295,11 +315,77 @@ def test_long_valid_paper_id_does_not_exceed_temporary_filename_limit(
     searcher, monkeypatch, tmp_path, pdf_bytes
 ):
     paper_id = "URL:https://example.org/" + "x" * 208
+    paper = searcher.get_paper_details.return_value
+    paper.title = ""
+    paper.authors = []
     mock_response(monkeypatch, pdf_bytes)
 
     result = searcher.download_pdf(paper_id, str(tmp_path))
 
-    expected = tmp_path / f"semantic_{paper_id.replace('/', '_')}.pdf"
+    expected = expected_pdf_path(searcher, tmp_path, paper_id)
     assert result == str(expected)
     assert expected.read_bytes() == pdf_bytes
     assert list(tmp_path.iterdir()) == [expected]
+
+
+def text_pdf(text):
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=100)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+    content = DecodedStreamObject()
+    content.set_data(f"BT /F1 12 Tf 10 50 Td ({text}) Tj ET".encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_identical_metadata_keeps_each_paper_download_and_read_separate(
+    searcher, monkeypatch, tmp_path
+):
+    first_content = text_pdf("First paper text")
+    second_content = text_pdf("Second paper text")
+    mock_response(monkeypatch, first_content)
+    first_path = Path(searcher.download_pdf("paper/first", str(tmp_path)))
+    get = mock_response(monkeypatch, second_content)
+    second_text = searcher.read_paper("paper/second", str(tmp_path))
+    second_path = Path(searcher._download_paths[("paper/second", str(tmp_path))])
+
+    assert first_path != second_path
+    assert first_path.read_bytes() == first_content
+    assert second_path.read_bytes() == second_content
+    assert "Second paper text" in second_text
+    assert "First paper text" not in second_text
+    get.assert_called_once()
+    get.reset_mock()
+    first_text = searcher.read_paper("paper/first", str(tmp_path))
+    assert "First paper text" in first_text
+    assert "Second paper text" not in first_text
+    get.assert_not_called()
+
+
+def test_unassociated_metadata_filename_is_preserved_and_not_read(
+    searcher, monkeypatch, tmp_path
+):
+    unrelated_path = expected_pdf_path(searcher, tmp_path)
+    unrelated = text_pdf("Unrelated paper text")
+    unrelated_path.write_bytes(unrelated)
+    expected = text_pdf("Requested paper text")
+    get = mock_response(monkeypatch, expected)
+
+    result = searcher.read_paper("paper/123", str(tmp_path))
+
+    assert "Requested paper text" in result
+    assert "Unrelated paper text" not in result
+    assert unrelated_path.read_bytes() == unrelated
+    get.assert_called_once()
+    assert len(list(tmp_path.glob("*.pdf"))) == 2

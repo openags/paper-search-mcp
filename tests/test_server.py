@@ -2,9 +2,29 @@ import asyncio
 import os
 import tempfile
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from paper_search_mcp import server
+from paper_search_mcp.paper import Paper
+
+
+def _mock_arxiv_papers(count: int = 3):
+    return [
+        Paper(
+            paper_id=f"2401.0000{i}",
+            title=f"Mock arXiv Paper {i}",
+            authors=["Ada Lovelace"],
+            abstract="mock abstract",
+            doi="",
+            published_date=datetime(2024, 1, 1),
+            pdf_url=f"https://arxiv.org/pdf/2401.0000{i}",
+            url=f"https://arxiv.org/abs/2401.0000{i}",
+            source="arxiv",
+        )
+        for i in range(count)
+    ]
 
 
 class TestPaperSearchServer(unittest.TestCase):
@@ -79,28 +99,42 @@ class TestPaperSearchServer(unittest.TestCase):
         )
 
     def test_search_arxiv(self):
-        """Test the search_arxiv tool returns 10 results."""
-        result = asyncio.run(server.search_arxiv("machine learning", max_results=10))
-        self.assertIsInstance(result, list, "Result should be a list")
-        self.assertEqual(len(result), 10, "Should return exactly 10 results")
+        papers = _mock_arxiv_papers(10)
+
+        with patch.object(server.arxiv_searcher, "search", return_value=papers):
+            result = asyncio.run(server.search_arxiv("machine learning", max_results=10))
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 10)
         for paper in result:
-            self.assertIn('title', paper, "Each result should contain a title")
-            self.assertIn('paper_id', paper, "Each result should contain a paper_id")
+            self.assertIn("title", paper)
+            self.assertIn("paper_id", paper)
 
     def test_download_arxiv_from_search(self):
-        """Test downloading 10 arXiv papers based on search results."""
-        # 先搜索 10 个结果
-        search_results = asyncio.run(server.search_arxiv("machine learning", max_results=10))
-        self.assertEqual(len(search_results), 10, "Search should return 10 results")
+        papers = _mock_arxiv_papers(3)
 
-        # 每次测试使用隔离目录，避免污染仓库或干扰其他下载测试。
-        with tempfile.TemporaryDirectory() as save_path:
+        with patch.object(server.arxiv_searcher, "search", return_value=papers):
+            search_results = asyncio.run(server.search_arxiv("machine learning", max_results=3))
+
+        self.assertEqual(len(search_results), 3)
+
+        def download_pdf(paper_id, save_path):
+            output_file = Path(save_path) / f"{paper_id}.pdf"
+            output_file.write_bytes(b"%PDF-1.4\n")
+            return str(output_file)
+
+        with (
+            tempfile.TemporaryDirectory() as save_path,
+            patch.object(server.arxiv_searcher, "download_pdf", side_effect=download_pdf) as download,
+        ):
             for paper in search_results:
-                paper_id = paper['paper_id']
+                paper_id = paper["paper_id"]
                 result = asyncio.run(server.download_arxiv(paper_id, save_path))
                 self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
                 self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
                 self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
+                download.assert_called_with(paper_id, save_path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -106,6 +106,8 @@ def test_get_searcher_only_initializes_requested_source_and_caches(monkeypatch):
     ("read", "read_paper", "Paper text"),
 ])
 def test_single_source_commands_are_lazy(command, method, result, monkeypatch, capsys, tmp_path):
+    save_path = str(tmp_path / "configured-output")
+    monkeypatch.setenv("PAPER_SEARCH_MCP_DEFAULT_OUTPUT", save_path)
     if command == "download":
         result = str(tmp_path / "example.pdf")
         Path(result).write_bytes(b"%PDF-1.7\nmock")
@@ -117,7 +119,7 @@ def test_single_source_commands_are_lazy(command, method, result, monkeypatch, c
     args = cli.build_parser().parse_args([command, "arxiv", "1234.5678"])
     assert asyncio.run(getattr(cli, f"cmd_{command}")(args)) == 0
     assert list(cli.SEARCHERS) == ["arxiv"]
-    getattr(searcher, method).assert_called_once_with("1234.5678", "./downloads")
+    getattr(searcher, method).assert_called_once_with("1234.5678", save_path)
     output = capsys.readouterr().out
     if command == "download":
         assert json.loads(output) == {"status": "ok", "path": result}

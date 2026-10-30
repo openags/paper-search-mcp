@@ -9,6 +9,7 @@ import time
 import random
 from ..paper import Paper
 from ..utils import extract_doi
+from ..file_naming import paper_output_path_for_paper
 from .base import PaperSource
 import logging
 from pypdf import PdfReader
@@ -34,6 +35,7 @@ class SemanticSearcher(PaperSource):
     ]
 
     def __init__(self):
+        self._download_paths = {}
         self._setup_session()
 
     def _setup_session(self):
@@ -456,9 +458,18 @@ class SemanticSearcher(PaperSource):
             paper = self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
+            cache_key = (paper_id, os.fspath(save_path))
+            pdf_path = self._download_paths.get(cache_key)
+            if pdf_path is None:
+                pdf_path = str(paper_output_path_for_paper(
+                    save_path,
+                    paper,
+                    identifier=paper_id,
+                    extension=".pdf",
+                    unique=True,
+                ))
             self._download_pdf_file(paper.pdf_url, pdf_path)
+            self._download_paths[cache_key] = pdf_path
             return pdf_path
         except Exception as e:
             logger.error(f"PDF download error: {e}")
@@ -484,18 +495,25 @@ class SemanticSearcher(PaperSource):
             str: Extracted text from the PDF or error message
         """
         try:
-            os.makedirs(save_path, exist_ok=True)
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
-
-            if not os.path.exists(pdf_path):
-                paper = self.get_paper_details(paper_id)
+            paper = self.get_paper_details(paper_id)
+            legacy_path = os.path.join(save_path, f"semantic_{paper_id.replace('/', '_')}.pdf")
+            cache_key = (paper_id, os.fspath(save_path))
+            pdf_path = self._download_paths.get(cache_key)
+            if pdf_path is None and os.path.exists(legacy_path):
+                pdf_path = legacy_path
+            if pdf_path is None or not os.path.exists(pdf_path):
                 if not paper or not paper.pdf_url:
                     return f"Error: Could not find PDF URL for paper {paper_id}"
-
+                if pdf_path is None:
+                    pdf_path = str(paper_output_path_for_paper(
+                        save_path,
+                        paper,
+                        identifier=paper_id,
+                        extension=".pdf",
+                        unique=True,
+                    ))
                 self._download_pdf_file(paper.pdf_url, pdf_path)
-            else:
-                paper = self.get_paper_details(paper_id)
+                self._download_paths[cache_key] = pdf_path
 
             # Extract text using PyPDF
             reader = PdfReader(pdf_path)

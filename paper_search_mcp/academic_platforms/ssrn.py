@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 
 from .base import PaperSource
 from ..paper import Paper
+from ..file_naming import paper_output_path
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,13 @@ class SSRNSearcher(PaperSource):
             if response.status_code != 200:
                 raise RuntimeError(f"SSRN public PDF returned HTTP {response.status_code}; no login or redirect fallback is attempted")
             title = self._pdf_titles.get(abstract_id, "")
-            return save_verified_pdf(response, Path(save_path) / f"ssrn_{abstract_id}.pdf", title)
+            output_path = paper_output_path(
+                save_path,
+                title=title,
+                identifier=abstract_id,
+                extension=".pdf",
+            )
+            return save_verified_pdf(response, output_path, title)
 
     def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Download and extract text from SSRN PDF when accessible.

@@ -156,6 +156,7 @@ import requests
 from pypdf import PdfWriter
 
 from paper_search_mcp.academic_platforms import arxiv
+from paper_search_mcp.file_naming import paper_filename
 
 
 @pytest.fixture
@@ -170,7 +171,9 @@ def pdf_bytes():
 @pytest.fixture
 def searcher(monkeypatch):
     monkeypatch.setattr(arxiv.ArxivSearcher, '_pace_locked', Mock())
-    return arxiv.ArxivSearcher()
+    instance = arxiv.ArxivSearcher()
+    monkeypatch.setattr(instance, '_metadata_for_id', Mock(return_value={}))
+    return instance
 
 
 def response(monkeypatch, chunks, status=200):
@@ -195,7 +198,8 @@ def test_success_is_paced_streamed_and_atomically_saved(searcher, monkeypatch, t
 
 @pytest.mark.parametrize('status', [403, 404, 429, 500, 503])
 def test_http_failure_preserves_old_file_without_retry(searcher, monkeypatch, tmp_path, status):
-    target = tmp_path / '2406.17835.pdf'
+    target = tmp_path / paper_filename(identifier='2406.17835')
+    searcher._download_paths[('2406.17835', str(tmp_path))] = str(target)
     target.write_bytes(b'old preserved bytes')
     get = response(monkeypatch, [b'<html>denied</html>'], status)
     with pytest.raises(requests.RequestException, match=f'HTTP {status}'):
@@ -207,7 +211,8 @@ def test_http_failure_preserves_old_file_without_retry(searcher, monkeypatch, tm
 
 @pytest.mark.parametrize('body', [b'', b'<html>denied</html>', b'%PDF-1.7\ntruncated'])
 def test_invalid_body_preserves_old_pdf(searcher, monkeypatch, tmp_path, body, pdf_bytes):
-    target = tmp_path / '2406.17835.pdf'
+    target = tmp_path / paper_filename(identifier='2406.17835')
+    searcher._download_paths[('2406.17835', str(tmp_path))] = str(target)
     target.write_bytes(pdf_bytes)
     response(monkeypatch, [body])
     with pytest.raises(requests.RequestException, match='PDF'):
@@ -217,7 +222,8 @@ def test_invalid_body_preserves_old_pdf(searcher, monkeypatch, tmp_path, body, p
 
 
 def test_partial_stream_timeout_cleans_temp_and_preserves_old(searcher, monkeypatch, tmp_path, pdf_bytes):
-    target = tmp_path / '2406.17835.pdf'
+    target = tmp_path / paper_filename(identifier='2406.17835')
+    searcher._download_paths[('2406.17835', str(tmp_path))] = str(target)
     target.write_bytes(pdf_bytes)
     def interrupted():
         yield b'%PDF-1.7\n'
@@ -233,7 +239,8 @@ def test_partial_stream_timeout_cleans_temp_and_preserves_old(searcher, monkeypa
 
 def test_size_limit_cleans_partial_without_replacing_target(searcher, monkeypatch, tmp_path, pdf_bytes):
     monkeypatch.setattr(searcher, 'MAX_PDF_BYTES', 10)
-    target = tmp_path / '2406.17835.pdf'
+    target = tmp_path / paper_filename(identifier='2406.17835')
+    searcher._download_paths[('2406.17835', str(tmp_path))] = str(target)
     target.write_bytes(pdf_bytes)
     response(monkeypatch, [b'%PDF-1.7\nmore'])
     with pytest.raises(requests.RequestException, match='limit'):
@@ -254,7 +261,8 @@ def test_invalid_id_rejected_before_network_or_directory(searcher, monkeypatch, 
 
 
 def test_replace_failure_keeps_previous_file_and_removes_partial(searcher, monkeypatch, tmp_path, pdf_bytes):
-    target = tmp_path / '2406.17835.pdf'
+    target = tmp_path / paper_filename(identifier='2406.17835')
+    searcher._download_paths[('2406.17835', str(tmp_path))] = str(target)
     target.write_bytes(b'previous')
     response(monkeypatch, [pdf_bytes])
     monkeypatch.setattr(arxiv.os, 'replace', Mock(side_effect=PermissionError('locked')))
@@ -279,3 +287,43 @@ def test_read_preserves_text_with_an_empty_page(searcher, monkeypatch, tmp_path,
     monkeypatch.setattr(arxiv, 'PdfReader', lambda path: SimpleNamespace(pages=[
         SimpleNamespace(extract_text=lambda: None), SimpleNamespace(extract_text=lambda: 'Paper text')]))
     assert searcher.read_paper('2406.17835', str(tmp_path)) == 'Paper text'
+
+
+def test_identical_metadata_downloads_do_not_overwrite_each_other(
+    searcher, monkeypatch, tmp_path, pdf_bytes
+):
+    searcher._metadata_for_id.return_value = {
+        "title": "The same title", "authors": ["Test Author"], "published_date": "2024",
+    }
+    first_content = pdf_bytes + b"\n% First paper\n"
+    second_content = pdf_bytes + b"\n% Second paper\n"
+    response(monkeypatch, [first_content])
+    first_path = searcher.download_pdf('2406.17835', str(tmp_path))
+    response(monkeypatch, [second_content])
+    second_path = searcher.download_pdf('2406.17836', str(tmp_path))
+
+    assert first_path != second_path
+    assert open(first_path, 'rb').read() == first_content
+    assert open(second_path, 'rb').read() == second_content
+    monkeypatch.setattr(arxiv, 'PdfReader', lambda path: SimpleNamespace(pages=[
+        SimpleNamespace(extract_text=lambda: 'First paper text' if str(path) == first_path else 'Second paper text')]))
+    monkeypatch.setattr(arxiv.requests, 'get', Mock(side_effect=AssertionError('Unexpected request')))
+    assert searcher.read_paper('2406.17835', str(tmp_path)) == 'First paper text'
+    assert searcher.read_paper('2406.17836', str(tmp_path)) == 'Second paper text'
+
+
+def test_unassociated_filename_is_preserved_and_refresh_reuses_associated_path(
+    searcher, monkeypatch, tmp_path, pdf_bytes
+):
+    unrelated = tmp_path / paper_filename(identifier='2406.17835')
+    unrelated.write_bytes(b'Unrelated existing file')
+    response(monkeypatch, [pdf_bytes])
+    path = searcher.download_pdf('2406.17835', str(tmp_path))
+    assert path != str(unrelated)
+    assert unrelated.read_bytes() == b'Unrelated existing file'
+    updated = pdf_bytes + b'\n% Updated content\n'
+    response(monkeypatch, [updated])
+    assert searcher.download_pdf('2406.17835', str(tmp_path)) == path
+    assert open(path, 'rb').read() == updated
+    assert unrelated.read_bytes() == b'Unrelated existing file'
+    assert len(list(tmp_path.glob('*.pdf'))) == 2

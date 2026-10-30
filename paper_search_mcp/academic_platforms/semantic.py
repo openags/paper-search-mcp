@@ -1,6 +1,8 @@
 from typing import List, Optional
 from datetime import datetime
+from io import BytesIO
 import os
+import tempfile
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -17,6 +19,10 @@ from ..config import get_env
 logger = logging.getLogger(__name__)
 
 
+class SemanticScholarRequestError(RuntimeError):
+    """Raised when Semantic Scholar reports a request-level failure."""
+
+
 class SemanticSearcher(PaperSource):
     """Semantic Scholar paper search implementation"""
 
@@ -29,6 +35,7 @@ class SemanticSearcher(PaperSource):
     ]
 
     def __init__(self):
+        self._download_paths = {}
         self._setup_session()
 
     def _setup_session(self):
@@ -163,8 +170,8 @@ class SemanticSearcher(PaperSource):
         """
         Make a request to the Semantic Scholar API with optional API key.
         """
-        max_retries = 3
         api_key = self.get_api_key()
+        max_retries = 3 if api_key else 1
         retry_delay = 5 if api_key is None else 2
         has_retried_without_key = False
 
@@ -190,6 +197,16 @@ class SemanticSearcher(PaperSource):
 
                 # 检查是否是429错误（限流）
                 if response.status_code == 429:
+                    if api_key is None:
+                        logger.warning(
+                            "Semantic Scholar anonymous access is rate-limited (429). "
+                            "Skipping retries; set SEMANTIC_SCHOLAR_API_KEY for higher limits."
+                        )
+                        return {
+                            "error": "rate_limited",
+                            "status_code": 429,
+                            "message": "Too many requests. Set SEMANTIC_SCHOLAR_API_KEY for higher limits.",
+                        }
                     if attempt < max_retries - 1:
                         retry_after = response.headers.get("Retry-After")
                         wait_time = (
@@ -228,6 +245,16 @@ class SemanticSearcher(PaperSource):
                     has_retried_without_key = True
                     continue
                 if e.response.status_code == 429:
+                    if api_key is None:
+                        logger.warning(
+                            "Semantic Scholar anonymous access is rate-limited (429). "
+                            "Skipping retries; set SEMANTIC_SCHOLAR_API_KEY for higher limits."
+                        )
+                        return {
+                            "error": "rate_limited",
+                            "status_code": 429,
+                            "message": "Too many requests. Set SEMANTIC_SCHOLAR_API_KEY for higher limits.",
+                        }
                     if attempt < max_retries - 1:
                         retry_after = e.response.headers.get("Retry-After")
                         wait_time = (
@@ -323,7 +350,13 @@ class SemanticSearcher(PaperSource):
                     logger.error(f"Rate limited by Semantic Scholar API: {error_msg}")
                 else:
                     logger.error(f"Semantic Scholar API error: {error_msg}")
-                return papers
+                status_code = response.get("status_code")
+                reason = response.get("error")
+                if status_code:
+                    reason = f"{reason}, HTTP {status_code}"
+                raise SemanticScholarRequestError(
+                    f"Semantic Scholar API request failed ({reason}): {error_msg}"
+                )
 
             # Check response status code
             if not hasattr(response, "status_code") or response.status_code != 200:
@@ -331,7 +364,9 @@ class SemanticSearcher(PaperSource):
                 logger.error(
                     f"Semantic Scholar search failed with status {status_code}"
                 )
-                return papers
+                raise SemanticScholarRequestError(
+                    f"Semantic Scholar search failed with status {status_code}"
+                )
 
             data = response.json()
             results = data["data"]
@@ -352,10 +387,53 @@ class SemanticSearcher(PaperSource):
                 if paper:
                     papers.append(paper)
 
+        except SemanticScholarRequestError:
+            raise
         except Exception as e:
             logger.error(f"Semantic Scholar search error: {e}")
 
         return papers[:max_results]
+
+    @staticmethod
+    def _download_pdf_file(pdf_url: str, pdf_path: str) -> None:
+        """Validate response bytes before atomically replacing the destination."""
+        response = requests.get(pdf_url, timeout=30)
+        response.raise_for_status()
+        content = response.content
+        if not content:
+            raise requests.RequestException("Downloaded PDF is empty")
+        # Allow a BOM/leading whitespace, but not HTML containing a PDF marker.
+        # Neither a .pdf URL nor application/pdf MIME type proves the body is PDF.
+        if not re.match(rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)", content[:1024]):
+            raise requests.RequestException("Response does not contain a PDF header")
+        try:
+            # A plausible header alone also occurs in truncated/bogus responses.
+            # Parse without requiring text extraction or decrypting valid PDFs.
+            PdfReader(BytesIO(content))
+        except Exception as exc:
+            raise requests.RequestException("Downloaded PDF could not be parsed") from exc
+
+        directory = os.path.dirname(pdf_path)
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=directory,
+                prefix=".semantic-",
+                suffix=".part",
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                temporary.write(content)
+            os.replace(temporary_path, pdf_path)
+            temporary_path = ""
+        finally:
+            if temporary_path:
+                try:
+                    os.remove(temporary_path)
+                except OSError:
+                    logger.warning("Could not remove partial PDF: %s", temporary_path)
 
     def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
@@ -380,20 +458,19 @@ class SemanticSearcher(PaperSource):
             paper = self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
-            pdf_url = paper.pdf_url
-            pdf_response = requests.get(pdf_url, timeout=30)
-            pdf_response.raise_for_status()
-
-            pdf_path = paper_output_path_for_paper(
-                save_path,
-                paper,
-                identifier=paper_id,
-                extension=".pdf",
-            )
-
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
-            return str(pdf_path)
+            cache_key = (paper_id, os.fspath(save_path))
+            pdf_path = self._download_paths.get(cache_key)
+            if pdf_path is None:
+                pdf_path = str(paper_output_path_for_paper(
+                    save_path,
+                    paper,
+                    identifier=paper_id,
+                    extension=".pdf",
+                    unique=True,
+                ))
+            self._download_pdf_file(paper.pdf_url, pdf_path)
+            self._download_paths[cache_key] = pdf_path
+            return pdf_path
         except Exception as e:
             logger.error(f"PDF download error: {e}")
             return f"Error downloading PDF: {e}"
@@ -418,10 +495,25 @@ class SemanticSearcher(PaperSource):
             str: Extracted text from the PDF or error message
         """
         try:
-            pdf_path = self.download_pdf(paper_id, save_path)
-            if not str(pdf_path).endswith(".pdf"):
-                return str(pdf_path)
             paper = self.get_paper_details(paper_id)
+            legacy_path = os.path.join(save_path, f"semantic_{paper_id.replace('/', '_')}.pdf")
+            cache_key = (paper_id, os.fspath(save_path))
+            pdf_path = self._download_paths.get(cache_key)
+            if pdf_path is None and os.path.exists(legacy_path):
+                pdf_path = legacy_path
+            if pdf_path is None or not os.path.exists(pdf_path):
+                if not paper or not paper.pdf_url:
+                    return f"Error: Could not find PDF URL for paper {paper_id}"
+                if pdf_path is None:
+                    pdf_path = str(paper_output_path_for_paper(
+                        save_path,
+                        paper,
+                        identifier=paper_id,
+                        extension=".pdf",
+                        unique=True,
+                    ))
+                self._download_pdf_file(paper.pdf_url, pdf_path)
+                self._download_paths[cache_key] = pdf_path
 
             # Extract text using PyPDF
             reader = PdfReader(pdf_path)

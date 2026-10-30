@@ -2,10 +2,12 @@ import unittest
 import os
 import requests
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from pypdf import PdfWriter
 from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
 
 
@@ -39,7 +41,11 @@ class TestSemanticSearcher(unittest.TestCase):
             pdf_url="https://example.com/paper.pdf",
         )
         response = Mock()
-        response.content = b"%PDF-1.4 test content"
+        stream = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=100, height=100)
+        writer.write(stream)
+        response.content = stream.getvalue()
         response.raise_for_status.return_value = None
 
         with tempfile.TemporaryDirectory(prefix="semantic_mock_download_") as test_dir:
@@ -50,7 +56,7 @@ class TestSemanticSearcher(unittest.TestCase):
             expected_path = Path(test_dir) / "Lovelace_2024_A_Test_Paper.pdf"
             self.assertEqual(result, str(expected_path))
             self.assertTrue(expected_path.exists())
-            self.assertEqual(expected_path.read_bytes(), b"%PDF-1.4 test content")
+            self.assertEqual(expected_path.read_bytes(), response.content)
 
     def test_parse_paper_handles_missing_publication_date(self):
         item = {

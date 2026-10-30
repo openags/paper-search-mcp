@@ -1,6 +1,5 @@
 # tests/test_crossref.py
 import unittest
-import os
 import requests
 from paper_search_mcp.academic_platforms.crossref import CrossRefSearcher
 
@@ -100,6 +99,54 @@ class TestCrossRefSearcher(unittest.TestCase):
         # Test that the session has the correct user agent
         self.assertIn("paper-search-mcp", self.searcher.session.headers.get('User-Agent', ''))
         self.assertIn("mailto:", self.searcher.session.headers.get('User-Agent', ''))
+
+    def test_non_paper_types_are_filtered(self):
+        """Regression: CrossRef returns peer-review material, figures, and other
+        sub-components with real DOIs. Without filtering they pollute search
+        results as 'phantom papers' that have a DOI but no citable content.
+        Bug observed: search for 'myodural bridge' returned multiple
+        'Review for ...' and 'Figure 5: ...' entries as if they were papers."""
+        for item_type in (
+            "peer-review",
+            "peer-review-material",
+            "component",
+            "report-component",
+            "figure",
+        ):
+            with self.subTest(item_type=item_type):
+                item = {
+                    'DOI': f'10.1000/{item_type}',
+                    'type': item_type.upper(),
+                    'title': [f'Artifact of type {item_type}'],
+                }
+                self.assertIsNone(self.searcher._parse_crossref_item(item))
+
+    def test_journal_article_passes_filter(self):
+        """Sanity check: real journal-article types must still pass through."""
+        journal_item = {
+            'DOI': '10.1002/ca.21261',
+            'type': 'journal-article',
+            'title': ['Connection between the spinal dura mater and suboccipital musculature'],
+            'author': [{'given': 'Kourosh', 'family': 'Kahkeshani'}],
+            'is-referenced-by-count': 57,
+        }
+        paper = self.searcher._parse_crossref_item(journal_item)
+        self.assertIsNotNone(paper, "journal-article must pass the filter")
+        self.assertEqual(paper.doi, '10.1002/ca.21261')
+        self.assertTrue(any('Kahkeshani' in a for a in paper.authors),
+                        f"authors must contain 'Kahkeshani', got {paper.authors}")
+
+    def test_citable_non_article_outputs_are_not_filtered(self):
+        for item_type in ("dataset", "report", "standard", "dissertation"):
+            with self.subTest(item_type=item_type):
+                item = {
+                    'DOI': f'10.1000/{item_type}',
+                    'type': item_type,
+                    'title': [f'Citable output of type {item_type}'],
+                }
+                paper = self.searcher._parse_crossref_item(item)
+                self.assertIsNotNone(paper)
+                self.assertEqual(paper.extra['crossref_type'], item_type)
 
 if __name__ == '__main__':
     unittest.main()

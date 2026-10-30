@@ -3,7 +3,6 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import requests
 import time
-import random
 from ..paper import Paper
 from .base import PaperSource
 import logging
@@ -12,11 +11,24 @@ logger = logging.getLogger(__name__)
 
 class CrossRefSearcher(PaperSource):
     """Searcher for CrossRef database papers"""
-    
+
     BASE_URL = "https://api.crossref.org"
-    
+
     # User agent for polite API usage as per CrossRef etiquette
     USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/Dragonatorul/paper-search-mcp; mailto:paper-search@example.org)"
+
+    # Only filter types that unambiguously describe review artifacts or pieces
+    # of another work. Datasets, reports, and standards remain valid citable
+    # research outputs and must not be hidden by a generic paper search.
+    NON_PAPER_TYPES = frozenset(
+        {
+            "peer-review",
+            "peer-review-material",
+            "component",
+            "report-component",
+            "figure",
+        }
+    )
     
     def __init__(self):
         self.session = requests.Session()
@@ -90,8 +102,19 @@ class CrossRefSearcher(PaperSource):
             return []
     
     def _parse_crossref_item(self, item: Dict[str, Any]) -> Optional[Paper]:
-        """Parse a CrossRef API item into a Paper object."""
+        """Parse a CrossRef API item into a Paper object.
+
+        Returns None for non-paper types (peer-review, component, figure, etc.)
+        so they are excluded from search results.
+        """
         try:
+            # Filter out non-paper types (peer-review material, figures, etc.)
+            item_type = str(item.get('type') or '').strip().lower()
+            if item_type in self.NON_PAPER_TYPES:
+                logger.debug("Filtering out non-paper CrossRef item (type=%s, DOI=%s)",
+                             item_type, item.get('DOI', 'unknown'))
+                return None
+
             # Extract basic information
             doi = item.get('DOI', '')
             title = self._extract_title(item)

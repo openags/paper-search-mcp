@@ -9,7 +9,6 @@ from ..paper import Paper
 from ..utils import extract_doi
 from ..config import get_env
 from .base import PaperSource
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +16,7 @@ class PubMedSearcher(PaperSource):
     """Searcher for PubMed papers"""
     SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     FETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+    REQUEST_TIMEOUT_SECONDS = 30
 
     def _ncbi_metadata_params(self) -> dict:
         params = {'tool': 'paper-search-mcp'}
@@ -50,7 +50,7 @@ class PubMedSearcher(PaperSource):
                 'sort': sort,
             }
             search_params.update(self._ncbi_metadata_params())
-            search_response = requests.get(self.SEARCH_URL, params=search_params, timeout=30)
+            search_response = requests.get(self.SEARCH_URL, params=search_params, timeout=self.REQUEST_TIMEOUT_SECONDS)
             search_response.raise_for_status()
             search_root = ET.fromstring(search_response.content)
             ids = [id.text for id in search_root.findall('.//Id') if id.text]
@@ -63,7 +63,7 @@ class PubMedSearcher(PaperSource):
                 'retmode': 'xml'
             }
             fetch_params.update(self._ncbi_metadata_params())
-            fetch_response = requests.get(self.FETCH_URL, params=fetch_params, timeout=30)
+            fetch_response = requests.get(self.FETCH_URL, params=fetch_params, timeout=self.REQUEST_TIMEOUT_SECONDS)
             fetch_response.raise_for_status()
             fetch_root = ET.fromstring(fetch_response.content)
         except Exception as exc:

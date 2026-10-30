@@ -45,8 +45,8 @@ class TestConfigEnv(unittest.TestCase):
 
     def test_loads_from_custom_env_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            env_path = Path(tmp_dir) / "test.env"
-            env_path.write_text(
+            env_file = Path(tmp_dir) / "test.env"
+            env_file.write_text(
                 "PAPER_SEARCH_MCP_UNPAYWALL_EMAIL=test@example.com\n",
                 encoding="utf-8",
             )
@@ -54,7 +54,7 @@ class TestConfigEnv(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "PAPER_SEARCH_MCP_ENV_FILE": str(env_path),
+                    "PAPER_SEARCH_MCP_ENV_FILE": str(env_file),
                 },
                 clear=True,
             ):

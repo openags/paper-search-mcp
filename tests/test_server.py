@@ -1,7 +1,10 @@
 import asyncio
+import os
+import tempfile
 import unittest
 from datetime import datetime
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from paper_search_mcp import server
 from paper_search_mcp.paper import Paper
@@ -25,6 +28,16 @@ def _mock_arxiv_papers(count: int = 3):
 
 
 class TestPaperSearchServer(unittest.TestCase):
+    def test_main_uses_local_stdio_transport(self):
+        with (
+            patch.object(server.mcp, "run") as run,
+            patch.object(server.threading, "Thread") as thread,
+        ):
+            server.main([])
+
+        run.assert_called_once_with(transport="stdio")
+        thread.return_value.start.assert_called_once_with()
+
     def test_all_sources_include_new_platforms(self):
         self.assertIn("dblp", server.ALL_SOURCES)
         self.assertIn("openaire", server.ALL_SOURCES)
@@ -39,6 +52,51 @@ class TestPaperSearchServer(unittest.TestCase):
     def test_parse_sources_with_new_platforms(self):
         parsed = server._parse_sources("dblp,doaj,base,zenodo,hal,ssrn,unpaywall,invalid")
         self.assertEqual(parsed, ["dblp", "doaj", "base", "zenodo", "hal", "ssrn", "unpaywall"])
+
+    def test_search_papers_reports_invalid_source_in_mixed_request(self):
+        paper = {
+            "paper_id": "1234.5678",
+            "title": "Test Paper",
+            "authors": "Ada Lovelace",
+            "doi": "",
+            "source": "arxiv",
+        }
+        with patch.object(server, "search_arxiv", new=AsyncMock(return_value=[paper])):
+            result = asyncio.run(
+                server.search_papers("test", sources="arxiv,not-a-source")
+            )
+
+        self.assertEqual(result["sources_used"], ["arxiv"])
+        self.assertEqual(result["source_results"], {"arxiv": 1})
+        self.assertEqual(
+            result["errors"]["not-a-source"],
+            "Unknown or unavailable source.",
+        )
+
+    def test_search_papers_surfaces_connector_exception(self):
+        with patch.object(
+            server,
+            "search_semantic",
+            new=AsyncMock(side_effect=RuntimeError("HTTP 429: Too many requests")),
+        ):
+            result = asyncio.run(server.search_papers("test", sources="semantic"))
+
+        self.assertEqual(result["source_results"], {"semantic": 0})
+        self.assertEqual(result["errors"]["semantic"], "HTTP 429: Too many requests")
+
+    def test_search_papers_reports_invalid_only_request(self):
+        result = asyncio.run(
+            server.search_papers("test", sources="not-a-source")
+        )
+
+        self.assertEqual(result["sources_used"], [])
+        self.assertEqual(
+            result["errors"],
+            {
+                "not-a-source": "Unknown or unavailable source.",
+                "sources": "No valid sources selected.",
+            },
+        )
 
     def test_search_arxiv(self):
         papers = _mock_arxiv_papers(10)
@@ -60,15 +118,22 @@ class TestPaperSearchServer(unittest.TestCase):
 
         self.assertEqual(len(search_results), 3)
 
-        with patch.object(
-            server.arxiv_searcher,
-            "download_pdf",
-            side_effect=lambda paper_id, save_path: f"{save_path}/{paper_id}.pdf",
+        def download_pdf(paper_id, save_path):
+            output_file = Path(save_path) / f"{paper_id}.pdf"
+            output_file.write_bytes(b"%PDF-1.4\n")
+            return str(output_file)
+
+        with (
+            tempfile.TemporaryDirectory() as save_path,
+            patch.object(server.arxiv_searcher, "download_pdf", side_effect=download_pdf) as download,
         ):
             for paper in search_results:
                 paper_id = paper["paper_id"]
-                result = asyncio.run(server.download_arxiv(paper_id, "/tmp/paper-search-test"))
-                self.assertEqual(result, f"/tmp/paper-search-test/{paper_id}.pdf")
+                result = asyncio.run(server.download_arxiv(paper_id, save_path))
+                self.assertIsInstance(result, str, f"Result for {paper_id} should be a file path")
+                self.assertTrue(result.endswith(".pdf"), f"Result for {paper_id} should be a PDF file path")
+                self.assertTrue(os.path.exists(result), f"PDF file for {paper_id} should exist on disk")
+                download.assert_called_with(paper_id, save_path)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,83 @@
+# Contribution provenance
+
+This ledger records source pull requests that were consolidated into a later
+maintainer pull request. It supplements Git history; it is not intended to be a
+complete list of repository contributors.
+
+## Consolidation PR #115
+
+| Source PR | Contributor | Incorporated contribution |
+| --- | --- | --- |
+| [#50](https://github.com/openags/paper-search-mcp/pull/50) | `@Copilot` (bot) | OAuth compatibility documentation used in the consolidated documentation update. |
+| [#54](https://github.com/openags/paper-search-mcp/pull/54) | `@Copilot` (bot) | Google Scholar consent-interstitial detection and retry behavior. |
+| [#62](https://github.com/openags/paper-search-mcp/pull/62) | `@dli1986` (PR) and `@DuoLi723` (commit) | Diagnosis and handling of non-datetime publication dates from Zenodo and HAL. |
+| [#84](https://github.com/openags/paper-search-mcp/pull/84) | `@berntson` | Resolving relative Sci-Hub PDF paths against the redirected response host. |
+| [#104](https://github.com/openags/paper-search-mcp/pull/104) | `@mayuriphad` | Tolerant `Paper.to_dict()` date serialization. |
+| [#105](https://github.com/openags/paper-search-mcp/pull/105) | `@Aleteria031` | Reporting invalid sources in mixed unified searches. |
+| [#110](https://github.com/openags/paper-search-mcp/pull/110) | `@theomgdev` | Preserving Zenodo and HAL author names as lists. |
+| [#111](https://github.com/openags/paper-search-mcp/pull/111) | `@rokokol` | Surfacing Semantic Scholar API failures instead of reporting false zero results. |
+| [#112](https://github.com/openags/paper-search-mcp/pull/112) | `@feiiiiii5` | Parser regression coverage for Zenodo and HAL author lists. |
+| [#113](https://github.com/openags/paper-search-mcp/pull/113) | `@feiiiiii5` | HTTPS arXiv requests and phrase quoting for plain multi-word queries. |
+
+The human contributors above are included as co-authors of the follow-up
+attribution commit so their GitHub contribution credit is present on the
+default branch without rewriting published history.
+
+Their original PR commits are also connected to the default-branch history by
+a tree-preserving provenance merge. The merge keeps the already reviewed code
+tree unchanged while making the real, original commit authors reachable from
+the default branch for repository contributor statistics.
+
+## Consolidation PR #116
+
+| Source PR | Contributor | Incorporated contribution |
+| --- | --- | --- |
+| [#49](https://github.com/openags/paper-search-mcp/pull/49) | `@Copilot` (bot) | Non-nullable MCP input schema compatibility. |
+| [#51](https://github.com/openags/paper-search-mcp/pull/51) | `@Copilot` (bot) | Bounded Google Scholar tool execution. |
+| [#53](https://github.com/openags/paper-search-mcp/pull/53) | `@Copilot` (bot) | Documented bioRxiv DOI, interval, category, and recent-paper query modes. |
+| [#55](https://github.com/openags/paper-search-mcp/pull/55) | `@Copilot` (bot) | Per-source timeout isolation with partial unified-search results. |
+
+These source pull requests were bot-authored, so no missing human contributor
+credit needed to be repaired for PR #116.
+
+## Packaging entrypoint test from PR #47
+
+| Source PR | Contributor | Incorporated contribution |
+| --- | --- | --- |
+| [#47](https://github.com/openags/paper-search-mcp/pull/47) | `@Copilot` (bot), with `@universea` as human co-author | The complete 25-line `tests/test_package_entrypoints.py` regression test for both console scripts, incorporated verbatim. |
+
+The test was incorporated in
+[commit `c8b6421`](https://github.com/openags/paper-search-mcp/commit/c8b642183bb725f0a7faec89e58b558df09079d1),
+authored by `@universea`. The
+[source commit `e3a5da0`](https://github.com/openags/paper-search-mcp/commit/e3a5da0480013d4bbac8cff1774e3a5687015028)
+records `Co-authored-by: universea <13444641+universea@users.noreply.github.com>`.
+This entry restores the source-PR link without changing code or rewriting
+published history.
+
+## MCP dependency refresh from PR #87
+
+The FastMCP 3.4.2 and MCP Python SDK 1.27.2 minimum versions originate in
+[#87](https://github.com/openags/paper-search-mcp/pull/87), opened by
+`@pinguin-halt`. Its original commit
+[`786a668`](https://github.com/openags/paper-search-mcp/commit/786a6684ccea55b82d8a0b7ed5a51e5ff30556ac)
+is authored by ismail (`@ismailokta`), whose original author history is retained.
+The conflict resolution keeps the current `pypdf` migration and MCP `<2` bound,
+adds a FastMCP `<4` compatibility bound, and regenerates the lock selectively
+for the requested versions and their required dependencies. The integration
+commit also includes the source author's verified `Co-authored-by` trailer.
+
+## Bounded OpenAlex relationships
+
+[PR #96](https://github.com/openags/paper-search-mcp/pull/96), original commit
+[`f5127b9`](https://github.com/openags/paper-search-mcp/commit/f5127b932fa41749af32c99338cd6941587f5807)
+by George930502, supplied the extracted null-tolerant OpenAlex parser and the
+one-hop `cites` / `cited_by` design adapted here. The source author's verified
+Git author identity is `George930502 <George930502@users.noreply.github.com>`;
+the integration commit retains this co-author trailer. The request budgets,
+strict identifier rules, explicit error contract, and deterministic budget tests
+are new. Title guessing, default citation enrichment, and the OA resolver tool
+from that PR are deliberately not incorporated.
+
+Thanks to `@avvohacker` for [issue #122](https://github.com/openags/paper-search-mcp/issues/122)
+and `@heliowap` for [issue #94](https://github.com/openags/paper-search-mcp/issues/94).
+These issue proposals inform the bounded scope; no issue-authored code was copied.

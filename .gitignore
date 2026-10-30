@@ -173,3 +173,8 @@ cython_debug/
 ./test_downloads
 downloads/
 test_downloads/
+
+# Node.js (dsh bundle development)
+dsh/node_modules/
+dsh/npm-debug.log*
+dsh/.npm/

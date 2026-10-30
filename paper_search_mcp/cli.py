@@ -7,14 +7,19 @@ import argparse
 import asyncio
 import json
 import logging
+import math
+import os
 import re
 import sys
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import get_env
 from .crossref_resolver import metadata_for_identifier, resolve_title
 from .file_naming import get_default_output_dir, metadata_text, paper_output_path
+from .tool_cli import cmd_tool
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -37,6 +42,7 @@ from .academic_platforms.zenodo import ZenodoSearcher
 from .academic_platforms.hal import HALSearcher
 from .academic_platforms.ssrn import SSRNSearcher
 from .academic_platforms.sci_hub import SciHubSource
+from .academic_platforms.openreview import OpenReviewSearcher
 
 # ---------------------------------------------------------------------------
 # Searcher registry
@@ -45,60 +51,106 @@ from .academic_platforms.sci_hub import SciHubSource
 SEARCHERS: Dict[str, Any] = {}
 
 
-def _init_searchers() -> None:
-    """Lazily initialize searcher instances."""
-    if SEARCHERS:
-        return
+def _available_sources() -> list[str]:
+    sources = list(ALL_SOURCES)
+    if get_env("IEEE_API_KEY", ""):
+        sources.append("ieee")
+    # Preserve main's keyless ACM availability, without broadening presets.
+    sources.append("acm")
+    sources.extend(["wos", "scopus"])
+    return sources
 
-    SEARCHERS["arxiv"] = ArxivSearcher()
-    SEARCHERS["pubmed"] = PubMedSearcher()
-    SEARCHERS["biorxiv"] = BioRxivSearcher()
-    SEARCHERS["medrxiv"] = MedRxivSearcher()
-    SEARCHERS["google_scholar"] = GoogleScholarSearcher()
-    SEARCHERS["iacr"] = IACRSearcher()
-    SEARCHERS["semantic"] = SemanticSearcher()
-    SEARCHERS["crossref"] = CrossRefSearcher()
-    SEARCHERS["openalex"] = OpenAlexSearcher()
-    SEARCHERS["pmc"] = PMCSearcher()
-    SEARCHERS["core"] = CORESearcher()
-    SEARCHERS["europepmc"] = EuropePMCSearcher()
-    SEARCHERS["dblp"] = DBLPSearcher()
-    SEARCHERS["openaire"] = OpenAiresearcher()
-    SEARCHERS["citeseerx"] = CiteSeerXSearcher()
-    SEARCHERS["doaj"] = DOAJSearcher()
-    SEARCHERS["base"] = BASESearcher()
-    unpaywall_resolver = UnpaywallResolver()
-    SEARCHERS["unpaywall"] = UnpaywallSearcher(resolver=unpaywall_resolver)
-    SEARCHERS["zenodo"] = ZenodoSearcher()
-    SEARCHERS["hal"] = HALSearcher()
-    SEARCHERS["ssrn"] = SSRNSearcher()
-    SEARCHERS["scihub"] = SciHubSource()
 
-    # Optional paid connectors
-    ieee_key = get_env("IEEE_API_KEY", "")
-    if ieee_key:
+def _get_searcher(source: str) -> Any:
+    """Initialize only the searcher requested by the current command."""
+    if source in SEARCHERS:
+        return SEARCHERS[source]
+
+    factories = {
+        "arxiv": ArxivSearcher,
+        "pubmed": PubMedSearcher,
+        "biorxiv": BioRxivSearcher,
+        "medrxiv": MedRxivSearcher,
+        "google_scholar": GoogleScholarSearcher,
+        "iacr": IACRSearcher,
+        "semantic": SemanticSearcher,
+        "crossref": CrossRefSearcher,
+        "openalex": OpenAlexSearcher,
+        "pmc": PMCSearcher,
+        "core": CORESearcher,
+        "europepmc": EuropePMCSearcher,
+        "dblp": DBLPSearcher,
+        "openaire": OpenAiresearcher,
+        "citeseerx": CiteSeerXSearcher,
+        "doaj": DOAJSearcher,
+        "base": BASESearcher,
+        "zenodo": ZenodoSearcher,
+        "hal": HALSearcher,
+        "ssrn": SSRNSearcher,
+        "openreview": OpenReviewSearcher,
+        "scihub": SciHubSource,
+    }
+
+    if source == "unpaywall":
+        searcher = UnpaywallSearcher(resolver=UnpaywallResolver())
+    elif source == "ieee" and get_env("IEEE_API_KEY", ""):
         from .academic_platforms.ieee import IEEESearcher
-        SEARCHERS["ieee"] = IEEESearcher()
-
-    acm_key = get_env("ACM_API_KEY", "")
-    if acm_key:
+        searcher = IEEESearcher()
+    elif source == "scopus":
+        from .academic_platforms.scopus import ScopusSearcher
+        searcher = ScopusSearcher()
+    elif source == "wos":
+        from .academic_platforms.wos import WebOfScienceSearcher
+        searcher = WebOfScienceSearcher()
+    elif source == "acm":
         from .academic_platforms.acm import ACMSearcher
-        SEARCHERS["acm"] = ACMSearcher()
+        searcher = ACMSearcher()
+    elif source in factories:
+        searcher = factories[source]()
+    else:
+        raise KeyError(source)
+
+    SEARCHERS[source] = searcher
+    return searcher
 
 
 ALL_SOURCES = [
     "arxiv", "pubmed", "biorxiv", "medrxiv", "google_scholar", "iacr",
     "semantic", "crossref", "openalex", "pmc", "core", "europepmc",
     "dblp", "openaire", "citeseerx", "doaj", "base", "zenodo", "hal",
-    "ssrn", "unpaywall",
+    "ssrn", "openreview", "unpaywall",
+]
+
+FASTEST_SOURCES = [
+    "openalex", "crossref",
+]
+
+FAST_SOURCES = [
+    "openalex", "crossref", "arxiv", "pubmed", "europepmc",
 ]
 
 
+def _fast_sources() -> list[str]:
+    sources = list(FAST_SOURCES)
+    if get_env("SEMANTIC_SCHOLAR_API_KEY", "").strip():
+        sources.insert(2, "semantic")
+    return sources
+
+
 def _parse_sources(sources: str) -> List[str]:
-    if not sources or sources.strip().lower() == "all":
-        return [s for s in ALL_SOURCES if s in SEARCHERS]
-    normalized = [p.strip().lower() for p in sources.split(",") if p.strip()]
-    return [s for s in normalized if s in SEARCHERS]
+    """Resolve presets without narrowing or extending an explicit selection."""
+    preset = sources.strip().lower() if sources else "all"
+    if preset == "all":
+        source_names = ALL_SOURCES
+    elif preset == "fast":
+        source_names = _fast_sources()
+    elif preset == "fastest":
+        source_names = FASTEST_SOURCES
+    else:
+        source_names = [part.strip() for part in preset.split(",") if part.strip()]
+    available = set(_available_sources())
+    # Avoid replacing an unawaited coroutine when the same source is repeated.
+    return list(dict.fromkeys(source for source in source_names if source in available))
 
 
 def _paper_unique_key(paper: Dict[str, Any]) -> str:
@@ -123,6 +175,46 @@ def _dedupe(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _citation_sort_key(paper: Dict[str, Any]) -> tuple[bool, Decimal]:
+    """Put valid nonnegative counts first, including numeric strings."""
+    value = paper.get("citations")
+    try:
+        count = Decimal(str(value))
+    except InvalidOperation:
+        return False, Decimal(0)
+    if not count.is_finite() or count < 0:
+        return False, Decimal(0)
+    return True, count
+
+
+def _date_sort_key(paper: Dict[str, Any]) -> tuple[bool, datetime]:
+    """Compare ISO dates/timestamps consistently; treat naive values as UTC."""
+    value = paper.get("published_date")
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, date):
+            parsed = datetime.combine(value, datetime.min.time())
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        else:
+            raise ValueError("Missing or unsupported date")
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return True, parsed
+    except ValueError:
+        return False, datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _sort_papers(papers: List[Dict[str, Any]], order: str) -> List[Dict[str, Any]]:
+    """Sort retrieved papers stably, without changing connector queries."""
+    if order == "citations":
+        return sorted(papers, key=_citation_sort_key, reverse=True)
+    if order == "date":
+        return sorted(papers, key=_date_sort_key, reverse=True)
+    return papers
+
+
 # ---------------------------------------------------------------------------
 # Async helpers
 # ---------------------------------------------------------------------------
@@ -140,22 +232,37 @@ async def _async_search(searcher: Any, query: str, max_results: int, **kwargs) -
 # ---------------------------------------------------------------------------
 
 async def cmd_search(args: argparse.Namespace) -> int:
-    _init_searchers()
     selected = _parse_sources(args.sources)
     if not selected:
-        print(json.dumps({"error": "No valid sources selected", "available": sorted(SEARCHERS.keys())}))
+        print(json.dumps({"error": "No valid sources selected", "available": sorted(_available_sources())}))
         return 1
 
     tasks = {}
+    jobs = []
+    source_timeout = getattr(args, "source_timeout", None)
     for src in selected:
-        searcher = SEARCHERS[src]
         extra = {}
+        if src == "wos":
+            extra["db"] = getattr(args, "wos_db", "WOS")
         if src == "semantic" and args.year:
             extra["year"] = args.year
-        tasks[src] = _async_search(searcher, args.query, args.max_results, **extra)
+        if src == "scopus":
+            extra = {"view": getattr(args, "scopus_view", "STANDARD"),
+                     "sort": getattr(args, "scopus_sort", "relevance"),
+                     "field": getattr(args, "scopus_field", ""),
+                     "date": getattr(args, "scopus_date", "")}
+        if source_timeout is None:
+            tasks[src] = _async_search(_get_searcher(src), args.query, args.max_results, **extra)
+        else:
+            jobs.append({"source": src, "query": args.query,
+                         "max_results": args.max_results, "kwargs": extra})
 
-    names = list(tasks.keys())
-    results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    names = selected
+    if source_timeout is None:
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+    else:
+        from .cli_search import search_sources
+        results = await search_sources(jobs, source_timeout)
 
     merged: List[Dict[str, Any]] = []
     errors: Dict[str, str] = {}
@@ -172,7 +279,7 @@ async def cmd_search(args: argparse.Namespace) -> int:
                     p["source"] = name
                 merged.append(p)
 
-    deduped = _dedupe(merged)
+    deduped = _sort_papers(_dedupe(merged), getattr(args, "sort", "relevance"))
 
     output = {
         "query": args.query,
@@ -187,17 +294,35 @@ async def cmd_search(args: argparse.Namespace) -> int:
 
 
 async def cmd_download(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
 
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
         return 1
 
-    searcher = SEARCHERS[source]
+    searcher = _get_searcher(source)
     try:
         result = await asyncio.to_thread(searcher.download_pdf, args.paper_id, args.save_path)
-        print(json.dumps({"status": "ok", "path": result}))
+        # Some connectors return an explanatory error string instead of
+        # raising. A successful call alone does not prove a file was saved.
+        if not isinstance(result, (str, os.PathLike)):
+            raise RuntimeError("Download did not return a file path")
+        path = Path(result)
+        try:
+            saved = False
+            if path.is_file():
+                with path.open("rb") as downloaded:
+                    # Match the PDF-header policy used by the Semantic
+                    # connector. HTML error pages are not download successes.
+                    saved = bool(re.match(
+                        rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)",
+                        downloaded.read(1024),
+                    ))
+        except (OSError, ValueError):
+            saved = False
+        if not saved:
+            raise RuntimeError(f"Download did not produce a readable PDF file: {result}")
+        print(json.dumps({"status": "ok", "path": str(result)}))
         return 0
     except Exception as e:
         print(json.dumps({"status": "error", "message": str(e)}))
@@ -205,15 +330,24 @@ async def cmd_download(args: argparse.Namespace) -> int:
 
 
 async def cmd_read(args: argparse.Namespace) -> int:
-    _init_searchers()
     source = args.source.strip().lower()
-
-    if source not in SEARCHERS:
-        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(SEARCHERS.keys())}))
+    if getattr(args, "full_text", False) and source != "scopus":
+        print(json.dumps({"status": "error", "message": "--full-text is supported only for Scopus"}))
         return 1
 
-    searcher = SEARCHERS[source]
+    if source not in _available_sources():
+        print(json.dumps({"error": f"Unknown source: {source}", "available": sorted(_available_sources())}))
+        return 1
+
+    searcher = _get_searcher(source)
     try:
+        if source == "scopus":
+            result = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path,
+                                             full_text=getattr(args, "full_text", False))
+            print(json.dumps(result, indent=2))
+            if result["status"] == "unavailable":
+                return 1
+            return 2 if getattr(args, "full_text", False) and result["status"] != "full_text" else 0
         text = await asyncio.to_thread(searcher.read_paper, args.paper_id, args.save_path)
         print(text)
         return 0
@@ -223,8 +357,7 @@ async def cmd_read(args: argparse.Namespace) -> int:
 
 
 async def cmd_sources(args: argparse.Namespace) -> int:
-    _init_searchers()
-    print(json.dumps({"sources": sorted(SEARCHERS.keys())}, indent=2))
+    print(json.dumps({"sources": sorted(_available_sources())}, indent=2))
     return 0
 
 
@@ -311,13 +444,12 @@ def _paper_to_bibtex(p: Dict[str, Any]) -> str:
 
 async def cmd_cite(args: argparse.Namespace) -> int:
     """Search and output BibTeX / RIS citations."""
-    _init_searchers()
     selected = _parse_sources(args.sources)
     if not selected:
         print(json.dumps({"error": "No valid sources selected"}))
         return 1
 
-    tasks = {src: _async_search(SEARCHERS[src], args.query, args.max_results)
+    tasks = {src: _async_search(_get_searcher(src), args.query, args.max_results)
              for src in selected}
     names = list(tasks.keys())
     results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -380,9 +512,19 @@ FALLBACK_DOWNLOAD_ORDER = [
 
 
 def _looks_like_pdf_path(result: Any) -> bool:
-    if not isinstance(result, str) or not result.lower().endswith(".pdf"):
+    if not isinstance(result, (str, os.PathLike)):
         return False
-    return Path(result).exists()
+    try:
+        path = Path(result)
+        if path.suffix.lower() != ".pdf" or not path.is_file():
+            return False
+        with path.open("rb") as downloaded:
+            return bool(re.match(
+                rb"\s*(?:\xef\xbb\xbf)?\s*%PDF-\d\.\d(?:\s|$)",
+                downloaded.read(1024),
+            ))
+    except (OSError, ValueError):
+        return False
 
 
 def _save_abstract_only_metadata(doi: str, save_path: str) -> str:
@@ -413,15 +555,14 @@ def _save_abstract_only_metadata(doi: str, save_path: str) -> str:
 
 async def cmd_fallback(args: argparse.Namespace) -> int:
     """Try downloading a paper by DOI across sources in priority order."""
-    _init_searchers()
     doi = args.doi.strip()
     save_path = args.save_path
 
     for source_name in FALLBACK_DOWNLOAD_ORDER:
-        searcher = SEARCHERS.get(source_name)
-        if not searcher:
+        if source_name == "scihub" and not getattr(args, "use_scihub", False):
             continue
         try:
+            searcher = _get_searcher(source_name)
             result = await asyncio.to_thread(searcher.download_pdf, doi, save_path)
             if _looks_like_pdf_path(result):
                 print(json.dumps({"status": "ok", "source": source_name, "path": result}))
@@ -440,6 +581,16 @@ async def cmd_fallback(args: argparse.Namespace) -> int:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive, finite number of seconds") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a positive, finite number of seconds")
+    return seconds
+
+
 def build_parser() -> argparse.ArgumentParser:
     default_output = get_default_output_dir()
     parser = argparse.ArgumentParser(
@@ -453,9 +604,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("-n", "--max-results", type=int, default=5, help="Max results per source (default: 5)")
     p_search.add_argument("-s", "--sources", default="all",
-                          help="Comma-separated sources or 'all' (default: all)")
+                          help="Comma-separated sources, 'fastest', 'fast', or 'all' (default: all)")
+    p_search.add_argument("--source-timeout", type=_positive_seconds, metavar="SECONDS",
+                          help="Opt-in per-source deadline, including worker startup; "
+                               "runs at most 4 source processes at once and keeps partial results "
+                               "(default: connector timeouts only)")
     p_search.add_argument("-y", "--year", default=None,
                           help="Year filter for Semantic Scholar (e.g. '2020', '2018-2022')")
+    p_search.add_argument("--exhaustive", action="store_true",
+                          help="Compatibility no-op: broad search is already the default; "
+                               "explicit --sources always takes precedence")
+
+    p_search.add_argument("--sort", choices=("relevance", "citations", "date"),
+                          default="relevance",
+                          help="Order retrieved results: relevance preserves source order (default); "
+                               "citations sorts highest first; date sorts newest first")
+
+    p_search.add_argument("--scopus-view", choices=("STANDARD", "COMPLETE"), default="STANDARD",
+                          help="Scopus metadata view (COMPLETE may require institutional entitlement)")
+    p_search.add_argument("--scopus-sort", choices=("relevance", "coverDate", "citedby-count", "creator"), default="relevance")
+    p_search.add_argument("--scopus-field", choices=("", "TITLE", "ABS", "KEY", "AUTH", "AFFILORG"), default="")
+    p_search.add_argument("--scopus-date", default="", help="Scopus YYYY or YYYY-YYYY date filter")
+
+    p_search.add_argument("--wos-db", default="WOS",
+                          choices=("BCI", "BIOABS", "BIOSIS", "CCC", "DIIDW", "DRCI", "MEDLINE", "PPRN", "RC", "WOK", "WOS", "ZOOREC"),
+                          help="Web of Science database (default: WOS)")
 
     # download
     p_dl = sub.add_parser("download", help="Download a paper PDF")
@@ -478,6 +651,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=default_output,
         help=f"Save directory (default: {default_output})",
     )
+
+    p_read.add_argument("--full-text", action="store_true",
+                        help="For Scopus only: explicitly try identity-verified ScienceDirect full text")
 
     # sources
     sub.add_parser("sources", help="List available sources")
@@ -503,12 +679,21 @@ def build_parser() -> argparse.ArgumentParser:
     # fallback
     p_fallback = sub.add_parser("fallback", help="Download a paper by DOI, cascading through all sources")
     p_fallback.add_argument("doi", help="DOI of the paper")
+    p_fallback.add_argument("--use-scihub", action="store_true",
+                            help="Include Sci-Hub in the fallback sources")
     p_fallback.add_argument(
         "-o",
         "--save-path",
         default=default_output,
         help=f"Save directory (default: {default_output})",
     )
+
+    # Parse only the outer command here; the async handler discovers the MCP
+    # tools and parses their arguments, including help, without nested loops.
+    p_tool = sub.add_parser("tool", help="Call any registered MCP tool", add_help=False)
+    p_tool.add_argument("-h", "--help", dest="tool_help", action="store_true")
+    p_tool.add_argument("--list", dest="list_tools", action="store_true")
+    p_tool.add_argument("tool_args", nargs=argparse.REMAINDER)
 
     return parser
 
@@ -525,6 +710,7 @@ def main() -> None:
         "cite": cmd_cite,
         "resolve": cmd_resolve,
         "fallback": cmd_fallback,
+        "tool": cmd_tool,
     }
 
     exit_code = asyncio.run(dispatch[args.command](args))

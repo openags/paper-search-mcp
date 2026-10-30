@@ -1,7 +1,8 @@
 # tests/test_dblp.py
 import unittest
-import os
+
 import requests
+
 from paper_search_mcp.academic_platforms.dblp import DBLPSearcher
 
 
@@ -14,8 +15,11 @@ def check_api_accessible():
             params={'q': 'test', 'format': 'xml', 'h': 1},
             timeout=10
         )
-        return response.status_code == 200
-    except:
+        return (
+            response.status_code == 200
+            and response.content.lstrip().startswith((b"<?xml", b"<result"))
+        )
+    except requests.RequestException:
         return False
 
 
